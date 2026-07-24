@@ -202,10 +202,12 @@ def _configured_cross_source_table(
     config: dict[str, Any],
     rows: list[dict[str, Any]],
     ocr_overrides: dict[str, str] | None = None,
+    source_overrides: dict[str, Path] | None = None,
 ) -> list[list[str]]:
     matrix = [["项目", "账面金额（元）", "数量", "现状、特点"]]
     for row in rows:
-        source_path = _path(base, config["sources"][row["source"]])
+        source_name = row["source"]
+        source_path = (source_overrides or {}).get(source_name) or _path(base, config["sources"][source_name])
         value = (ocr_overrides or {}).get(str(row.get("ocr_field_key")))
         if value in (None, ""):
             value = read_cells(source_path, [row["locator"]])[row["locator"]]
@@ -454,6 +456,7 @@ def run_pipeline(
     report_date: str | None = None,
     manual_inputs_override: dict[str, Any] | None = None,
     ocr_workbook_path: Path | None = None,
+    source_overrides: dict[str, Path] | None = None,
 ) -> PipelineResult:
     config_path = project_config.resolve()
     config = json.loads(config_path.read_text(encoding="utf-8"))
@@ -485,6 +488,7 @@ def run_pipeline(
             offline=True,
             report_date=report_date,
             manual_inputs_override=manual_inputs_override,
+            source_overrides=source_overrides,
         )
         fields = json.loads((Path(temporary) / "normalized_fields.json").read_text(encoding="utf-8"))
         evidence = _legacy_evidence(legacy.audit_path)
@@ -504,7 +508,7 @@ def run_pipeline(
     scope_table = config.get("asset_scope_summary_table")
     if isinstance(scope_table, dict):
         source_name = str(scope_table["source"])
-        source_path = _path(base, config["sources"][source_name])
+        source_path = (source_overrides or {}).get(source_name) or _path(base, config["sources"][source_name])
         fields[scope_table["field_key"]] = {
             "caption": scope_table.get("caption", ""),
             "rows": read_configured_table(source_path, scope_table),
@@ -781,7 +785,7 @@ def run_pipeline(
     long_term_table = config.get("long_term_assets_table")
     if isinstance(long_term_table, dict):
         table_replacements[int(long_term_table["target_table_index"])] = _configured_cross_source_table(
-            base, config, long_term_table.get("rows", []), ocr_aux_values
+            base, config, long_term_table.get("rows", []), ocr_aux_values, source_overrides
         )
     trademark_rows = _qcc_table_rows(qcc_payloads.get("target", {}), "trademark_rows", 7)
     software_rows = _qcc_table_rows(qcc_payloads.get("target", {}), "software_rows", 5)

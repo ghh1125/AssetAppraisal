@@ -19,7 +19,7 @@ const form = reactive({
   final_valuation_method: '收益法',
   target_company_short_name: '通富昆山',
 })
-const files = reactive({ pdf: null })
+const files = reactive({ pdf: null, referenceReport: null, auditedFinancials: null, incomeWorkbook: null, reportingWorkbook: null })
 const useGlm = ref(true)
 const useQichacha = ref(true)
 const reuseOcr = ref(true)
@@ -30,6 +30,10 @@ let pollTimer = null
 
 const canSubmit = computed(() => Boolean(
   files.pdf
+  && files.referenceReport
+  && files.auditedFinancials
+  && files.incomeWorkbook
+  && files.reportingWorkbook
   && form.commissioning_party_name
   && form.commissioning_party_short_name
   && form.report_serial
@@ -84,6 +88,10 @@ async function submit() {
   try {
     const result = await createAssetAppraisalRun().mutationFn({
       pdf: files.pdf,
+      referenceReport: files.referenceReport,
+      auditedFinancials: files.auditedFinancials,
+      incomeWorkbook: files.incomeWorkbook,
+      reportingWorkbook: files.reportingWorkbook,
       inputs: { ...form },
       useGlm: useGlm.value,
       useQichacha: useQichacha.value,
@@ -120,6 +128,26 @@ onBeforeUnmount(clearPoll)
             <p class="upload-icon">PDF</p>
             <p class="upload-title">{{ t('asset.pdfTitle') }}</p>
             <p class="upload-hint">{{ t('asset.uploadHint') }}</p>
+          </a-upload-dragger>
+          <a-upload-dragger :max-count="1" accept=".docx" :before-upload="() => false" @change="setFile('referenceReport', $event)">
+            <p class="upload-icon docx">DOCX</p>
+            <p class="upload-title">{{ t('asset.referenceReportTitle') }}</p>
+            <p class="upload-hint">{{ t('asset.referenceReportHint') }}</p>
+          </a-upload-dragger>
+          <a-upload-dragger :max-count="1" accept=".xlsx" :before-upload="() => false" @change="setFile('auditedFinancials', $event)">
+            <p class="upload-icon xlsx">XLSX</p>
+            <p class="upload-title">{{ t('asset.auditedFinancialsTitle') }}</p>
+            <p class="upload-hint">{{ t('asset.auditedFinancialsHint') }}</p>
+          </a-upload-dragger>
+          <a-upload-dragger :max-count="1" accept=".xlsx" :before-upload="() => false" @change="setFile('incomeWorkbook', $event)">
+            <p class="upload-icon xlsx">XLSX</p>
+            <p class="upload-title">{{ t('asset.incomeWorkbookTitle') }}</p>
+            <p class="upload-hint">{{ t('asset.incomeWorkbookHint') }}</p>
+          </a-upload-dragger>
+          <a-upload-dragger :max-count="1" accept=".xlsx" :before-upload="() => false" @change="setFile('reportingWorkbook', $event)">
+            <p class="upload-icon xlsx">XLSX</p>
+            <p class="upload-title">{{ t('asset.reportingWorkbookTitle') }}</p>
+            <p class="upload-hint">{{ t('asset.reportingWorkbookHint') }}</p>
           </a-upload-dragger>
         </div>
         <a-alert class="template-source" :message="t('asset.templateSource')" type="success" show-icon />

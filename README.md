@@ -105,6 +105,8 @@ npm run dev -- --host 127.0.0.1 --port 5173
 
 浏览器打开 <http://127.0.0.1:5173/>。前端默认把 `/api` 请求代理到 `http://127.0.0.1:8000`；如需修改，可在 `frontend/.env` 中设置 `VITE_API_PROXY_TARGET`，该文件不会提交到 Git。生产构建使用：
 
+页面提交时需要同时选择审计报告 PDF、参考评估报告 DOCX、审计财务 XLSX、收益法 XLSX 和上报表 XLSX；Word 模板由后端固定提供。上传的 3 个 XLSX 会覆盖本次任务的项目材料路径，生成结果不会修改原文件。
+
 ```bash
 cd frontend
 npm run build

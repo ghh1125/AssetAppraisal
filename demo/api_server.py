@@ -117,6 +117,7 @@ def _find_ocr_cache(pdf_path: Path) -> Path | None:
 def _execute_run(
     run_id: str,
     pdf_path: Path,
+    source_overrides: dict[str, Path],
     inputs: dict[str, Any],
     use_glm: bool,
     use_qichacha: bool,
@@ -189,6 +190,7 @@ def _execute_run(
             manual_inputs_override=inputs,
             template_path=template_path,
             template_page_reader=LibreOfficeTemplatePageReader(),
+            source_overrides=source_overrides,
         )
         _set_job(
             run_id,
@@ -207,13 +209,25 @@ def _execute_run(
 async def create_run(
     background_tasks: BackgroundTasks,
     pdf: UploadFile = File(...),
+    reference_report: UploadFile = File(...),
+    audited_financials: UploadFile = File(...),
+    income_workbook: UploadFile = File(...),
+    reporting_workbook: UploadFile = File(...),
     inputs: str = Form("{}"),
     use_glm: bool = Form(True),
     use_qichacha: bool = Form(True),
     reuse_ocr: bool = Form(True),
 ):
-    if not pdf.filename or not pdf.filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=422, detail="请上传 PDF 审计报告")
+    required_files = {
+        "pdf": (pdf, ".pdf", "审计报告 PDF"),
+        "reference_report": (reference_report, ".docx", "参考评估报告 DOCX"),
+        "audited_financials": (audited_financials, ".xlsx", "审计财务 XLSX"),
+        "income_workbook": (income_workbook, ".xlsx", "收益法 XLSX"),
+        "reporting_workbook": (reporting_workbook, ".xlsx", "上报表 XLSX"),
+    }
+    for field_name, (upload, suffix, label) in required_files.items():
+        if not upload.filename or not upload.filename.lower().endswith(suffix):
+            raise HTTPException(status_code=422, detail=f"请上传{label}（字段：{field_name}）")
     try:
         parsed_inputs = json.loads(inputs)
         if not isinstance(parsed_inputs, dict):
@@ -230,12 +244,33 @@ async def create_run(
     run_id = _run_id_for_pdf(pdf.filename)
     input_dir = RUNS_ROOT / run_id / "input"
     input_dir.mkdir(parents=True, exist_ok=True)
-    pdf_path = input_dir / "source.pdf"
-    with pdf_path.open("wb") as target:
-        shutil.copyfileobj(pdf.file, target)
+    stored_files = {
+        "pdf": input_dir / "source.pdf",
+        "reference_report": input_dir / "reference_report.docx",
+        "audited_financials": input_dir / "audited_financials.xlsx",
+        "income_workbook": input_dir / "income_workbook.xlsx",
+        "reporting_workbook": input_dir / "reporting_workbook.xlsx",
+    }
+    for field_name, (upload, _, _) in required_files.items():
+        with stored_files[field_name].open("wb") as target:
+            shutil.copyfileobj(upload.file, target)
+    pdf_path = stored_files["pdf"]
+    source_overrides = {
+        name: stored_files[name]
+        for name in ("reference_report", "audited_financials", "income_workbook", "reporting_workbook")
+    }
     template_path = _project_template()
     _set_job(run_id, run_id=run_id, status="queued", progress=0, message="任务已创建", artifacts=[])
-    background_tasks.add_task(_execute_run, run_id, pdf_path, parsed_inputs, use_glm, use_qichacha, reuse_ocr)
+    background_tasks.add_task(
+        _execute_run,
+        run_id,
+        pdf_path,
+        source_overrides,
+        parsed_inputs,
+        use_glm,
+        use_qichacha,
+        reuse_ocr,
+    )
     return JOBS[run_id]
 
 

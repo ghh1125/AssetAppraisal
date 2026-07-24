@@ -8,10 +8,13 @@ export function checkAssetAppraisalOcrCache(file) {
 
 export function createAssetAppraisalRun() {
   return {
-    mutationFn: async ({ pdf, template, inputs, useGlm, useQichacha, reuseOcr }) => {
+    mutationFn: async ({ pdf, referenceReport, auditedFinancials, incomeWorkbook, reportingWorkbook, inputs, useGlm, useQichacha, reuseOcr }) => {
       const form = new FormData()
       form.append('pdf', pdf)
-      form.append('template', template)
+      form.append('reference_report', referenceReport)
+      form.append('audited_financials', auditedFinancials)
+      form.append('income_workbook', incomeWorkbook)
+      form.append('reporting_workbook', reportingWorkbook)
       form.append('inputs', JSON.stringify(inputs))
       form.append('use_glm', String(useGlm))
       form.append('use_qichacha', String(useQichacha))

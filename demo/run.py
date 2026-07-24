@@ -162,6 +162,7 @@ def run_project(
     company_api_adapter: Any = None,
     llm_adapter: Any = None,
     manual_inputs_override: dict[str, Any] | None = None,
+    source_overrides: dict[str, Path] | None = None,
 ) -> RunResult:
     config_path = config_path.resolve()
     config = json.loads(config_path.read_text(encoding="utf-8"))
@@ -170,6 +171,8 @@ def run_project(
     mapping_path = _path(base, config["mapping"])
     manual_path = _path(base, config["manual_inputs"])
     sources = {name: _path(base, value) for name, value in config.get("sources", {}).items()}
+    if source_overrides:
+        sources.update({name: Path(path).resolve() for name, path in source_overrides.items()})
     source_lineage = config.get("source_lineage", {})
     mapping = json.loads(mapping_path.read_text(encoding="utf-8"))
     locations = validate_mapping(mapping)
