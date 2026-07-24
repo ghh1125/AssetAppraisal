@@ -36,16 +36,11 @@ uv sync --extra dev
 对应环境变量：
 
 ```dotenv
-QICHACHA_API_BASE_URL=https://api.qichacha.com
 QICHACHA_APP_KEY=你的Key
 QICHACHA_SECRET_KEY=你的SecretKey
-QICHACHA_ENDPOINT_735=/ECIInfoVerify/GetInfo
-QICHACHA_ENDPOINT_231=/tm/SearchByApplicant
-QICHACHA_ENDPOINT_514=/PatentV4/Search
-QICHACHA_ENDPOINT_233=/CopyRight/SearchCopyRight
 ```
 
-如果账号后台给某个 ApiCode 分配了不同路径，只修改对应的 `QICHACHA_ENDPOINT_*`，不用改业务代码。接口无结果时，该来源字段按规则留空并写入 `issues.json`，不会用其他来源冒填。
+接口地址和路径已经写入程序默认配置，通常不需要修改。接口无结果时，该来源字段按规则留空并写入 `issues.json`，不会用其他来源冒填。
 
 ### 百炼 GLM
 
@@ -53,11 +48,10 @@ QICHACHA_ENDPOINT_233=/CopyRight/SearchCopyRight
 
 ```dotenv
 DASHSCOPE_API_KEY=你的百炼APIKey
-APPRAISAL_LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 APPRAISAL_LLM_MODEL=glm-5.2
 ```
 
-例如切换到其他兼容模型，只改 `APPRAISAL_LLM_MODEL`；切换到兼容 OpenAI 协议的自建或其他网关，只改 `APPRAISAL_LLM_BASE_URL`。Prompt 和结构化输出契约分别位于：
+例如切换到其他模型，只改 `APPRAISAL_LLM_MODEL`。Prompt 和结构化输出契约分别位于：
 
 - `demo/prompts/yellow_narratives.v1.txt`
 - `demo/prompts/yellow_narratives_output.v1.json`
