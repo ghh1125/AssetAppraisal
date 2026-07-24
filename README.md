@@ -83,3 +83,27 @@ uv run --python 3.11 python -m demo.run demo/projects/tongfu.yaml \
 ```
 
 API、OCR、LLM 和人工输入的字段边界由 `demo/projects/*.yaml` 与 `demo/workflow.yaml` 配置；新增项目优先复制配置并修改映射，不要把客户材料提交到仓库。
+
+## 前后端启动
+
+先在项目根目录准备 `.env`，然后启动后端：
+
+```bash
+uv sync --python 3.11 --extra dev --extra services --extra web
+uv run --python 3.11 uvicorn demo.api_server:app --host 127.0.0.1 --port 8000
+```
+
+另开一个终端启动前端：
+
+```bash
+cd frontend
+npm install
+npm run dev -- --host 127.0.0.1 --port 5173
+```
+
+浏览器打开 <http://127.0.0.1:5173/>。前端默认把 `/api` 请求代理到 `http://127.0.0.1:8000`；如需修改，可在 `frontend/.env` 中设置 `VITE_API_PROXY_TARGET`，该文件不会提交到 Git。生产构建使用：
+
+```bash
+cd frontend
+npm run build
+```
