@@ -75,6 +75,8 @@ uv run --python 3.11 python -m demo.run demo/projects/tongfu.yaml \
 
 `frontend/` 将黄色提示中的人工输入、材料上传、后端固定 Word 模板、GLM/企查查开关和产物下载做成页面。每次任务需要上传审计 PDF、参考评估报告 DOCX、审计财务 XLSX、收益法 XLSX 和上报表 XLSX；Word 模板由后端固定提供，不需要上传。上传 PDF 后会先调用 `/api/v1/asset-appraisal/ocr-cache/check`，按 PDF SHA-256 查找已有 `OCR结构化结果.xlsx`；命中时生成任务复用 OCR，跳过 PaddleOCR。前端调用 `/api/v1/asset-appraisal/runs`；本地可用下面的 HTTP 桥接服务承接现有流水线：
 
+上传框按材料角色接收文件，原文件名不需要与配置一致。审计财务 XLSX 应包含 `06N_资产负债表`、`07N_利润表`；收益法 XLSX 应包含主要产品及服务、所得税表、净现金流计算表；上报表 XLSX 应包含表 1、表 4-6、表 4-12。若工作表名称或表格布局变化，需要在项目 YAML 映射中配置新的定位规则。
+
 Web 任务输出目录按“`YYYYMMDDHHMM-PDF文件名`”命名，例如 `runs/web/202607231144-通富2025.6.30合并及母公司审计报告/`；同一分钟重复提交会自动追加序号，不覆盖已有任务。
 
 ```bash
