@@ -1,0 +1,12 @@
+[
+  {"id":"priority","op":"resolve","candidates":[{"value":110,"source":"excel"},{"value":100,"source":"pdf"}],"priority":["excel","pdf"],"field":"净资产"},
+  {"id":"empty","op":"resolve","candidates":[],"priority":["excel"],"field":"报告编号"},
+  {"id":"date","op":"split_date","value":"2025-06-30"},
+  {"id":"unit","op":"convert_amount","value":"1234567","from_unit":"元","to_unit":"万元"},
+  {"id":"increment","op":"increment","appraised":"120","book":"100"},
+  {"id":"zero_rate","op":"increment_rate","appraised":"120","book":"0"},
+  {"id":"validity","op":"validity","value":"2025-06-30"},
+  {"id":"company","op":"company_name","value":"示例有限公司有限公司"},
+  {"id":"methods","op":"methods","value":["收益法","资产基础法"]},
+  {"id":"fallback","op":"human_fill","value":"评估结论"}
+]

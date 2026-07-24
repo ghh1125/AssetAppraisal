@@ -1,0 +1,11 @@
+:root {
+  --c2m-bg-page: #f4f7fb;
+  --c2m-bg-card: #ffffff;
+  --c2m-text-primary: #17253d;
+  --c2m-text-secondary: #718096;
+  --c2m-border-light: #dfe7f1;
+  --c2m-color-primary: #2667ff;
+}
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 320px; background: var(--c2m-bg-page); color: var(--c2m-text-primary); font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif; }
+button, input, textarea { font: inherit; }

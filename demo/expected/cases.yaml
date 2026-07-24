@@ -1,0 +1,12 @@
+{
+  "priority":110,
+  "empty":"",
+  "date":{"year":2025,"month":6,"day":30},
+  "unit":"123.4567",
+  "increment":"20",
+  "zero_rate":null,
+  "validity":{"start":"2025-06-30","end":"2026-06-29"},
+  "company":"示例有限公司",
+  "methods":"收益法、资产基础法",
+  "fallback":""
+}

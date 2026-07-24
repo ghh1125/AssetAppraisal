@@ -1,0 +1,12 @@
+{
+  "transposed_layout": {"total_assets": {"2025-06-30": 100}},
+  "asset_total_alias": {"total_assets": {"2025-06-30": 200}},
+  "liability_alias": {"total_liabilities": {"2024": 300}},
+  "period_alias": {"total_assets": {"2025-06-30": 400}},
+  "detected_yuan_unit": {"total_assets": {"2025-06-30": 500}},
+  "detected_thousand_yuan_unit": {"total_assets": {"2025-06-30": 6500}},
+  "split_negative_sign": {"net_profit": {"2025-06-30": -1234.5}},
+  "fullwidth_ocr_commas": {"total_assets": {"2025-06-30": 123456.78}},
+  "missing_required_field": {"valid": false, "missing_fields": ["net_profit"], "conflicts": []},
+  "duplicate_conflicting_candidates": {"_conflicts": [{"field_key": "total_assets", "period": "2025-06-30", "values": [700, 701]}]}
+}

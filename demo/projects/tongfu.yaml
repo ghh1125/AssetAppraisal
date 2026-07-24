@@ -1,0 +1,455 @@
+{
+  "project_id": "tongfu_20250630",
+  "template": "../../资产评估工作流/评估报告版式-沟通标注版.docx",
+  "mapping": "../mappings/appraisal_report_v1.yaml",
+  "manual_inputs": "tongfu.manual.example.yaml",
+  "sources": {
+    "audit_pdf": "../../资产评估工作流/通富2025.6.30合并及母公司审计报告.pdf",
+    "reference_report": "../../资产评估工作流/通富昆山评估报告-S2.docx",
+    "audited_financials": "../../资产评估工作流/通富审核后财报-单体1月5日.xlsx",
+    "income_workbook": "../../资产评估工作流/通富热处理（昆山）有限公司-收益法-20250630.xlsx",
+    "reporting_workbook": "../../资产评估工作流/上报表文件_通富昆山_已处理.xlsx"
+  },
+  "source_lineage": {
+    "audited_financials": {
+      "kind": "ocr_xlsx",
+      "origin_source": "audit_pdf"
+    }
+  },
+  "ocr_field_rules": [
+    {
+      "field_key": "major_long_term_assets",
+      "template": "（一）被评估单位主要长期资产的账面记录情况如下：截至评估基准日，长期股权投资账面价值{long_term_equity}元；固定资产账面净值{fixed_assets}元，其中机器设备{machinery}元、车辆{vehicles}元、电子设备{electronics}元；长期待摊费用账面价值{deferred_expenses}元；无形资产账面价值{intangibles}元。",
+      "inputs": {
+        "long_term_equity": {"kind": "semantic", "page_markers": ["长期股权投资"], "row_aliases": ["合计"], "column_aliases": ["2025年6月30日", "期末余额"], "max_columns": 4, "format": "amount"},
+        "fixed_assets": {"kind": "semantic", "page_markers": ["固定资产"], "row_aliases": ["账面价值"], "column_aliases": ["合计"], "format": "amount"},
+        "machinery": {"kind": "semantic", "page_markers": ["固定资产"], "row_aliases": ["账面价值"], "column_aliases": ["机器设备", "设备"], "format": "amount"},
+        "vehicles": {"kind": "semantic", "page_markers": ["固定资产"], "row_aliases": ["账面价值"], "column_aliases": ["运输设备", "车辆"], "format": "amount"},
+        "electronics": {"kind": "semantic", "page_markers": ["固定资产"], "row_aliases": ["账面价值"], "column_aliases": ["电子设备", "电力设备", "杂项设备"], "format": "amount"},
+        "deferred_expenses": {"kind": "semantic", "table_markers": ["长期待摊费用"], "page_markers": ["长期待摊费用"], "row_aliases": ["长期待摊费用", "合计"], "column_aliases": ["2025年6月30日", "期末余额"], "prefer_first_numeric": true, "format": "amount"},
+        "intangibles": {"kind": "semantic", "table_markers": ["专利费", "无形资产"], "page_markers": ["无形资产"], "row_aliases": ["合计"], "column_aliases": ["2025年6月30日", "期末余额"], "prefer_first_numeric": true, "format": "amount"}
+      }
+    }
+  ],
+  "yellow_routes": [
+    {"location_id": "DOCUMENT-P0088-H01", "field_key": "selected_valuation_method", "route_kind": "node_input", "replacement_mode": "replace_method_heading"},
+    {"location_id": "DOCUMENT-P0104-H01", "field_key": "commissioning_party_profile", "route_kind": "qichacha_api", "replacement_mode": "strip_yellow_annotation"},
+    {"location_id": "DOCUMENT-P0142-H01", "field_key": "ownership_history", "route_kind": "qichacha_api", "replacement_mode": "strip_yellow_only"},
+    {"location_id": "DOCUMENT-P0168-H01", "field_key": "ownership_at_valuation_date", "route_kind": "qichacha_api", "replacement_mode": "strip_yellow_annotation"},
+    {"location_id": "DOCUMENT-P0194-H01", "field_key": "historical_balance_sheet_table", "route_kind": "pdf_ocr_xlsx", "replacement_mode": "replace_paragraph"},
+    {"location_id": "DOCUMENT-P0212-H01", "field_key": "historical_income_statement_table", "route_kind": "pdf_ocr_xlsx", "replacement_mode": "replace_paragraph"},
+    {"location_id": "DOCUMENT-P0319-H01", "field_key": "tax_rates", "route_kind": "pdf_ocr_xlsx", "replacement_mode": "replace_paragraph"},
+    {"location_id": "DOCUMENT-P0320-H01", "field_key": "company_profile_section", "route_kind": "bailian_glm", "replacement_mode": "strip_yellow_only"},
+    {"location_id": "DOCUMENT-P0322-H01", "field_key": "industry_overview", "route_kind": "bailian_glm", "replacement_mode": "replace_paragraph"},
+    {"location_id": "DOCUMENT-P0323-H01", "field_key": "business_and_segments", "route_kind": "bailian_glm", "replacement_mode": "replace_paragraph"},
+    {"location_id": "DOCUMENT-P0324-H01", "field_key": "main_products", "route_kind": "bailian_glm", "replacement_mode": "replace_paragraph"},
+    {"location_id": "DOCUMENT-P0325-H01", "field_key": "customers_suppliers", "route_kind": "bailian_glm", "replacement_mode": "replace_paragraph"},
+    {"location_id": "DOCUMENT-P0326-H01", "field_key": "profit_model_swot", "route_kind": "bailian_glm", "replacement_mode": "replace_paragraph"},
+    {"location_id": "DOCUMENT-P0327-H01", "field_key": "comparable_list", "route_kind": "bailian_glm", "replacement_mode": "replace_paragraph"},
+    {"location_id": "DOCUMENT-P0328-H01", "field_key": "valuation_purpose_inputs", "route_kind": "node_input", "replacement_mode": "strip_yellow_annotation"},
+    {"location_id": "DOCUMENT-P0330-H01", "field_key": "valuation_scope", "route_kind": "pdf_ocr_xlsx", "replacement_mode": "strip_yellow_annotation"},
+    {"location_id": "DOCUMENT-P0361-H01", "field_key": "major_long_term_assets", "route_kind": "pdf_ocr_xlsx", "replacement_mode": "strip_yellow_only"},
+    {"location_id": "DOCUMENT-P0378-H01", "field_key": "unrecorded_intangibles", "route_kind": "qichacha_api", "replacement_mode": "strip_yellow_annotation"},
+    {"location_id": "DOCUMENT-P0409-H01", "field_key": "software_copyrights", "route_kind": "qichacha_api", "replacement_mode": "strip_yellow_annotation"},
+    {"location_id": "DOCUMENT-P0558-H01", "field_key": "asset_approach_result_section", "route_kind": "pdf_ocr_xlsx", "replacement_mode": "replace_paragraph"}
+  ],
+  "llm_fallback_fields": {
+    "company_profile_section": "通富热处理（昆山）有限公司系由上海上大热处理有限公司和富士和机械工业（昆山）有限公司出资组建的有限责任公司，于2011年2月25日成立，注册资本人民币1,000万元。公司经营范围为各类汽车零部件的热处理加工，并提供相关技术开发、技术咨询及售后服务。",
+    "industry_overview": "所处行业及行业介绍：公司所处业务属于汽车零部件热处理及金属表面处理服务领域。审计报告披露的经营范围包括各类汽车零部件热处理加工及相关技术服务。",
+    "business_and_segments": "业务内容及细分市场：公司开展汽车零部件热处理加工、技术开发、技术咨询及售后服务；审计报告同时披露其子公司通富新材料科技（仙桃）有限公司开展汽车零部件研发、金属表面处理及热处理加工等业务。",
+    "main_products": "主要产品：汽车零部件热处理加工服务，以及与热处理相关的技术开发、技术咨询和售后服务。",
+    "customers_suppliers": "主要客户、供应商：审计报告披露的主要客户包括富士和机械工业（昆山）有限公司、富士和机械工业（湖北）有限公司；主要供应商包括上海麦睿菱测量技术有限公司、兴化市恒鑫机械有限公司。",
+    "profit_model_swot": "盈利模式，SWOT分析：公司收入主要来自汽车零部件热处理加工及相关技术服务，2025年上半年审计报表列示主营业务收入21,652,412.25元。基于现有审计资料，公司具备既有客户和专业加工业务基础；成本、客户集中度、产能及市场竞争等优势、劣势、机会和威胁仍应结合现场及市场资料复核。",
+    "comparable_list": "对标上市公司（列表、相似性）：现有审计报告未披露可比上市公司清单，本次不据此新增外部可比公司。"
+  },
+  "ocr_fallback_fields": [
+    "historical_balance_sheet_table",
+    "historical_income_statement_table",
+    "tax_rates",
+    "major_long_term_assets",
+    "asset_approach_result_section"
+  ],
+  "ocr_prefer_material_fields": [],
+  "ocr_aux_fields": {
+    "long_term_fixed_assets": {"kind": "semantic", "page_markers": ["固定资产"], "row_aliases": ["账面价值"], "column_aliases": ["合计"], "format": "amount"},
+    "long_term_electronics": {"kind": "semantic", "page_markers": ["固定资产"], "row_aliases": ["账面价值"], "column_aliases": ["电子设备", "电力设备", "杂项设备"], "format": "amount"},
+    "long_term_intangibles": {"kind": "semantic", "table_markers": ["专利费", "无形资产"], "page_markers": ["无形资产"], "row_aliases": ["合计"], "column_aliases": ["2025年6月30日", "期末余额"], "prefer_first_numeric": true, "format": "amount"},
+    "long_term_deferred_expenses": {"kind": "semantic", "table_markers": ["长期待摊费用"], "page_markers": ["长期待摊费用"], "row_aliases": ["长期待摊费用", "合计"], "column_aliases": ["2025年6月30日", "期末余额"], "prefer_first_numeric": true, "format": "amount"}
+  },
+  "final_value_field": "income_approach_value",
+  "required_financial_fields": [
+    "registered_capital",
+    "balance_history_year_1",
+    "balance_history_year_2",
+    "balance_history_year_3",
+    "income_history_year_1",
+    "income_history_year_2",
+    "income_history_year_3",
+    "audit_report_name",
+    "tax_rates",
+    "main_products",
+    "financial_data_source_name",
+    "book_net_assets",
+    "income_approach_value",
+    "asset_approach_value",
+    "historical_balance_sheet_table",
+    "historical_income_statement_table",
+    "major_long_term_assets",
+    "asset_approach_result_section"
+  ],
+  "required_monetary_fields": [
+    "registered_capital",
+    "book_net_assets",
+    "income_approach_value",
+    "asset_approach_value",
+    "historical_balance_sheet_table",
+    "historical_income_statement_table",
+    "major_long_term_assets",
+    "asset_approach_result_section"
+  ],
+  "financial_fields": [
+    {
+      "field_key": "book_net_assets",
+      "source": "audited_financials",
+      "locator": "06N_资产负债表!L75",
+      "scale": 0.0001
+    },
+    {
+      "field_key": "income_approach_value",
+      "source": "income_workbook",
+      "locator": "净现金流计算表!C50",
+      "scale": 1
+    },
+    {
+      "field_key": "asset_approach_value",
+      "source": "reporting_workbook",
+      "locator": "表2!D61",
+      "scale": 0.0001
+    }
+  ],
+  "material_fields": [
+    {
+      "field_key": "registered_capital",
+      "template": "{capital}万元",
+      "inputs": {
+        "capital": {
+          "kind": "excel_cell",
+          "source": "audited_financials",
+          "locator": "06N_资产负债表!L48",
+          "scale": 0.0001,
+          "format": "amount"
+        }
+      }
+    },
+    {
+      "field_key": "balance_history_year_1",
+      "template": "{year}",
+      "inputs": {
+        "year": {"kind": "excel_cell", "source": "audited_financials", "locator": "06N_资产负债表!D3", "format": "year"}
+      }
+    },
+    {
+      "field_key": "balance_history_year_2",
+      "template": "{year}",
+      "inputs": {
+        "year": {"kind": "excel_cell", "source": "audited_financials", "locator": "06N_资产负债表!E3", "format": "year"}
+      }
+    },
+    {
+      "field_key": "balance_history_year_3",
+      "template": "{year}",
+      "inputs": {
+        "year": {"kind": "excel_cell", "source": "audited_financials", "locator": "06N_资产负债表!F3", "format": "year"}
+      }
+    },
+    {
+      "field_key": "income_history_year_1",
+      "template": "{year}",
+      "inputs": {
+        "year": {"kind": "excel_cell", "source": "audited_financials", "locator": "07N_利润表!C3", "format": "year"}
+      }
+    },
+    {
+      "field_key": "income_history_year_2",
+      "template": "{year}",
+      "inputs": {
+        "year": {"kind": "excel_cell", "source": "audited_financials", "locator": "07N_利润表!D3", "format": "year"}
+      }
+    },
+    {
+      "field_key": "income_history_year_3",
+      "template": "{year}",
+      "inputs": {
+        "year": {"kind": "excel_cell", "source": "audited_financials", "locator": "07N_利润表!E3", "format": "year"}
+      }
+    },
+    {
+      "field_key": "audit_report_name",
+      "template": "{name}",
+      "inputs": {
+        "name": {"kind": "file_stem", "source": "audit_pdf"}
+      }
+    },
+    {
+      "field_key": "tax_rates",
+      "template": "被评估单位执行《企业会计准则》，适用增值税税率为{vat}、企业所得税税率{income_tax}，城市维护建设税、教育费附加、地方教育费附加分别按应缴流转税额的{city_tax}、{education_tax}、{local_education_tax}计缴。",
+      "inputs": {
+        "vat": {"kind": "excel_cell", "source": "income_workbook", "locator": "主要产品及服务!D5", "format": "percent"},
+        "income_tax": {"kind": "excel_cell", "source": "income_workbook", "locator": "所得税表!G42", "format": "percent"},
+        "city_tax": {"kind": "document_table_cell", "source": "reference_report", "table_contains": "城市维护建设税", "row_contains": "城市维护建设税", "column": 2},
+        "education_tax": {"kind": "document_table_cell", "source": "reference_report", "table_contains": "城市维护建设税", "row_contains": "教育费附加", "column": 2},
+        "local_education_tax": {"kind": "document_table_cell", "source": "reference_report", "table_contains": "城市维护建设税", "row_contains": "地方教育费附加", "column": 2}
+      }
+    },
+    {
+      "field_key": "main_products",
+      "template": "主要产品及服务：{products}。",
+      "inputs": {
+        "products": {"kind": "excel_range_unique", "source": "income_workbook", "locator": "主要产品及服务!C5:C9", "joiner": "、"}
+      }
+    },
+    {
+      "field_key": "financial_data_source_name",
+      "template": "{name}",
+      "inputs": {
+        "name": {"kind": "file_stem", "source": "audit_pdf"}
+      }
+    },
+    {
+      "field_key": "asset_approach_result_section",
+      "template": "（二）资产基础法评估结果：净资产账面价值{book_value}万元，评估价值{appraised_value}万元，增值{increase}万元，增值率{increase_rate}。",
+      "inputs": {
+        "book_value": {"kind": "excel_cell", "source": "reporting_workbook", "locator": "表1!C31", "format": "amount"},
+        "appraised_value": {"kind": "excel_cell", "source": "reporting_workbook", "locator": "表1!D31", "format": "amount"},
+        "increase": {"kind": "excel_cell", "source": "reporting_workbook", "locator": "表1!E31", "format": "amount"},
+        "increase_rate": {"kind": "excel_cell", "source": "reporting_workbook", "locator": "表1!F31", "format": "percent"}
+      }
+    },
+    {
+      "field_key": "major_long_term_assets",
+      "template": "（一）被评估单位主要长期资产的账面记录情况如下：截至评估基准日，长期股权投资账面价值{long_term_equity}元；固定资产账面净值{fixed_assets}元，其中机器设备{machinery}元、车辆{vehicles}元、电子设备{electronics}元；长期待摊费用账面价值{deferred_expenses}元；无形资产账面价值{intangibles}元。",
+      "inputs": {
+        "long_term_equity": {"source": "audited_financials", "locator": "06N_资产负债表!F34", "format": "amount"},
+        "fixed_assets": {"source": "reporting_workbook", "locator": "表4-6!E17", "format": "amount"},
+        "machinery": {"source": "reporting_workbook", "locator": "表4-6!E13", "format": "amount"},
+        "vehicles": {"source": "reporting_workbook", "locator": "表4-6!E14", "format": "amount"},
+        "electronics": {"source": "reporting_workbook", "locator": "表4-6!E15", "format": "amount"},
+        "deferred_expenses": {"source": "audited_financials", "locator": "06N_资产负债表!F46", "format": "amount"},
+        "intangibles": {"source": "reporting_workbook", "locator": "表4-12!D13", "format": "amount"}
+      }
+    },
+    {
+      "field_key": "single_asset_liability_summary",
+      "template": "单体层面各类资产负债的金额为：{summary}",
+      "inputs": {
+        "summary": {
+          "kind": "excel_cells_summary",
+          "source": "audited_financials",
+          "joiner": "；",
+          "cells": {
+            "货币资金": {"locator": "06N_资产负债表!F5"},
+            "应收账款": {"locator": "06N_资产负债表!F11"},
+            "预付款项": {"locator": "06N_资产负债表!F13"},
+            "其他应收款": {"locator": "06N_资产负债表!F17"},
+            "存货": {"locator": "06N_资产负债表!F21"},
+            "流动资产合计": {"locator": "06N_资产负债表!F28"},
+            "长期股权投资": {"locator": "06N_资产负债表!F34"},
+            "固定资产": {"locator": "06N_资产负债表!F38"},
+            "长期待摊费用": {"locator": "06N_资产负债表!F46"},
+            "非流动资产合计": {"locator": "06N_资产负债表!F49"},
+            "资产总计": {"locator": "06N_资产负债表!F76"},
+            "应付账款": {"locator": "06N_资产负债表!L12"},
+            "应付职工薪酬": {"locator": "06N_资产负债表!L17"},
+            "应交税费": {"locator": "06N_资产负债表!L20"},
+            "其他应付款": {"locator": "06N_资产负债表!L22"},
+            "负债合计": {"locator": "06N_资产负债表!L46"},
+            "所有者权益合计": {"locator": "06N_资产负债表!L75"}
+          }
+        }
+      }
+    },
+    {
+      "field_key": "unrecorded_intangibles",
+      "template": "（二）账外无形资产情况：{patent_summary}",
+      "inputs": {
+        "patent_summary": {
+          "kind": "document_paragraph",
+          "source": "reference_report",
+          "contains": "被评估单位持有84项专利，其中在用专利63项",
+          "strip_suffix": "，明细如下："
+        }
+      }
+    },
+    {
+      "field_key": "trademark_summary",
+      "template": "1、商标：{status}",
+      "inputs": {
+        "status": {
+          "kind": "excel_range_zero_status",
+          "source": "income_workbook",
+          "locator": "折旧摊销附表!E40:N40",
+          "zero_text": "现有材料未见商标申报记录。",
+          "nonzero_text": "商标相关数据已在收益法工作簿中列示，需按明细复核。"
+        }
+      }
+    },
+    {
+      "field_key": "software_copyrights",
+      "template": "2、软件著作权：{status}",
+      "inputs": {
+        "status": {
+          "kind": "document_presence_status",
+          "source": "reference_report",
+          "contains": "除申报的账外固定资产和有效专利以外被估值单位无其他账外有形及无形资产",
+          "found_text": "现有材料未见软件著作权申报记录。"
+        }
+      }
+    }
+  ],
+  "paragraph_replacements": [
+    {"part": "word/document.xml", "paragraph_index": 104, "value": "（一）委托人："},
+    {
+      "part": "word/document.xml",
+      "paragraph_index": 122,
+      "template": "被评估单位名称：{target_company_name}（以下简称：{target_company_short_name}）"
+    },
+    {
+      "part": "word/document.xml",
+      "paragraph_index": 143,
+      "template": "{founding_shareholder_1}、{founding_shareholder_2}共同出资设立{target_company_name}并签订《发起人协议》，注册资本{registered_capital}人民币，具体情况如下：",
+      "blank_if_empty": "founding_shareholder_1"
+    },
+    {
+      "part": "word/document.xml",
+      "paragraph_index": 168,
+      "value": "截至评估基准日，股东及股权情况仍为："
+    },
+    {
+      "part": "word/document.xml",
+      "paragraph_index": 484,
+      "template": "（二）{asset_approach_method_label}介绍"
+    },
+    {
+      "part": "word/document.xml",
+      "paragraph_index": 485,
+      "value": "资产基础法是指以被评估单位评估基准日的资产负债表为基础，对企业各项资产、负债价值逐项清查、逐项评估，最终采用评估总资产价值扣减评估总负债价值，确定评估对象价值的方法。"
+    },
+    {
+      "part": "word/document.xml",
+      "paragraph_index": 486,
+      "value": "采用资产基础法评估时，应根据各项资产的具体情况选择适当的评估方法，逐项确定资产和负债的评估价值。"
+    },
+    {
+      "part": "word/document.xml",
+      "paragraph_index": 487,
+      "value": "资产基础法的评估结果能够反映被评估单位评估基准日各项资产、负债的重置或市场价值情况。"
+    },
+    {
+      "part": "word/document.xml",
+      "paragraph_index": 559,
+      "template": "采用{asset_approach_method_label}对企业{target_company_name}价值进行评估，得出被评估单位在评估基准日的评估结果如下："
+    },
+    {
+      "part": "word/document.xml",
+      "paragraph_index": 332,
+      "field_key": "valuation_scope"
+    },
+    {
+      "part": "word/document.xml",
+      "paragraph_index": 420,
+      "template": "被评估单位办公用房位于{office_address}，系租赁使用，已在使用权资产科目核算。",
+      "blank_if_empty": "office_address"
+    },
+    {
+      "part": "word/document.xml",
+      "paragraph_index": 379,
+      "template": "截止报告出具日，{target_company_name}申报的账外无形资产情况如下："
+    },
+    {
+      "part": "word/document.xml",
+      "paragraph_index": 380,
+      "value": "1、已申请注册的商标"
+    }
+  ],
+  "asset_scope_summary_table": {
+      "field_key": "asset_scope_summary_table",
+      "source": "audited_financials",
+      "sheet": "06N_资产负债表",
+      "target_table_index": 6,
+      "caption": "被评估单位资产负债账面记录情况",
+      "source_locator": "06N_资产负债表!F28、F34、F38、F43、F46、F49、L32、L45、L46、L75",
+      "include_header": false,
+      "header": ["", "账面金额（元）"],
+      "rows": [
+        {"label": "流动资产账面金额：", "cells": ["F28"]},
+        {"label": "非流动资产账面金额：", "cells": ["F49"]},
+        {"label": "其中：固定资产账面金额：", "cells": ["F38"], "ocr_field_key": "long_term_fixed_assets"},
+        {"label": "无形资产账面金额：", "cells": ["F43"], "ocr_field_key": "long_term_intangibles", "blank": "0.00"},
+        {"label": "使用权资产账面金额：", "cells": ["F42"], "blank": "0.00"},
+        {"label": "长期待摊费用账面金额：", "cells": ["F46"], "ocr_field_key": "long_term_deferred_expenses"},
+        {"label": "递延所得税资产账面金额：", "cells": ["F47"], "blank": "0.00"},
+        {"label": "其他非流动资产账面金额：", "cells": ["F48"], "blank": "0.00"},
+        {"label": "资产合计账面金额：", "cells": ["F76"]},
+        {"label": "流动负债账面金额：", "cells": ["L32"]},
+        {"label": "非流动负债账面金额：", "cells": ["L45"], "blank": "0.00"},
+        {"label": "负债合计账面金额：", "cells": ["L46"]},
+        {"label": "所有者权益账面金额：", "cells": ["L75"]}
+      ]
+    },
+  "historical_ownership_table": {
+      "target_table_index": 2,
+      "header": ["序号", "股东名称", "总出资（元）", "股权比例"],
+      "source_locator": "OCR_表格：按‘出资方/余额’表头自动识别",
+      "table_markers": ["出资方", "余额"],
+      "page_markers": ["出资方", "股东"]
+    },
+  "long_term_assets_table": {
+      "target_table_index": 7,
+      "rows": [
+        {"label": "电子设备", "source": "reporting_workbook", "locator": "表4-6!E15", "ocr_field_key": "long_term_electronics", "quantity": "58项", "condition": "生产车间及办公室，正常"},
+        {"label": "无形资产", "source": "reporting_workbook", "locator": "表4-12!D13", "ocr_field_key": "long_term_intangibles", "quantity": "", "condition": "账面无形资产为0"},
+        {"label": "长期待摊费用", "source": "audited_financials", "locator": "06N_资产负债表!F46", "ocr_field_key": "long_term_deferred_expenses", "quantity": "23项", "condition": "按受益期摊销"}
+      ]
+    },
+  "financial_tables": [
+    {
+      "field_key": "historical_balance_sheet_table",
+      "source": "audited_financials",
+      "sheet": "06N_资产负债表",
+      "target_table_index": 4,
+      "caption": "通富热处理（昆山）有限公司近年资产负债状况见下表：",
+      "source_locator": "06N_资产负债表!D3:F3、D76:F76、J46:L46、J75:L75",
+      "header": ["项目\\报表日", "2023年12月31日", "2024年12月31日", "2025年6月30日"],
+      "rows": [
+        {"label": "总资产", "cells": ["D76", "E76", "F76"]},
+        {"label": "负债", "cells": ["J46", "K46", "L46"]},
+        {"label": "所有者权益", "cells": ["J75", "K75", "L75"]}
+      ]
+    },
+    {
+      "field_key": "historical_income_statement_table",
+      "source": "audited_financials",
+      "sheet": "07N_利润表",
+      "target_table_index": 5,
+      "caption": "通富热处理（昆山）有限公司近年经营状况见下表（利润表）：",
+      "source_locator": "07N_利润表!C3:E35、H3:J7",
+      "header": ["项目\\报表年度", "2023年度", "2024年度", "2025年1-6月"],
+      "rows": [
+        {"label": "一、营业收入", "cells": ["C4", "D4", "E4"]},
+        {"label": "减：营业成本", "cells": ["C10", "D10", "E10"]},
+        {"label": "税金及附加", "cells": ["C18", "D18", "E18"]},
+        {"label": "销售费用", "cells": ["C19", "D19", "E19"], "blank": "-"},
+        {"label": "管理费用", "cells": ["C20", "D20", "E20"]},
+        {"label": "研发费用", "cells": ["C21", "D21", "E21"]},
+        {"label": "财务费用", "cells": ["C22", "D22", "E22"]},
+        {"label": "加：投资收益", "cells": ["C26", "D26", "E26"]},
+        {"label": "二、营业利润", "cells": ["C34", "D34", "E34"]},
+        {"label": "加：营业外收入", "cells": ["C35", "D35", "E35"]},
+        {"label": "减：营业外支出", "cells": ["H4", "I4", "J4"]},
+        {"label": "三、利润总额", "cells": ["H5", "I5", "J5"]},
+        {"label": "减：所得税费用", "cells": ["H6", "I6", "J6"]},
+        {"label": "四、净利润", "cells": ["H7", "I7", "J7"]}
+      ]
+    }
+  ]
+}

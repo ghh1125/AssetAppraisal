@@ -1,0 +1,12 @@
+{
+  "version": "financial_aliases.v1",
+  "aliases": {
+    "total_assets": ["总资产", "资产总计", "资产合计"],
+    "total_liabilities": ["总负债", "负债总计", "负债合计"],
+    "owners_equity": ["所有者权益", "股东权益", "所有者权益合计"],
+    "operating_revenue": ["营业收入", "主营业务收入"],
+    "operating_cost": ["营业成本", "主营业务成本"],
+    "total_profit": ["利润总额"],
+    "net_profit": ["净利润", "净利润（净亏损以“-”号填列）"]
+  }
+}

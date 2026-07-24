@@ -1,0 +1,108 @@
+[
+  {
+    "id": "transposed_layout",
+    "operation": "match",
+    "input": {
+      "cells": [
+        {"row": 1, "column": 1, "text": "项目"}, {"row": 1, "column": 2, "text": "资产合计"},
+        {"row": 2, "column": 1, "text": "2025年6月30日"}, {"row": 2, "column": 2, "text": "100"}
+      ],
+      "aliases": {"total_assets": ["资产合计"]}, "unit": "元"
+    }
+  },
+  {
+    "id": "asset_total_alias",
+    "operation": "match",
+    "input": {
+      "cells": [
+        {"row": 1, "column": 1, "text": "项目"}, {"row": 1, "column": 2, "text": "2025年6月30日"},
+        {"row": 2, "column": 1, "text": "资产总计"}, {"row": 2, "column": 2, "text": "200"}
+      ],
+      "aliases": {"total_assets": ["总资产", "资产总计"]}, "unit": "元"
+    }
+  },
+  {
+    "id": "liability_alias",
+    "operation": "match",
+    "input": {
+      "cells": [
+        {"row": 1, "column": 1, "text": "项目"}, {"row": 1, "column": 2, "text": "2024年度"},
+        {"row": 2, "column": 1, "text": "负债合计"}, {"row": 2, "column": 2, "text": "300"}
+      ],
+      "aliases": {"total_liabilities": ["总负债", "负债合计"]}, "unit": "元"
+    }
+  },
+  {
+    "id": "period_alias",
+    "operation": "match",
+    "input": {
+      "cells": [
+        {"row": 1, "column": 1, "text": "项目"}, {"row": 1, "column": 2, "text": "期末余额"},
+        {"row": 2, "column": 1, "text": "资产合计"}, {"row": 2, "column": 2, "text": "400"}
+      ],
+      "aliases": {"total_assets": ["资产合计"]}, "unit": "元",
+      "period_aliases": {"期末余额": "2025-06-30"}
+    }
+  },
+  {
+    "id": "detected_yuan_unit",
+    "operation": "match",
+    "input": {
+      "cells": [
+        {"row": 1, "column": 1, "text": "单位：元"}, {"row": 1, "column": 2, "text": "2025年6月30日"},
+        {"row": 2, "column": 1, "text": "资产合计"}, {"row": 2, "column": 2, "text": "500"}
+      ],
+      "aliases": {"total_assets": ["资产合计"]}
+    }
+  },
+  {
+    "id": "detected_thousand_yuan_unit",
+    "operation": "match",
+    "input": {
+      "cells": [
+        {"row": 1, "column": 1, "text": "单位：千元"}, {"row": 1, "column": 2, "text": "2025年6月30日"},
+        {"row": 2, "column": 1, "text": "资产合计"}, {"row": 2, "column": 2, "text": "6.5"}
+      ],
+      "aliases": {"total_assets": ["资产合计"]}
+    }
+  },
+  {
+    "id": "split_negative_sign",
+    "operation": "match",
+    "input": {
+      "cells": [
+        {"row": 1, "column": 1, "text": "项目"}, {"row": 1, "column": 2, "text": "2025年1-6月"},
+        {"row": 2, "column": 1, "text": "净利润"}, {"row": 2, "column": 2, "text": "- 1，234.50"}
+      ],
+      "aliases": {"net_profit": ["净利润"]}, "unit": "元"
+    }
+  },
+  {
+    "id": "fullwidth_ocr_commas",
+    "operation": "match",
+    "input": {
+      "cells": [
+        {"row": 1, "column": 1, "text": "项目"}, {"row": 1, "column": 2, "text": "2025年6月30日"},
+        {"row": 2, "column": 1, "text": "资产合计"}, {"row": 2, "column": 2, "text": "１２３，４５６．７８"}
+      ],
+      "aliases": {"total_assets": ["资产合计"]}, "unit": "元"
+    }
+  },
+  {
+    "id": "missing_required_field",
+    "operation": "validate",
+    "input": {"data": {"total_assets": {"2025-06-30": 1}}, "required_fields": ["total_assets", "net_profit"]}
+  },
+  {
+    "id": "duplicate_conflicting_candidates",
+    "operation": "match",
+    "input": {
+      "cells": [
+        {"row": 1, "column": 1, "text": "项目"}, {"row": 1, "column": 2, "text": "2025年6月30日"},
+        {"row": 2, "column": 1, "text": "资产合计"}, {"row": 2, "column": 2, "text": "700"},
+        {"row": 3, "column": 1, "text": "资产总计"}, {"row": 3, "column": 2, "text": "701"}
+      ],
+      "aliases": {"total_assets": ["资产合计", "资产总计"]}, "unit": "元"
+    }
+  }
+]

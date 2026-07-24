@@ -1,0 +1,32 @@
+{
+  "version": "narrative_output.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["fields"],
+  "properties": {
+    "fields": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "company_profile_section": {"$ref": "#/$defs/narrative_field"},
+        "industry_overview": {"$ref": "#/$defs/narrative_field"},
+        "business_and_segments": {"$ref": "#/$defs/narrative_field"},
+        "main_products": {"$ref": "#/$defs/narrative_field"},
+        "customers_suppliers": {"$ref": "#/$defs/narrative_field"},
+        "profit_model_swot": {"$ref": "#/$defs/narrative_field"},
+        "comparable_list": {"$ref": "#/$defs/narrative_field"}
+      }
+    }
+  },
+  "$defs": {
+    "narrative_field": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "evidence_ids"],
+      "properties": {
+        "value": {"type": "string"},
+        "evidence_ids": {"type": "array", "items": {"type": "string"}}
+      }
+    }
+  }
+}

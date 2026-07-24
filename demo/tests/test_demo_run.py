@@ -1,0 +1,109 @@
+import hashlib
+import json
+import re
+import zipfile
+from pathlib import Path
+
+from docx import Document
+from openpyxl import load_workbook
+
+from demo.run import run_project
+
+
+class FakeLlm:
+    def generate(self, evidence):
+        assert evidence["target_company_name"]
+        return {"company_profile_section": "由注入服务生成的公司简介"}, []
+
+
+def test_offline_real_template_run_creates_new_report_and_audit(tmp_path: Path):
+    config = Path("demo/projects/tongfu.yaml")
+    template = Path("资产评估工作流/评估报告版式-沟通标注版.docx")
+    before = hashlib.sha256(template.read_bytes()).hexdigest()
+    result = run_project(config, output_dir=tmp_path, offline=True)
+    assert hashlib.sha256(template.read_bytes()).hexdigest() == before
+    assert result.report_path.exists() and result.report_path.resolve() != template.resolve()
+    assert result.audit_path.exists()
+    assert (tmp_path / "run_manifest.json").exists()
+    assert (tmp_path / "issues.json").exists()
+    with zipfile.ZipFile(result.report_path) as zf:
+        xml = "".join(zf.read(name).decode("utf-8") for name in zf.namelist() if re.fullmatch(r"word/(document|header\d+|footer\d+)\.xml", name))
+    assert not re.search(r"X{2,}", xml)
+    assert "企查查API获取" not in xml
+
+
+def test_offline_run_leaves_missing_fields_blank_and_fills_material_assets(tmp_path: Path):
+    result = run_project(Path("demo/projects/tongfu.yaml"), output_dir=tmp_path, offline=True)
+    text = "\n".join(paragraph.text for paragraph in Document(result.report_path).paragraphs)
+    fields = json.loads((tmp_path / "normalized_fields.json").read_text(encoding="utf-8"))
+    assert "【待人工补充：" not in text
+    assert "前海联合基金" not in text
+    assert fields["valuation_scope"] == ""
+    assert "三、评估对象和评估范围" in text
+    assert "长期股权投资账面价值8,400,000.00元" not in text
+    assert "固定资产账面净值4,993,561.04元" not in text
+    assert "长期待摊费用账面价值1,788,311.49元" not in text
+    assert "现有材料未见商标申报记录" in fields["trademark_summary"]
+    assert "持有84项专利，其中在用专利63项" in text
+    assert not fields["unrecorded_intangibles"].endswith("明细如下：")
+
+    # The paragraph is only the table lead-in; all balance-sheet amounts
+    # belong in the following configured asset/liability table.
+    assert "单体层面各类资产负债的金额为：" in text
+    assert "单体层面各类资产负债的金额为：货币资金" not in text
+    balance_table = Document(result.report_path).tables[6]
+    balance_text = "\n".join(cell.text for row in balance_table.rows for cell in row.cells)
+    assert "流动资产账面金额" in balance_text
+    assert "148,537,259.26" in balance_text
+    long_asset_table = Document(result.report_path).tables[7]
+    long_asset_text = "\n".join(cell.text for row in long_asset_table.rows for cell in row.cells)
+    assert "419,017.57" in long_asset_text
+    assert "1,788,311.49" in long_asset_text
+    software_table = Document(result.report_path).tables[9]
+    assert software_table.rows[0].cells[1].text == "软件名称"
+
+
+def test_offline_run_fills_every_configured_financial_material_field(tmp_path: Path):
+    config_path = Path("demo/projects/tongfu.yaml")
+    result = run_project(config_path, output_dir=tmp_path, offline=True)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    fields = json.loads((tmp_path / "normalized_fields.json").read_text(encoding="utf-8"))
+
+    for key in config["required_financial_fields"]:
+        assert fields[key] not in (None, "", []), key
+        assert not any(issue.startswith(f"{key}：") for issue in result.issues)
+
+    assert fields["registered_capital"] == "1,000.00万元"
+    assert [fields[f"balance_history_year_{index}"] for index in range(1, 4)] == ["2023", "2024", "2025"]
+    assert [fields[f"income_history_year_{index}"] for index in range(1, 4)] == ["2023", "2024", "2025"]
+    assert fields["audit_report_name"] == "通富2025.6.30合并及母公司审计报告"
+    assert "增值税税率为13%" in fields["tax_rates"]
+    assert "企业所得税税率15%" in fields["tax_rates"]
+    assert "热处理" in fields["main_products"]
+    assert "6,365.04万元" in fields["asset_approach_result_section"]
+    assert "1,766.88万元" in fields["asset_approach_result_section"]
+    assert "38.43%" in fields["asset_approach_result_section"]
+
+    report_text = "\n".join(paragraph.text for paragraph in Document(result.report_path).paragraphs)
+    assert "、共同出资设立" not in report_text
+    assert "有限公司、有限公司共同出资" not in report_text
+
+    audit = load_workbook(result.audit_path, read_only=True, data_only=True)
+    rows = list(audit["填充结果"].iter_rows(min_row=2, values_only=True))
+    year_row = next(row for row in rows if row[4] == "balance_history_year_1")
+    assert year_row[7] == "ocr_xlsx"
+    assert "通富审核后财报-单体1月5日.xlsx" in year_row[8]
+    assert "通富2025.6.30合并及母公司审计报告.pdf" in year_row[8]
+
+
+def test_non_offline_run_uses_injected_provider_without_domain_dependency(tmp_path: Path):
+    result = run_project(
+        Path("demo/projects/tongfu.yaml"),
+        output_dir=tmp_path,
+        offline=False,
+        report_date="2026-07-22",
+        llm_adapter=FakeLlm(),
+    )
+    fields = json.loads((tmp_path / "normalized_fields.json").read_text(encoding="utf-8"))
+    assert fields["company_profile_text"] == "由注入服务生成的公司简介"
+    assert not any(issue.startswith("company_profile_text：") for issue in result.issues)

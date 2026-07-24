@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "asset-appraisal-demo"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+  "lxml>=5,<7",
+  "openpyxl>=3.1,<4",
+  "pydantic>=2.8,<3",
+  "python-docx>=1.1,<2",
+]
+
+[project.optional-dependencies]
+services = ["httpx>=0.27,<1", "PyMuPDF>=1.24,<2"]
+web = ["fastapi>=0.115,<1", "python-multipart>=0.0.20,<1", "uvicorn>=0.34,<1"]
+ocr = [
+  "paddleocr>=3,<4; python_version < '3.13'",
+  "paddlepaddle>=3,<4; python_version < '3.13'",
+  "paddlex[ocr]>=3.7,<4; python_version < '3.13'",
+]
+dev = ["pytest>=8,<10"]
+
+[tool.setuptools.packages.find]
+include = ["demo*"]
+
+[tool.setuptools.package-data]
+demo = [
+  "prompts/*.txt",
+  "prompts/*.json",
+  "workflow.yaml",
+  "data_manifest.yaml",
+  "rules/*.yaml",
+  "mappings/*.yaml",
+  "projects/*.yaml",
+  "fixtures/*.yaml",
+  "expected/*.yaml",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["demo/tests"]
+addopts = "-q"
