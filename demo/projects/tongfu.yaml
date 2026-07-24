@@ -1,6 +1,6 @@
 {
   "project_id": "tongfu_20250630",
-  "template": "../../资产评估工作流/评估报告版式-沟通标注版.docx",
+  "template": "../../templates/评估报告版式-沟通标注版.docx",
   "mapping": "../mappings/appraisal_report_v1.yaml",
   "manual_inputs": "tongfu.manual.example.yaml",
   "sources": {

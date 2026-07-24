@@ -20,6 +20,8 @@ uv sync --extra dev
 
 完整流程、配置格式、前端启动和 c2m 接入方式见 [demo/README.md](demo/README.md)。
 
+仓库内的标准 Word 模板位于 `templates/评估报告版式-沟通标注版.docx`。审计 PDF、Excel 和参考报告仍需由本地用户自行提供，不随仓库提交。
+
 ## 需要的外部服务及获取方式
 
 ### 企查查
@@ -67,7 +69,7 @@ PDF OCR 使用 PaddleOCR/PP-StructureV3。若同一 PDF 的 SHA-256 已命中 OC
 ```bash
 uv run --python 3.11 python -m demo.run demo/projects/tongfu.yaml \
   --pdf "资产评估工作流/审计报告.pdf" \
-  --template "资产评估工作流/评估报告模板.docx" \
+  --template "templates/评估报告版式-沟通标注版.docx" \
   --output-dir runs/local \
   --use-glm --use-qichacha \
   --commissioning-party-name "委托方全称" \

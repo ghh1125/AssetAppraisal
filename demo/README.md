@@ -35,7 +35,7 @@ uv python install 3.11
 uv sync --python 3.11 --extra dev --extra ocr --extra services
 uv run --python 3.11 python -m demo.run demo/projects/tongfu.yaml \
   --pdf '资产评估工作流/通富2025.6.30合并及母公司审计报告.pdf' \
-  --template '资产评估工作流/评估报告版式-沟通标注版.docx' \
+  --template 'templates/评估报告版式-沟通标注版.docx' \
   --output-dir runs/tongfu-ocr --ocr-engine paddle --use-glm --use-qichacha \
   --commissioning-party-name '委托方全称' \
   --commissioning-party-short-name '委托方简称' \
