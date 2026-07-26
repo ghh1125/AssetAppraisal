@@ -39,3 +39,15 @@ def test_schema_exposes_explicit_business_required_metadata():
     assert schema["properties"]["template_path"]["x-是否必填"] == "是"
     optional_schema = schemas.ResolvedField.model_json_schema()
     assert optional_schema["properties"]["evidence"]["x-是否必填"] == "否"
+
+
+def test_manifest_registers_contract_trace_and_review_schema_versions():
+    manifest = json.loads(
+        Path("demo/data_manifest.yaml").read_text(encoding="utf-8")
+    )
+    versions = manifest["rule_versions"]
+
+    assert versions["workflow_contract"] == "workflow_contract.v1"
+    assert versions["workflow_trace"] == "workflow_trace.v1"
+    assert versions["narrative_policy"] == "narrative_policy.v1"
+    assert versions["review_output_schema"] == "review_output.v1"

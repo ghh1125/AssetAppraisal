@@ -18,7 +18,7 @@
 10. `review_aggregate`：汇总三类审核结果和问题。
 11. `export_audit`：导出字段来源清单和运行记录。
 
-人工检查点位于最后一步：评估师审核生成 Word、字段审计清单和三类 LLM 审核问题。
+运行前会校验 `workflow.yaml` 中每个节点引用的 Pydantic 输入输出模型、依赖关系和字段业务说明；契约无效时在 OCR、API、LLM 和 Word 调用前终止。人工检查点包括主体概况模块选择、三类审核问题确认及最终 Word/审计清单复核。
 
 ## 安装与运行
 
@@ -77,6 +77,8 @@ uv run --python 3.11 python -m demo.run demo/projects/tongfu.yaml \
 - `格式审核.json`、`数据校验.json`、`语义审核.json`
 - `审核汇总.json`
 - `run_manifest.json`
+- `workflow_trace.json`
+  - 按 `workflow.yaml` 顺序记录 13 个节点的执行/跳过状态、输入输出模型、结构化摘要、人工检查点、来源证据、问题以及规则/Prompt/模型/数据版本。
 
 ## Vue 前端工作台
 
@@ -97,17 +99,18 @@ npm run dev
 
 页面提交的字段与命令行参数一一对应：委托方全称/简称、评估主体全称/简称、报告编号流水号、评估目的、评估方法（资产基础法/收益法/市场法多选）、评估对象（四选一）、委托类型（转让/收购/增资/减资）、评估结论采用方法（单选）和六类主体概况模块。报告编号可以输入完整编号，程序会提取模板所需的流水号并同步所有报告编号年份。企查查、百炼和 PDF OCR/XLSX 不要求用户在页面重复填写。
 
-字段审计清单逐行记录原模板页码、稳定位置编号、原文上下文、程序填入内容、来源类别、来源文件和来源位置。原模板页码由 LibreOffice 只读渲染模板后按段落顺序匹配得到；页脚标记为“多页页脚”。OCR、API、LLM、财务数据及评估结论的正确性由业务人员人工审核。
+字段审计清单逐行记录原模板页码、稳定位置编号、原文上下文、程序填入内容、来源类别、来源文件和来源位置。原模板页码由 LibreOffice 只读渲染模板后按段落顺序匹配得到；页脚标记为“多页页脚”。`workflow_trace.json` 记录节点级契约执行情况，不复制 OCR 全文，也不记录 API 密钥。OCR、API、LLM、财务数据及评估结论的正确性由业务人员人工审核。
 
 `OCR结构化结果.xlsx` 固定包含 `OCR_文本`、`OCR_表格`、`标准财务数据`、`识别问题` 四个工作表，保存页码、行列、坐标、置信度和证据编号。`run_manifest.json` 保存模板/PDF 哈希、黄色路由版本、财务规则版本、Prompt 版本和全部输出路径。原 Word 仅作模板，输出路径与模板相同时程序拒绝运行。
 
 ## 失败与人工审核策略
 
 - OCR 失败或某个黄色指定来源无结果：记录到 `issues.json`，对应黄色内容留空。
+- `workflow.yaml` 节点、模型、字段说明或依赖不符合契约：在任何外部调用前停止运行。
 - 本机无 LibreOffice 或 PyMuPDF：Word 仍可生成，字段审计表的原模板页码留空并记录问题。
 - 金额及财务结果必填字段缺失：停止生成 Word；同字段同期间出现冲突候选时不自动选择，由 c2m 或评估师处理。
 - 百炼叙述返回越权字段、无证据字段或未知证据编号：丢弃该字段并记录问题。
-- 任一 LLM 审核失败：报告仍保留，审核结果标记为 `failed`，并记录到 `issues.json`，由人工复核。
+- 任一 LLM 审核失败：报告仍保留，审核结果标记为 `failed`，其他审核继续；未启用的审核在轨迹中标记为 `skipped`。
 - 企查查 API 未配置或企业身份核验不一致：对应 API 字段留空并记录复核事项。
 - 已有同一 PDF 的 OCR 结果：默认复用缓存，不重复执行 OCR；取消“复用已有 OCR 结果”后才会强制重新 OCR。
 - 生成完成：评估师同时审核 Word、字段审计清单和 OCR Excel；Demo 验收不代表生产上线。
@@ -127,4 +130,4 @@ npm run dev
 
 ## c2m 接入资产
 
-生产接入优先复用：`schemas.py`、`domain/`、`prompts/`、`mappings/`、`fixtures/`、`expected/`、`tests/`、`workflow.yaml` 和 `data_manifest.yaml`。`run.py` 与 `adapters/` 仅用于 Demo 运行和接口示例，可由 c2m 的 FastAPI、后台任务、存储和安全体系替换。
+生产接入优先复用：`schemas.py`、`domain/`、`prompts/`、`mappings/`、`fixtures/`、`expected/`、`tests/`、`workflow.yaml` 和 `data_manifest.yaml`。c2m 可以消费 `workflow_trace.json` 和字段审计清单完成任务状态及审计接入；`run.py`、`pipeline.py`、`api_server.py` 与 `adapters/` 仍是 Demo 外壳，可由 c2m 的用户权限、后台任务、持久化、对象存储、超时重试、监控和发布体系替换。

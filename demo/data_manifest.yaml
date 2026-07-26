@@ -1,10 +1,14 @@
 {
-  "version": "2026-07-24.1",
+  "version": "2026-07-26.1",
   "rule_versions": {
+    "workflow_contract": "workflow_contract.v1",
+    "workflow_trace": "workflow_trace.v1",
+    "narrative_policy": "narrative_policy.v1",
     "yellow_routes": "yellow_routes.v1",
     "financial_aliases": "financial_aliases.v1",
     "prompt": "yellow_narratives.v1",
-    "output_schema": "yellow_narratives_output.v1"
+    "output_schema": "yellow_narratives_output.v1",
+    "review_output_schema": "review_output.v1"
   },
   "sources": [
     {"name":"评估报告版式-沟通标注版.docx","purpose":"只读资产评估报告模板","version":"当前留存版","update_method":"项目负责人替换模板并重新生成映射","missing_behavior":"终止运行，无法生成 Word"},
