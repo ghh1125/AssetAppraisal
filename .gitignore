@@ -22,3 +22,4 @@ frontend/.env.*
 # OCR workbooks, API responses or other identifiable business information.
 资产评估工作流/
 docs/superpowers/
+.worktrees/
