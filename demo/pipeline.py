@@ -22,6 +22,10 @@ from demo.domain.review import aggregate_reviews
 from demo.domain.field_validation import normalize_narrative_modules, normalize_valuation_methods, require_financial_fields
 from demo.domain.field_validation import validate_valuation_subject_type
 from demo.domain.mapping import validate_mapping
+from demo.domain.narrative_policy import (
+    select_narrative_fields,
+    should_create_candidate_report,
+)
 from demo.domain.ocr_normalization import normalize_ocr_pages
 from demo.domain.pdf_ocr_fields import find_ocr_table, resolve_configured_ocr_fields, resolve_ocr_aux_fields
 from demo.domain.replacement import build_replacements
@@ -669,14 +673,9 @@ def run_pipeline(
 
     llm_allowed = fields_for_route(routes, RouteKind.BAILIAN_GLM)
     selected_modules = normalize_narrative_modules(fields.get("narrative_modules"))
-    module_fields = set(selected_modules)
     # The company profile is always generated; the six report modules follow
     # the user's checkbox selection from the front end.
-    llm_allowed = {
-        field_key
-        for field_key in llm_allowed
-        if field_key == "company_profile_section" or field_key in module_fields
-    }
+    llm_allowed = select_narrative_fields(llm_allowed, selected_modules)
     llm_values: dict[str, Any] = {}
     llm_source_kind = "bailian_glm"
     if llm_adapter is not None:
@@ -872,6 +871,7 @@ def run_pipeline(
             review_output_paths.append(str(review_path))
         if reviews:
             review_output_paths.append(str(write_json(output_dir / "审核汇总.json", aggregate_reviews(reviews))))
+        if should_create_candidate_report(reviews):
             final_report = output_dir / "资产评估报告_最终候选.docx"
             shutil.copy2(report, final_report)
             review_output_paths.append(str(final_report))
