@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -45,6 +45,57 @@ class WorkflowDefinition(DemoModel):
         description="有序工作流节点",
         examples=[[]],
     )
+
+
+class NodeTrace(DemoModel):
+    node_name: str = Field(description="实际执行的节点名称", examples=["fill_word"])
+    status: Literal[
+        "completed",
+        "completed_with_issues",
+        "skipped",
+        "failed",
+    ] = Field(description="节点执行状态", examples=["completed"])
+    started_at: str = Field(
+        description="节点开始时间",
+        examples=["2026-07-26T12:00:00+00:00"],
+    )
+    finished_at: str = Field(
+        description="节点结束时间",
+        examples=["2026-07-26T12:00:01+00:00"],
+    )
+    input_model: str = Field(description="节点输入模型名称", examples=["FillWordInput"])
+    output_model: str = Field(description="节点输出模型名称", examples=["FillWordOutput"])
+    input_data: dict[str, Any] = Field(
+        description="已校验的节点输入摘要",
+        examples=[{}],
+    )
+    output_data: dict[str, Any] = Field(
+        description="已校验的节点输出摘要",
+        examples=[{}],
+    )
+    evidence: list[dict[str, Any]] = Field(
+        description="节点使用的来源证据",
+        examples=[[]],
+    )
+    issues: list[str] = Field(description="节点问题列表", examples=[[]])
+    human_checkpoint: str | None = Field(
+        default=None,
+        description="节点人工确认要求",
+        examples=["评估师审核问题清单"],
+    )
+
+
+class WorkflowTrace(DemoModel):
+    workflow_version: str = Field(description="工作流业务版本", examples=["1.1.0"])
+    contract_version: str = Field(
+        description="节点契约规则版本",
+        examples=["workflow_contract.v1"],
+    )
+    versions: dict[str, str] = Field(
+        description="规则、Prompt、模型和数据版本",
+        examples=[{"prompt": "yellow_narratives.v1"}],
+    )
+    nodes: list[NodeTrace] = Field(description="实际执行节点轨迹", examples=[[]])
 
 
 class SourceEvidence(DemoModel):
