@@ -1,5 +1,6 @@
 {
   "version": "1.0.0",
+  "contract_version": "workflow_contract.v1",
   "nodes": [
     {"name": "inventory", "input_model": "InventoryInput", "output_model": "InventoryOutput", "depends_on": [], "human_checkpoint": null},
     {"name": "ocr_pdf", "input_model": "OcrPdfInput", "output_model": "OcrPdfOutput", "depends_on": ["inventory"], "human_checkpoint": null},

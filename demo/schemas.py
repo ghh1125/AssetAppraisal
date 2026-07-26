@@ -23,6 +23,30 @@ class DemoModel(BaseModel):
         return schema
 
 
+class WorkflowNodeDefinition(DemoModel):
+    name: str = Field(description="工作流节点名称", examples=["ocr_pdf"])
+    input_model: str = Field(description="节点输入模型名称", examples=["OcrPdfInput"])
+    output_model: str = Field(description="节点输出模型名称", examples=["OcrPdfOutput"])
+    depends_on: list[str] = Field(description="前置节点名称", examples=[["inventory"]])
+    human_checkpoint: str | None = Field(
+        default=None,
+        description="节点完成后的人工确认要求",
+        examples=["评估师审核问题清单"],
+    )
+
+
+class WorkflowDefinition(DemoModel):
+    version: str = Field(description="工作流业务版本", examples=["1.1.0"])
+    contract_version: str = Field(
+        description="节点契约规则版本",
+        examples=["workflow_contract.v1"],
+    )
+    nodes: list[WorkflowNodeDefinition] = Field(
+        description="有序工作流节点",
+        examples=[[]],
+    )
+
+
 class SourceEvidence(DemoModel):
     source_kind: str = Field(description="来源类别", examples=["income_workbook"])
     source_file: str = Field(description="来源文件或系统名称", examples=["收益法.xlsx"])
