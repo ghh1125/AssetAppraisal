@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shutil
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime
@@ -18,7 +19,7 @@ from demo.adapters.ocr_workbook import export_ocr_workbook, normalized_from_ocr_
 from demo.adapters.review_inputs import build_data_review_evidence, build_format_review_evidence, build_semantic_review_evidence
 from demo.adapters.word import document_paragraph_texts, fill_template, inventory_template, replace_image_markers, replace_report_number_year, unresolved_placeholders
 from demo.domain.review import aggregate_reviews
-from demo.domain.field_validation import require_financial_fields
+from demo.domain.field_validation import normalize_narrative_modules, normalize_valuation_methods, require_financial_fields
 from demo.domain.field_validation import validate_valuation_subject_type
 from demo.domain.mapping import validate_mapping
 from demo.domain.ocr_normalization import normalize_ocr_pages
@@ -607,6 +608,10 @@ def run_pipeline(
         if field_key in node_allowed and value not in (None, "", [])
     }
     node_values.update(_filter_provider(node_inputs or {}, node_allowed, "节点输入", issues))
+    if node_values.get("selected_valuation_method") not in (None, ""):
+        node_values["selected_valuation_method"] = normalize_valuation_methods(
+            node_values["selected_valuation_method"]
+        )
 
     qcc_allowed = fields_for_route(routes, RouteKind.QICHACHA_API)
     qcc_values: dict[str, Any] = {}
@@ -663,10 +668,20 @@ def run_pipeline(
         }
 
     llm_allowed = fields_for_route(routes, RouteKind.BAILIAN_GLM)
+    selected_modules = normalize_narrative_modules(fields.get("narrative_modules"))
+    module_fields = set(selected_modules)
+    # The company profile is always generated; the six report modules follow
+    # the user's checkbox selection from the front end.
+    llm_allowed = {
+        field_key
+        for field_key in llm_allowed
+        if field_key == "company_profile_section" or field_key in module_fields
+    }
     llm_values: dict[str, Any] = {}
     llm_source_kind = "bailian_glm"
     if llm_adapter is not None:
         llm_evidence = {
+            "selected_modules": selected_modules,
             "evidence": [
                 {"evidence_id": item["evidence_id"], "text": item["text"]}
                 for item in [*normalized["text_blocks"], *normalized["table_cells"]]
@@ -857,6 +872,9 @@ def run_pipeline(
             review_output_paths.append(str(review_path))
         if reviews:
             review_output_paths.append(str(write_json(output_dir / "审核汇总.json", aggregate_reviews(reviews))))
+            final_report = output_dir / "资产评估报告_最终候选.docx"
+            shutil.copy2(report, final_report)
+            review_output_paths.append(str(final_report))
     write_json(output_dir / "normalized_fields.json", fields)
     write_json(output_dir / "issues.json", issues)
     manifest = {

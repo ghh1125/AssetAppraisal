@@ -6,6 +6,7 @@
   "valuation_subject_type": "股东全部权益价值",
   "selected_valuation_method": "收益法、资产基础法",
   "final_valuation_method": "收益法",
+  "narrative_modules": ["industry_overview", "business_and_segments", "main_products", "customers_suppliers", "profit_model_swot", "comparable_list"],
   "target_company_short_name": "通富昆山",
   "report_serial": ""
 }

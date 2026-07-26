@@ -12,6 +12,7 @@ def test_workflow_nodes_have_documented_models():
         "export_ocr_workbook",
         "extract_sources",
         "resolve_fields",
+        "select_narrative_modules",
         "generate_narrative",
         "fill_word",
         "llm_format_review",

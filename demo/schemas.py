@@ -141,6 +141,14 @@ class ResolveFieldsOutput(DemoModel):
     fields: list[ResolvedField] = Field(description="解析后的标准字段", examples=[[]])
 
 
+class SelectNarrativeModulesInput(DemoModel):
+    selected_modules: list[str] = Field(description="用户勾选的主体概况模块键", examples=[["main_products"]])
+
+
+class SelectNarrativeModulesOutput(DemoModel):
+    selected_modules: list[str] = Field(description="通过校验的主体概况模块键", examples=[["main_products"]])
+
+
 class GenerateNarrativeInput(DemoModel):
     fields: list[ResolvedField] = Field(description="作为生成证据的标准字段", examples=[[]])
 

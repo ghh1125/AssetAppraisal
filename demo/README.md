@@ -11,11 +11,12 @@
 3. `export_ocr_workbook`：生成独立的 `OCR结构化结果.xlsx`。
 4. `extract_sources`：读取 OCR Excel、其他结构化 Excel、节点参数和外部服务结果。
 5. `resolve_fields`：按字段语义、期间、单位和固定黄色来源路由选择字段值。
-6. `generate_narrative`：通过注入的百炼模型生成限定的叙述内容。
-7. `fill_word`：复制模板并替换全部占位符和黄色说明。
-8. `llm_format_review`、`llm_data_validation`、`llm_semantic_review`：对生成 Word 执行格式、数据和语义审核。
-9. `review_aggregate`：汇总三类审核结果和问题。
-10. `export_audit`：导出字段来源清单和运行记录。
+6. `select_narrative_modules`：校验用户勾选的六类主体概况模块。
+7. `generate_narrative`：通过注入的百炼模型生成用户勾选的叙述内容。
+8. `fill_word`：复制模板并替换全部占位符和黄色说明。
+9. `llm_format_review`、`llm_data_validation`、`llm_semantic_review`：对生成 Word 执行格式、数据和语义审核。
+10. `review_aggregate`：汇总三类审核结果和问题。
+11. `export_audit`：导出字段来源清单和运行记录。
 
 人工检查点位于最后一步：评估师审核生成 Word、字段审计清单和三类 LLM 审核问题。
 
@@ -69,6 +70,7 @@ uv run --python 3.11 python -m demo.run demo/projects/tongfu.yaml \
 - `OCR结构化结果.xlsx`
   - `OCR_表格`：逐单元格审计明细；`OCR_表格索引` 及 `表_<页码>_<表格编号>`：按 OCR 行列恢复的矩阵表，便于人工查看和后续映射。
 - `资产评估报告_待复核.docx`
+- `资产评估报告_最终候选.docx`
 - `字段审计清单.xlsx`
 - `normalized_fields.json`
 - `issues.json`
@@ -93,7 +95,7 @@ npm install
 npm run dev
 ```
 
-页面提交的字段与命令行参数一一对应：委托方全称/简称、被评估单位全称（可选，用于企查查身份核验）/简称、报告编号流水号、评估目的、评估方法、评估对象（四选一）、交易类型和最终采用方法。报告编号可以输入完整编号，程序会提取模板所需的流水号并同步所有报告编号年份。企查查、百炼和 PDF OCR/XLSX 不要求用户在页面重复填写。
+页面提交的字段与命令行参数一一对应：委托方全称/简称、评估主体全称/简称、报告编号流水号、评估目的、评估方法（资产基础法/收益法/市场法多选）、评估对象（四选一）、委托类型（转让/收购/增资/减资）、评估结论采用方法（单选）和六类主体概况模块。报告编号可以输入完整编号，程序会提取模板所需的流水号并同步所有报告编号年份。企查查、百炼和 PDF OCR/XLSX 不要求用户在页面重复填写。
 
 字段审计清单逐行记录原模板页码、稳定位置编号、原文上下文、程序填入内容、来源类别、来源文件和来源位置。原模板页码由 LibreOffice 只读渲染模板后按段落顺序匹配得到；页脚标记为“多页页脚”。OCR、API、LLM、财务数据及评估结论的正确性由业务人员人工审核。
 

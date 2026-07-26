@@ -21,7 +21,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
 from .run import _load_local_env
-from .domain.field_validation import validate_valuation_subject_type
+from .domain.field_validation import (
+    normalize_narrative_modules,
+    normalize_valuation_methods,
+    validate_final_valuation_method,
+    validate_transaction_type,
+    validate_valuation_subject_type,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 PROJECT_CONFIG = ROOT / "demo/projects/tongfu.yaml"
@@ -72,6 +78,7 @@ def _run_id_for_pdf(filename: str) -> str:
 def _artifact_list(run_dir: Path) -> list[dict[str, str]]:
     labels = {
         "资产评估报告_待复核.docx": "评估报告 Word",
+        "资产评估报告_最终候选.docx": "审核后最终候选 Word",
         "OCR结构化结果.xlsx": "OCR 结构化 Excel",
         "字段审计清单.xlsx": "字段审计清单",
         "run_manifest.json": "运行清单",
@@ -250,6 +257,20 @@ async def create_run(
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+    try:
+        if parsed_inputs.get("selected_valuation_method") not in (None, ""):
+            parsed_inputs["selected_valuation_method"] = normalize_valuation_methods(
+                parsed_inputs["selected_valuation_method"]
+            )
+        if parsed_inputs.get("final_valuation_method") not in (None, ""):
+            parsed_inputs["final_valuation_method"] = validate_final_valuation_method(
+                parsed_inputs["final_valuation_method"]
+            )
+        if parsed_inputs.get("transaction_type") not in (None, ""):
+            parsed_inputs["transaction_type"] = validate_transaction_type(parsed_inputs["transaction_type"])
+        parsed_inputs["narrative_modules"] = normalize_narrative_modules(parsed_inputs.get("narrative_modules"))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     run_id = _run_id_for_pdf(pdf.filename)
     input_dir = RUNS_ROOT / run_id / "input"
     input_dir.mkdir(parents=True, exist_ok=True)

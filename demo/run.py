@@ -17,7 +17,15 @@ from .adapters.materials import resolve_material_field
 from .adapters.word import fill_template, replace_report_number_year, unresolved_placeholders
 from .domain.mapping import validate_mapping
 from .domain.calculations import derive_system_fields
-from .domain.field_validation import normalize_report_serial, report_number_year, validate_valuation_subject_type
+from .domain.field_validation import (
+    normalize_narrative_modules,
+    normalize_report_serial,
+    normalize_valuation_methods,
+    report_number_year,
+    validate_final_valuation_method,
+    validate_transaction_type,
+    validate_valuation_subject_type,
+)
 from .domain.registry import human_fill
 from .domain.replacement import build_replacements
 
@@ -188,6 +196,13 @@ def run_project(
             manual["report_number_year"] = parsed_report_year
     if manual.get("valuation_subject_type") not in (None, ""):
         manual["valuation_subject_type"] = validate_valuation_subject_type(manual["valuation_subject_type"])
+    if manual.get("selected_valuation_method") not in (None, ""):
+        manual["selected_valuation_method"] = normalize_valuation_methods(manual["selected_valuation_method"])
+    if manual.get("final_valuation_method") not in (None, ""):
+        manual["final_valuation_method"] = validate_final_valuation_method(manual["final_valuation_method"])
+    if manual.get("transaction_type") not in (None, ""):
+        manual["transaction_type"] = validate_transaction_type(manual["transaction_type"])
+    manual["narrative_modules"] = normalize_narrative_modules(manual.get("narrative_modules"))
     fields: dict[str, object] = {}
     evidence: dict[str, dict] = {}
     issues: list[str] = []

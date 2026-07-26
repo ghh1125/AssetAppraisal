@@ -276,8 +276,28 @@ def test_pipeline_runs_three_reviews_and_exports_review_artifacts(tmp_path):
     assert (tmp_path / "格式审核.json").exists()
     assert (tmp_path / "数据校验.json").exists()
     assert (tmp_path / "语义审核.json").exists()
+    assert (tmp_path / "资产评估报告_最终候选.docx").exists()
     summary = json.loads((tmp_path / "审核汇总.json").read_text(encoding="utf-8"))
     assert summary["finding_count"] == 3
     assert any("测试问题" in item for item in json.loads((tmp_path / "issues.json").read_text(encoding="utf-8")));
     manifest = json.loads((tmp_path / "run_manifest.json").read_text(encoding="utf-8"))
     assert set(manifest["reviews"]) == {"format", "data", "semantic"}
+
+
+def test_pipeline_only_fills_selected_narrative_modules(tmp_path):
+    result = run_pipeline(
+        project_config=Path("demo/projects/tongfu.yaml"),
+        pdf_path=Path("资产评估工作流/通富2025.6.30合并及母公司审计报告.pdf"),
+        output_dir=tmp_path,
+        ocr_adapter=FixtureOcrAdapter(),
+        llm_adapter=FixtureLlmAdapter(),
+        qichacha_adapter=FixtureQichachaAdapter(),
+        ocr_field_resolver=fixture_ocr_fields,
+        template_page_reader=FixtureTemplatePageReader(),
+        manual_inputs_override={"narrative_modules": ["main_products"]},
+    )
+
+    fields = json.loads((tmp_path / "normalized_fields.json").read_text(encoding="utf-8"))
+    assert fields["main_products"] == "热处理服务。"
+    assert fields["industry_overview"] == ""
+    assert fields["customers_suppliers"] == ""

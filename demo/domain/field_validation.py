@@ -11,6 +11,17 @@ VALUATION_SUBJECT_TYPES = (
     "资产组价值",
 )
 
+VALUATION_METHODS = ("资产基础法", "收益法", "市场法")
+TRANSACTION_TYPES = ("转让", "收购", "增资", "减资")
+NARRATIVE_MODULES = (
+    "industry_overview",
+    "business_and_segments",
+    "main_products",
+    "customers_suppliers",
+    "profit_model_swot",
+    "comparable_list",
+)
+
 
 def normalize_report_serial(value: Any) -> str:
     """Normalize the user-facing report serial to the template's XXX slot.
@@ -43,6 +54,56 @@ def validate_valuation_subject_type(value: Any) -> str:
         allowed = "、".join(VALUATION_SUBJECT_TYPES)
         raise ValueError(f"评估对象必须是以下选项之一：{allowed}")
     return text
+
+
+def normalize_valuation_methods(value: Any) -> str:
+    """Normalize the image-defined multi-select valuation methods."""
+    if isinstance(value, str):
+        values = re.split(r"[、,，/和\s]+", value.strip()) if value.strip() else []
+    elif isinstance(value, (list, tuple, set)):
+        values = [str(item).strip() for item in value]
+    else:
+        values = []
+    aliases = {"资产评估法": "资产基础法", "资产基础法": "资产基础法"}
+    normalized: list[str] = []
+    for item in values:
+        item = aliases.get(item, item)
+        if item and item not in normalized:
+            normalized.append(item)
+    unknown = [item for item in normalized if item not in VALUATION_METHODS]
+    if unknown:
+        raise ValueError("评估方法只能选择：" + "、".join(VALUATION_METHODS))
+    if not normalized:
+        raise ValueError("评估方法至少选择一种")
+    return "、".join(normalized)
+
+
+def validate_transaction_type(value: Any) -> str:
+    text = str(value or "").strip()
+    if text not in TRANSACTION_TYPES:
+        raise ValueError("委托类型只能选择：" + "、".join(TRANSACTION_TYPES))
+    return text
+
+
+def validate_final_valuation_method(value: Any) -> str:
+    text = str(value or "").strip()
+    aliases = {"资产评估法": "资产基础法"}
+    text = aliases.get(text, text)
+    if text not in VALUATION_METHODS:
+        raise ValueError("评估结论采用方法只能选择：" + "、".join(VALUATION_METHODS))
+    return text
+
+
+def normalize_narrative_modules(value: Any) -> list[str]:
+    if value in (None, ""):
+        return list(NARRATIVE_MODULES)
+    if value == []:
+        raise ValueError("主体概况模块至少选择一个")
+    values = [value] if isinstance(value, str) else list(value) if isinstance(value, (list, tuple, set)) else []
+    selected = [item for item in values if item in NARRATIVE_MODULES]
+    if not selected:
+        raise ValueError("主体概况模块至少选择一个")
+    return selected
 
 
 def require_financial_fields(

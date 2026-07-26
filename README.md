@@ -55,6 +55,8 @@ APPRAISAL_LLM_MODEL=qwen3.7-flash
 
 项目配置还支持为 `narrative`、`format_review`、`data_validation`、`semantic_review` 分别指定模型；未指定时统一使用 `default_model`，环境变量优先级更高。
 
+前端的主体概况模块支持多选：行业介绍、业务及细分市场、主要产品、客户供应商、盈利模式/SWOT、对标上市公司。至少选择一个；未选择的叙述模块不会调用模型，也不会写入 Word。
+
 例如切换到其他模型，只改 `APPRAISAL_LLM_MODEL`。Prompt 和结构化输出契约分别位于：
 
 - `demo/prompts/yellow_narratives.v1.txt`
@@ -122,6 +124,7 @@ npm run dev -- --host 127.0.0.1 --port 5173
 Word 模板由后端固定提供。上传的 3 个 XLSX 会覆盖本次任务的项目材料路径，生成结果不会修改原文件；如果工作表名称或表格结构也不同，需要先在项目配置中增加对应映射。
 
 生成 Word 后，若启用百炼模型，还会生成 `格式审核.json`、`数据校验.json`、`语义审核.json` 和 `审核汇总.json`。审核只提出问题和证据，不直接改写 Word；所有问题同时汇总到 `issues.json`。
+审核完成后另存 `资产评估报告_最终候选.docx`，该文件是审核后的候选版本；需要人工根据问题清单确认后正式使用。
 
 ```bash
 cd frontend
