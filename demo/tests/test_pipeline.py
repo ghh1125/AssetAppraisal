@@ -4,6 +4,7 @@ import re
 import zipfile
 from pathlib import Path
 
+import pytest
 from docx import Document
 
 from demo.pipeline import _apply_ocr_overrides_to_table, _company_profile_table, _ocr_ownership_matrix, _validated_qcc_payload, run_pipeline
@@ -282,6 +283,61 @@ def test_pipeline_runs_three_reviews_and_exports_review_artifacts(tmp_path):
     assert any("测试问题" in item for item in json.loads((tmp_path / "issues.json").read_text(encoding="utf-8")));
     manifest = json.loads((tmp_path / "run_manifest.json").read_text(encoding="utf-8"))
     assert set(manifest["reviews"]) == {"format", "data", "semantic"}
+    trace_path = tmp_path / "workflow_trace.json"
+    assert trace_path.exists()
+    trace = json.loads(trace_path.read_text(encoding="utf-8"))
+    assert trace["contract_version"] == "workflow_contract.v1"
+    assert [node["node_name"] for node in trace["nodes"]] == [
+        "inventory",
+        "ocr_pdf",
+        "export_ocr_workbook",
+        "extract_sources",
+        "resolve_fields",
+        "select_narrative_modules",
+        "generate_narrative",
+        "fill_word",
+        "llm_format_review",
+        "llm_data_validation",
+        "llm_semantic_review",
+        "review_aggregate",
+        "export_audit",
+    ]
+    assert str(trace_path) in manifest["outputs"]
+
+
+def test_pipeline_rejects_invalid_workflow_before_ocr(tmp_path):
+    invalid_workflow = tmp_path / "invalid-workflow.json"
+    invalid_workflow.write_text(
+        json.dumps(
+            {
+                "version": "test",
+                "contract_version": "workflow_contract.v1",
+                "nodes": [
+                    {
+                        "name": "ocr_pdf",
+                        "input_model": "MissingInput",
+                        "output_model": "OcrPdfOutput",
+                        "depends_on": [],
+                        "human_checkpoint": None,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class FailIfCalledOcr:
+        def extract(self, pdf_path):
+            raise AssertionError("invalid workflow must stop before OCR")
+
+    with pytest.raises(ValueError, match="工作流契约校验失败"):
+        run_pipeline(
+            project_config=Path("demo/projects/tongfu.yaml"),
+            pdf_path=Path("资产评估工作流/通富2025.6.30合并及母公司审计报告.pdf"),
+            output_dir=tmp_path / "run",
+            ocr_adapter=FailIfCalledOcr(),
+            workflow_path=invalid_workflow,
+        )
 
 
 def test_pipeline_only_fills_selected_narrative_modules(tmp_path):

@@ -12,11 +12,19 @@ from typing import Any, Callable
 
 from openpyxl import load_workbook
 
+from demo import schemas
 from demo.adapters.audit import export_audit, write_json
 from demo.adapters.document import read_table_matrix
 from demo.adapters.excel import read_cells, read_configured_table
 from demo.adapters.ocr_workbook import export_ocr_workbook, normalized_from_ocr_workbook
 from demo.adapters.review_inputs import build_data_review_evidence, build_format_review_evidence, build_semantic_review_evidence
+from demo.adapters.workflow_trace import (
+    WorkflowTraceRecorder,
+    trace_candidates,
+    trace_evidence,
+    trace_mappings,
+    trace_resolved_fields,
+)
 from demo.adapters.word import document_paragraph_texts, fill_template, inventory_template, replace_image_markers, replace_report_number_year, unresolved_placeholders
 from demo.domain.review import aggregate_reviews
 from demo.domain.field_validation import normalize_narrative_modules, normalize_valuation_methods, require_financial_fields
@@ -30,6 +38,7 @@ from demo.domain.ocr_normalization import normalize_ocr_pages
 from demo.domain.pdf_ocr_fields import find_ocr_table, resolve_configured_ocr_fields, resolve_ocr_aux_fields
 from demo.domain.replacement import build_replacements
 from demo.domain.template_pagination import map_location_pages
+from demo.domain.workflow_contracts import validate_workflow_contract
 from demo.domain.yellow_routing import (
     RouteKind,
     fields_for_route,
@@ -465,9 +474,58 @@ def run_pipeline(
     ocr_workbook_path: Path | None = None,
     source_overrides: dict[str, Path] | None = None,
     review_adapters: dict[str, Any] | None = None,
+    workflow_path: Path | None = None,
 ) -> PipelineResult:
     config_path = project_config.resolve()
     config = json.loads(config_path.read_text(encoding="utf-8"))
+    workflow_file = (
+        workflow_path.resolve()
+        if workflow_path is not None
+        else Path(__file__).with_name("workflow.yaml")
+    )
+    workflow_payload = json.loads(workflow_file.read_text(encoding="utf-8"))
+    contract_result = validate_workflow_contract(workflow_payload, schemas)
+    if not contract_result["valid"]:
+        raise ValueError(
+            "工作流契约校验失败：" + "；".join(contract_result["issues"])
+        )
+    workflow_definition = schemas.WorkflowDefinition.model_validate(workflow_payload)
+    workflow_nodes = {node.name: node for node in workflow_definition.nodes}
+    data_manifest_path = Path(__file__).with_name("data_manifest.yaml")
+    data_manifest = json.loads(data_manifest_path.read_text(encoding="utf-8"))
+    trace_versions = {
+        name: str(version)
+        for name, version in data_manifest.get("rule_versions", {}).items()
+    }
+    trace_versions["data_manifest"] = str(data_manifest.get("version", ""))
+    recorder = WorkflowTraceRecorder(
+        workflow_version=workflow_definition.version,
+        contract_version=workflow_definition.contract_version,
+        versions=trace_versions,
+    )
+
+    def record_node(
+        name: str,
+        input_payload: dict[str, Any],
+        output_payload: dict[str, Any],
+        *,
+        status: str = "completed",
+        node_evidence: list[dict[str, Any]] | None = None,
+        node_issues: list[str] | None = None,
+    ) -> None:
+        definition = workflow_nodes[name]
+        recorder.record(
+            node_name=name,
+            input_model=getattr(schemas, definition.input_model),
+            output_model=getattr(schemas, definition.output_model),
+            input_payload=input_payload,
+            output_payload=output_payload,
+            status=status,
+            evidence=node_evidence or [],
+            issues=node_issues or [],
+            human_checkpoint=definition.human_checkpoint,
+        )
+
     base = config_path.parent
     template = template_path.resolve() if template_path else _path(base, config["template"])
     pdf = pdf_path.resolve()
@@ -478,8 +536,34 @@ def run_pipeline(
     mapping = json.loads(mapping_path.read_text(encoding="utf-8"))
     locations = validate_mapping(mapping)
     static_locations = mapping.get("static_locations", [])
+    field_names = {
+        item["field_key"]: item["field_name"]
+        for item in [*locations, *static_locations]
+        if item.get("field_key")
+    }
     routes = load_yellow_routes(config["yellow_routes"])
     template_inventory = inventory_template(template)
+    inventory_trace = [
+        {
+            "location_id": item["location_id"],
+            "record_type": item["record_type"],
+            "context": item["context"],
+            "marker": item["marker"],
+        }
+        for item in template_inventory
+    ]
+    record_node(
+        "inventory",
+        {"template_path": str(template)},
+        {"locations": inventory_trace},
+        node_evidence=[
+            {
+                "source_kind": "word_template",
+                "source_file": template.name,
+                "source_locator": "全文占位符及黄色标注",
+            }
+        ],
+    )
     yellow_location_ids = {
         item["location_id"]
         for item in template_inventory
@@ -527,20 +611,68 @@ def run_pipeline(
             "locator": scope_table.get("source_locator", ""),
         }
 
+    ocr_node_issues: list[str] = []
     if ocr_workbook_path is not None:
         try:
             normalized = normalized_from_ocr_workbook(ocr_workbook_path.resolve())
         except Exception as exc:
             if ocr_adapter is None:
                 raise ValueError(f"OCR 缓存读取失败且未配置 OCR：{exc}") from exc
-            issues.append(f"OCR 缓存读取失败，改为重新 OCR：{exc}")
+            cache_issue = f"OCR 缓存读取失败，改为重新 OCR：{exc}"
+            issues.append(cache_issue)
+            ocr_node_issues.append(cache_issue)
             pages, ocr_issues = ocr_adapter.extract(pdf)
             issues.extend(ocr_issues)
+            ocr_node_issues.extend(ocr_issues)
             normalized = normalize_ocr_pages(pages)
     else:
         pages, ocr_issues = ocr_adapter.extract(pdf) if ocr_adapter is not None else ([], ["OCR 未配置"])
         issues.extend(ocr_issues)
+        ocr_node_issues.extend(ocr_issues)
         normalized = normalize_ocr_pages(pages)
+
+    page_counts: dict[int, int] = {}
+    for record in [*normalized.get("text_blocks", []), *normalized.get("table_cells", [])]:
+        try:
+            page_number = int(record.get("page_number", 0))
+            page_count = int(record.get("page_count", 0))
+        except (TypeError, ValueError):
+            continue
+        if page_number > 0:
+            page_counts[page_number] = max(page_count, len(page_counts))
+    ocr_page_summary = [
+        {
+            "page_number": page_number,
+            "page_count": page_counts[page_number],
+            "blocks": [],
+            "tables": [],
+        }
+        for page_number in sorted(page_counts)
+    ]
+    record_node(
+        "ocr_pdf",
+        {"pdf_path": str(pdf)},
+        {
+            "document": {
+                "source_file": pdf.name,
+                "pages": ocr_page_summary,
+                "issues": ocr_node_issues,
+            }
+        },
+        status="completed_with_issues" if ocr_node_issues else "completed",
+        node_evidence=[
+            {
+                "source_kind": "ocr_cache" if ocr_workbook_path else "pdf_ocr",
+                "source_file": (
+                    ocr_workbook_path.name if ocr_workbook_path else pdf.name
+                ),
+                "source_locator": "页级 OCR 结构",
+                "text_block_count": len(normalized.get("text_blocks", [])),
+                "table_cell_count": len(normalized.get("table_cells", [])),
+            }
+        ],
+        node_issues=ocr_node_issues,
+    )
 
     # The founding-shareholder table is explicitly marked as a PDF audit
     # report lookup in the template.  Keep it separate from the QCC current
@@ -598,6 +730,59 @@ def run_pipeline(
                 }
             )
     ocr_workbook = export_ocr_workbook(output_dir / "OCR结构化结果.xlsx", normalized)
+    record_node(
+        "export_ocr_workbook",
+        {
+            "normalized_ocr": {
+                "text_blocks": [
+                    {"count": len(normalized.get("text_blocks", []))}
+                ],
+                "table_cells": [
+                    {"count": len(normalized.get("table_cells", []))}
+                ],
+                "financial_data": [
+                    {"count": len(normalized.get("financial_data", []))}
+                ],
+                "issues": [{"count": len(normalized.get("issues", []))}],
+            },
+            "output_path": str(ocr_workbook),
+        },
+        {"workbook_path": str(ocr_workbook)},
+        node_evidence=[
+            {
+                "source_kind": "generated_artifact",
+                "source_file": ocr_workbook.name,
+                "source_locator": "OCR_文本、OCR_表格、标准财务数据、识别问题",
+            }
+        ],
+    )
+
+    configured_source_paths = {
+        name: str(
+            (source_overrides or {}).get(name)
+            or _path(base, configured_path)
+        )
+        for name, configured_path in config.get("sources", {}).items()
+    }
+    base_candidates = trace_candidates(fields, evidence, field_names)
+    record_node(
+        "extract_sources",
+        {"sources": configured_source_paths},
+        {
+            "candidates": base_candidates,
+            "issues": list(legacy.issues),
+        },
+        status="completed_with_issues" if legacy.issues else "completed",
+        node_evidence=[
+            {
+                "source_kind": "source_materials",
+                "source_file": Path(path).name,
+                "source_locator": name,
+            }
+            for name, path in configured_source_paths.items()
+        ],
+        node_issues=list(legacy.issues),
+    )
 
     manual_path = _path(base, config["manual_inputs"])
     configured_inputs = (
@@ -768,6 +953,89 @@ def run_pipeline(
         value = re.sub(rf"^(?:{re.escape(prefix)})+", "", value).strip()
         fields[field_key] = prefix + value
 
+    non_narrative_values = {
+        field_key: value
+        for field_key, value in fields.items()
+        if field_key not in llm_allowed
+    }
+    non_narrative_candidates = trace_candidates(
+        non_narrative_values,
+        evidence,
+        field_names,
+    )
+    non_narrative_resolved = trace_resolved_fields(
+        non_narrative_values,
+        evidence,
+        field_names,
+    )
+    record_node(
+        "resolve_fields",
+        {
+            "candidates": non_narrative_candidates,
+            "mappings": trace_mappings(locations),
+        },
+        {"fields": non_narrative_resolved},
+        status="completed_with_issues" if issues else "completed",
+        node_evidence=[
+            trace_evidence(evidence_item)
+            for evidence_item in evidence.values()
+            if isinstance(evidence_item, dict)
+        ],
+        node_issues=list(issues),
+    )
+    record_node(
+        "select_narrative_modules",
+        {"selected_modules": selected_modules},
+        {"selected_modules": selected_modules},
+        node_evidence=[
+            {
+                "source_kind": "node_input",
+                "source_file": "人工基础信息",
+                "source_locator": "主体概况模块",
+            }
+        ],
+    )
+    narrative_resolved = trace_resolved_fields(
+        fields,
+        evidence,
+        field_names,
+        keys=llm_allowed,
+    )
+    narrative_prompt_version = getattr(
+        llm_adapter,
+        "prompt_version",
+        "yellow_narratives.v1",
+    )
+    recorder.versions["narrative_model"] = str(
+        getattr(llm_adapter, "model", "") or ""
+    )
+    recorder.versions["narrative_prompt"] = str(narrative_prompt_version)
+    record_node(
+        "generate_narrative",
+        {"fields": non_narrative_resolved},
+        {
+            "fields": narrative_resolved,
+            "prompt_version": str(narrative_prompt_version),
+        },
+        status=(
+            "skipped"
+            if llm_adapter is None
+            else "completed_with_issues"
+            if any("LLM" in issue or "GLM" in issue for issue in issues)
+            else "completed"
+        ),
+        node_evidence=[
+            trace_evidence(evidence.get(field_key))
+            for field_key in llm_allowed
+            if fields.get(field_key) not in (None, "", [], {})
+        ],
+        node_issues=[
+            issue
+            for issue in issues
+            if "LLM" in issue or "GLM" in issue
+        ],
+    )
+
     monetary_gate = require_financial_fields(fields, config.get("required_monetary_fields", []))
     if not monetary_gate["valid"]:
         missing = "、".join(monetary_gate["missing_fields"])
@@ -832,6 +1100,25 @@ def run_pipeline(
         raise ValueError("Word 模板仍有未替换占位符：" + "、".join(remaining_placeholders))
     if _sha256(template) != template_hash:
         raise RuntimeError("模板被意外修改")
+    record_node(
+        "fill_word",
+        {
+            "template_path": str(template),
+            "output_path": str(report),
+            "fields": trace_resolved_fields(fields, evidence, field_names),
+        },
+        {
+            "report_path": str(report),
+            "replacement_count": len(replacements),
+        },
+        node_evidence=[
+            {
+                "source_kind": "word_template",
+                "source_file": template.name,
+                "source_locator": "映射位置与表格",
+            }
+        ],
+    )
     template_pages: dict[str, int | str] = {}
     if template_page_reader is not None:
         page_texts, page_issues = template_page_reader.extract(template)
@@ -850,16 +1137,57 @@ def run_pipeline(
     )
     reviews: dict[str, dict[str, Any]] = {}
     review_output_paths: list[str] = []
+    review_specs = {
+        "format": {
+            "node_name": "llm_format_review",
+            "review_type": "format_review",
+            "file_name": "格式审核.json",
+            "prompt_version": "review_format.v1",
+        },
+        "data": {
+            "node_name": "llm_data_validation",
+            "review_type": "data_validation",
+            "file_name": "数据校验.json",
+            "prompt_version": "review_data.v1",
+        },
+        "semantic": {
+            "node_name": "llm_semantic_review",
+            "review_type": "semantic_review",
+            "file_name": "语义审核.json",
+            "prompt_version": "review_semantic.v1",
+        },
+    }
+    review_inputs: dict[str, dict[str, Any]] = {}
     if review_adapters:
         review_inputs = {
             "format": build_format_review_evidence(template, report),
             "data": build_data_review_evidence(report, fields, audit, evidence),
             "semantic": build_semantic_review_evidence(report, fields),
         }
-        review_files = {"format": "格式审核.json", "data": "数据校验.json", "semantic": "语义审核.json"}
-        for review_name, adapter in review_adapters.items():
-            if review_name not in review_inputs or adapter is None:
-                continue
+    for review_name, spec in review_specs.items():
+        adapter = (review_adapters or {}).get(review_name)
+        if adapter is None:
+            skipped_review = {
+                "review_type": spec["review_type"],
+                "status": "skipped",
+                "summary": "未启用对应 LLM 审核",
+                "findings": [],
+                "model": "",
+                "prompt_version": spec["prompt_version"],
+            }
+            record_node(
+                spec["node_name"],
+                {
+                    "review_type": spec["review_type"],
+                    "report_path": str(report),
+                    "evidence": {},
+                },
+                skipped_review,
+                status="skipped",
+                node_issues=["未启用对应 LLM 审核"],
+            )
+            continue
+        try:
             review_result, review_issues = adapter.review(review_inputs[review_name])
             reviews[review_name] = review_result
             issues.extend(review_issues)
@@ -867,16 +1195,117 @@ def run_pipeline(
                 location = finding.get("location", "")
                 problem = finding.get("problem", "")
                 issues.append(f"LLM {review_name}审核：{location}：{problem}".strip("："))
-            review_path = write_json(output_dir / review_files[review_name], review_result)
+            review_path = write_json(output_dir / spec["file_name"], review_result)
             review_output_paths.append(str(review_path))
-        if reviews:
-            review_output_paths.append(str(write_json(output_dir / "审核汇总.json", aggregate_reviews(reviews))))
-        if should_create_candidate_report(reviews):
-            final_report = output_dir / "资产评估报告_最终候选.docx"
-            shutil.copy2(report, final_report)
-            review_output_paths.append(str(final_report))
+            review_status = str(review_result.get("status", "completed"))
+            if review_status not in {
+                "completed",
+                "completed_with_issues",
+                "skipped",
+                "failed",
+            }:
+                review_status = (
+                    "completed_with_issues"
+                    if review_result.get("findings")
+                    else "completed"
+                )
+            recorder.versions[f"{review_name}_review_model"] = str(
+                review_result.get("model", "")
+            )
+            recorder.versions[f"{review_name}_review_prompt"] = str(
+                review_result.get("prompt_version", spec["prompt_version"])
+            )
+            record_node(
+                spec["node_name"],
+                {
+                    "review_type": spec["review_type"],
+                    "report_path": str(report),
+                    "evidence": review_inputs[review_name],
+                },
+                review_result,
+                status=review_status,
+                node_evidence=[
+                    {
+                        "source_kind": "generated_report",
+                        "source_file": report.name,
+                        "source_locator": spec["review_type"],
+                    }
+                ],
+                node_issues=review_issues,
+            )
+        except Exception as exc:
+            failed_review = {
+                "review_type": spec["review_type"],
+                "status": "failed",
+                "summary": f"审核执行失败：{exc}",
+                "findings": [],
+                "model": str(getattr(adapter, "model", "")),
+                "prompt_version": str(
+                    getattr(adapter, "prompt_version", spec["prompt_version"])
+                ),
+            }
+            reviews[review_name] = failed_review
+            issue = f"LLM {review_name}审核失败：{exc}"
+            issues.append(issue)
+            review_path = write_json(output_dir / spec["file_name"], failed_review)
+            review_output_paths.append(str(review_path))
+            record_node(
+                spec["node_name"],
+                {
+                    "review_type": spec["review_type"],
+                    "report_path": str(report),
+                    "evidence": review_inputs.get(review_name, {}),
+                },
+                failed_review,
+                status="failed",
+                node_issues=[issue],
+            )
+    aggregate = aggregate_reviews(reviews)
+    record_node(
+        "review_aggregate",
+        {"reviews": reviews},
+        aggregate,
+        status=(
+            "completed_with_issues"
+            if aggregate["status"] == "completed_with_issues"
+            else "completed"
+        ),
+        node_issues=[
+            issue for issue in issues if issue.startswith("LLM ") and "审核" in issue
+        ],
+    )
+    if reviews:
+        review_output_paths.append(
+            str(write_json(output_dir / "审核汇总.json", aggregate))
+        )
+    if should_create_candidate_report(reviews):
+        final_report = output_dir / "资产评估报告_最终候选.docx"
+        shutil.copy2(report, final_report)
+        review_output_paths.append(str(final_report))
     write_json(output_dir / "normalized_fields.json", fields)
     write_json(output_dir / "issues.json", issues)
+    planned_manifest_path = output_dir / "run_manifest.json"
+    record_node(
+        "export_audit",
+        {
+            "report_path": str(report),
+            "fields": trace_resolved_fields(fields, evidence, field_names),
+        },
+        {
+            "audit_path": str(audit),
+            "manifest_path": str(planned_manifest_path),
+        },
+        status="completed_with_issues" if issues else "completed",
+        node_evidence=[
+            {
+                "source_kind": "generated_artifact",
+                "source_file": audit.name,
+                "source_locator": "填充结果",
+            }
+        ],
+        node_issues=list(issues),
+    )
+    trace_path = recorder.export(output_dir / "workflow_trace.json")
     manifest = {
         "project_id": config["project_id"],
         "created_at": datetime.now().isoformat(timespec="seconds"),
@@ -893,7 +1322,15 @@ def run_pipeline(
         },
         "ocr_cache_reused": bool(ocr_workbook_path),
         "ocr_cache_source": str(ocr_workbook_path) if ocr_workbook_path else "",
-        "outputs": [str(ocr_workbook), str(report), str(audit), *review_output_paths],
+        "workflow_version": workflow_definition.version,
+        "workflow_contract_version": workflow_definition.contract_version,
+        "outputs": [
+            str(ocr_workbook),
+            str(report),
+            str(audit),
+            str(trace_path),
+            *review_output_paths,
+        ],
         "reviews": {
             name: {
                 "status": review.get("status", ""),
@@ -903,5 +1340,5 @@ def run_pipeline(
             for name, review in reviews.items()
         },
     }
-    manifest_path = write_json(output_dir / "run_manifest.json", manifest)
+    manifest_path = write_json(planned_manifest_path, manifest)
     return PipelineResult(report, audit, ocr_workbook, manifest_path, issues)

@@ -82,6 +82,7 @@ def _artifact_list(run_dir: Path) -> list[dict[str, str]]:
         "OCR结构化结果.xlsx": "OCR 结构化 Excel",
         "字段审计清单.xlsx": "字段审计清单",
         "run_manifest.json": "运行清单",
+        "workflow_trace.json": "工作流节点轨迹",
         "issues.json": "复核事项",
         "normalized_fields.json": "标准字段结果",
         "格式审核.json": "LLM 格式审核",

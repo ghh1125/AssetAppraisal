@@ -8,6 +8,65 @@ from demo.adapters.audit import write_json
 from demo.schemas import DemoModel, NodeTrace, WorkflowTrace
 
 
+def trace_evidence(source: dict[str, Any] | None) -> dict[str, str]:
+    source = source or {}
+    return {
+        "source_kind": str(source.get("kind", "unknown")),
+        "source_file": str(source.get("file", "")),
+        "source_locator": str(source.get("locator", "")),
+    }
+
+
+def trace_candidates(
+    values: dict[str, Any],
+    evidence: dict[str, dict[str, Any]],
+    field_names: dict[str, str],
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "field_key": field_key,
+            "field_name": field_names.get(field_key, field_key),
+            "value": value,
+            "evidence": trace_evidence(evidence.get(field_key)),
+        }
+        for field_key, value in values.items()
+        if value not in (None, "", [], {})
+    ]
+
+
+def trace_resolved_fields(
+    values: dict[str, Any],
+    evidence: dict[str, dict[str, Any]],
+    field_names: dict[str, str],
+    *,
+    keys: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "field_key": field_key,
+            "field_name": field_names.get(field_key, field_key),
+            "value": value,
+            "evidence": trace_evidence(evidence.get(field_key)),
+            "candidates": [],
+        }
+        for field_key, value in values.items()
+        if (keys is None or field_key in keys) and value not in (None, "", [], {})
+    ]
+
+
+def trace_mappings(locations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "location_id": item["location_id"],
+            "field_key": item["field_key"],
+            "field_name": item["field_name"],
+            "record_type": item["record_type"],
+            "source_priority": list(item.get("candidate_sources", [])),
+        }
+        for item in locations
+    ]
+
+
 class WorkflowTraceRecorder:
     """Validate node boundaries and retain a JSON-safe execution trace."""
 
