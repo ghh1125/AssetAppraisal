@@ -1,0 +1,83 @@
+[
+  {
+    "id": "methods_alias_and_income",
+    "op": "methods",
+    "value": ["资产评估法", "收益法"]
+  },
+  {
+    "id": "methods_market",
+    "op": "methods",
+    "value": "市场法"
+  },
+  {
+    "id": "methods_deduplicate",
+    "op": "methods",
+    "value": "收益法、收益法、资产基础法"
+  },
+  {
+    "id": "modules_default_all",
+    "op": "modules",
+    "value": null
+  },
+  {
+    "id": "modules_single",
+    "op": "modules",
+    "value": ["main_products"]
+  },
+  {
+    "id": "modules_filter_unknown",
+    "op": "modules",
+    "value": ["unknown_module", "industry_overview"]
+  },
+  {
+    "id": "narrative_profile_and_selected",
+    "op": "narrative_fields",
+    "routed": ["company_profile_section", "industry_overview", "main_products"],
+    "selected": ["main_products"]
+  },
+  {
+    "id": "narrative_does_not_add_unrouted",
+    "op": "narrative_fields",
+    "routed": ["industry_overview"],
+    "selected": ["main_products"]
+  },
+  {
+    "id": "candidate_without_reviews",
+    "op": "candidate",
+    "reviews": {}
+  },
+  {
+    "id": "candidate_with_completed_review",
+    "op": "candidate",
+    "reviews": {
+      "format": {
+        "status": "completed_with_issues",
+        "findings": [{"severity": "medium"}]
+      }
+    }
+  },
+  {
+    "id": "aggregate_without_reviews",
+    "op": "review_aggregate",
+    "reviews": {}
+  },
+  {
+    "id": "aggregate_failed_and_high_finding",
+    "op": "review_aggregate",
+    "reviews": {
+      "format": {
+        "status": "failed",
+        "findings": []
+      },
+      "data": {
+        "status": "completed_with_issues",
+        "findings": [
+          {
+            "severity": "high",
+            "problem": "金额与来源不一致"
+          }
+        ]
+      }
+    }
+  }
+]

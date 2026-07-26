@@ -2,6 +2,15 @@ import json
 from pathlib import Path
 
 from demo.domain import calculations, registry
+from demo.domain.field_validation import (
+    normalize_narrative_modules,
+    normalize_valuation_methods,
+)
+from demo.domain.narrative_policy import (
+    select_narrative_fields,
+    should_create_candidate_report,
+)
+from demo.domain.review import aggregate_reviews
 
 
 def test_ten_representative_business_examples():
@@ -29,6 +38,33 @@ def test_ten_representative_business_examples():
             actual[case["id"]] = calculations.format_methods(case["value"])
         elif op == "human_fill":
             actual[case["id"]] = registry.human_fill(case["value"])
+    assert actual == expected
+
+
+def test_workflow_policy_examples():
+    cases = json.loads(
+        Path("demo/fixtures/workflow_cases.yaml").read_text(encoding="utf-8")
+    )
+    expected = json.loads(
+        Path("demo/expected/workflow_cases.yaml").read_text(encoding="utf-8")
+    )
+    assert len(cases) >= 10
+    actual = {}
+    for case in cases:
+        if case["op"] == "methods":
+            actual[case["id"]] = normalize_valuation_methods(case["value"])
+        elif case["op"] == "modules":
+            actual[case["id"]] = normalize_narrative_modules(case["value"])
+        elif case["op"] == "narrative_fields":
+            actual[case["id"]] = sorted(
+                select_narrative_fields(set(case["routed"]), case["selected"])
+            )
+        elif case["op"] == "candidate":
+            actual[case["id"]] = should_create_candidate_report(case["reviews"])
+        elif case["op"] == "review_aggregate":
+            actual[case["id"]] = aggregate_reviews(case["reviews"])
+        else:
+            raise AssertionError(f"未知样例操作：{case['op']}")
     assert actual == expected
 
 

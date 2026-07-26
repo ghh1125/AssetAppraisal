@@ -1,0 +1,51 @@
+{
+  "methods_alias_and_income": "资产基础法、收益法",
+  "methods_market": "市场法",
+  "methods_deduplicate": "收益法、资产基础法",
+  "modules_default_all": [
+    "industry_overview",
+    "business_and_segments",
+    "main_products",
+    "customers_suppliers",
+    "profit_model_swot",
+    "comparable_list"
+  ],
+  "modules_single": ["main_products"],
+  "modules_filter_unknown": ["industry_overview"],
+  "narrative_profile_and_selected": [
+    "company_profile_section",
+    "main_products"
+  ],
+  "narrative_does_not_add_unrouted": [],
+  "candidate_without_reviews": false,
+  "candidate_with_completed_review": true,
+  "aggregate_without_reviews": {
+    "status": "completed",
+    "review_count": 0,
+    "finding_count": 0,
+    "severity_counts": {
+      "high": 0,
+      "medium": 0,
+      "low": 0
+    },
+    "failed_reviews": [],
+    "findings": []
+  },
+  "aggregate_failed_and_high_finding": {
+    "status": "completed_with_issues",
+    "review_count": 2,
+    "finding_count": 1,
+    "severity_counts": {
+      "high": 1,
+      "medium": 0,
+      "low": 0
+    },
+    "failed_reviews": ["format"],
+    "findings": [
+      {
+        "severity": "high",
+        "problem": "金额与来源不一致"
+      }
+    ]
+  }
+}
