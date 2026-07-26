@@ -77,6 +77,10 @@ def _artifact_list(run_dir: Path) -> list[dict[str, str]]:
         "run_manifest.json": "运行清单",
         "issues.json": "复核事项",
         "normalized_fields.json": "标准字段结果",
+        "格式审核.json": "LLM 格式审核",
+        "数据校验.json": "LLM 数据校验",
+        "语义审核.json": "LLM 语义审核",
+        "审核汇总.json": "审核汇总",
     }
     return [
         {"name": name, "label": label}
@@ -138,6 +142,7 @@ def _execute_run(
 
             ocr_adapter = PaddleStructureOcrAdapter(create_local_pipeline())
         llm_adapter = None
+        review_adapters = None
         qichacha_adapter = None
         http_client = None
         if use_glm or use_qichacha:
@@ -145,19 +150,22 @@ def _execute_run(
 
             http_client = httpx.Client(timeout=120)
         if use_glm:
-            from .adapters.bailian_glm import BailianYellowNarrativeAdapter
-
             key = __import__("os").environ.get("DASHSCOPE_API_KEY", "")
             if not key:
                 raise RuntimeError("未配置 DASHSCOPE_API_KEY")
-            prompt = (ROOT / "demo/prompts/yellow_narratives.v1.txt").read_text(encoding="utf-8")
-            llm_adapter = BailianYellowNarrativeAdapter(
-                http_client,
-                key,
-                prompt,
+            from .adapters.llm_factory import build_bailian_adapters
+
+            project_config = json.loads(PROJECT_CONFIG.read_text(encoding="utf-8"))
+            adapters = build_bailian_adapters(
+                client=http_client,
+                api_key=key,
+                root=ROOT / "demo",
+                config=project_config,
+                env=__import__("os").environ,
                 base_url=__import__("os").environ.get("APPRAISAL_LLM_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
-                model=__import__("os").environ.get("APPRAISAL_LLM_MODEL", "glm-5.2"),
             )
+            llm_adapter = adapters["narrative"]
+            review_adapters = adapters["reviews"]
         if use_qichacha:
             from .adapters.company_api import QichachaApiAdapter
 
@@ -191,6 +199,7 @@ def _execute_run(
             template_path=template_path,
             template_page_reader=LibreOfficeTemplatePageReader(),
             source_overrides=source_overrides,
+            review_adapters=review_adapters,
         )
         _set_job(
             run_id,

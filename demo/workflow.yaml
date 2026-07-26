@@ -8,6 +8,10 @@
     {"name": "resolve_fields", "input_model": "ResolveFieldsInput", "output_model": "ResolveFieldsOutput", "depends_on": ["extract_sources"], "human_checkpoint": null},
     {"name": "generate_narrative", "input_model": "GenerateNarrativeInput", "output_model": "GenerateNarrativeOutput", "depends_on": ["resolve_fields"], "human_checkpoint": null},
     {"name": "fill_word", "input_model": "FillWordInput", "output_model": "FillWordOutput", "depends_on": ["generate_narrative"], "human_checkpoint": null},
-    {"name": "export_audit", "input_model": "ExportAuditInput", "output_model": "ExportAuditOutput", "depends_on": ["fill_word"], "human_checkpoint": "评估师审核生成 Word 和字段审计清单"}
+    {"name": "llm_format_review", "input_model": "ReviewInput", "output_model": "ReviewOutput", "depends_on": ["fill_word"], "human_checkpoint": null},
+    {"name": "llm_data_validation", "input_model": "ReviewInput", "output_model": "ReviewOutput", "depends_on": ["fill_word"], "human_checkpoint": null},
+    {"name": "llm_semantic_review", "input_model": "ReviewInput", "output_model": "ReviewOutput", "depends_on": ["fill_word"], "human_checkpoint": null},
+    {"name": "review_aggregate", "input_model": "ReviewAggregateInput", "output_model": "ReviewAggregateOutput", "depends_on": ["llm_format_review", "llm_data_validation", "llm_semantic_review"], "human_checkpoint": "评估师审核三类 LLM 审核问题"},
+    {"name": "export_audit", "input_model": "ExportAuditInput", "output_model": "ExportAuditOutput", "depends_on": ["review_aggregate"], "human_checkpoint": "评估师审核生成 Word、字段审计清单和问题清单"}
   ]
 }

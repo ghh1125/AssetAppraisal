@@ -3,6 +3,15 @@
   "template": "../../templates/评估报告版式-沟通标注版.docx",
   "mapping": "../mappings/appraisal_report_v1.yaml",
   "manual_inputs": "tongfu.manual.example.yaml",
+  "llm": {
+    "default_model": "qwen3.7-flash",
+    "tasks": {
+      "narrative": "qwen3.7-flash",
+      "format_review": "qwen3.7-flash",
+      "data_validation": "qwen3.7-flash",
+      "semantic_review": "qwen3.7-flash"
+    }
+  },
   "sources": {
     "audit_pdf": "../../资产评估工作流/通富2025.6.30合并及母公司审计报告.pdf",
     "reference_report": "../../资产评估工作流/通富昆山评估报告-S2.docx",

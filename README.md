@@ -1,6 +1,6 @@
 # AssetAppraisal
 
-可配置的资产评估报告 Demo 工作流：把审计 PDF 识别为结构化 OCR Excel，再按模板中的字段来源规则，将 PDF/OCR/XLSX、企查查 API、百炼 GLM 和用户输入分别填入 Word。输出始终复制模板生成，不覆盖原模板。
+可配置的资产评估报告 Demo 工作流：把审计 PDF 识别为结构化 OCR Excel，再按模板中的字段来源规则，将 PDF/OCR/XLSX、企查查 API、百炼模型和用户输入分别填入 Word，并在生成后执行格式、数据和语义审核。输出始终复制模板生成，不覆盖原模板。
 
 ## 安全边界
 
@@ -44,19 +44,25 @@ QICHACHA_SECRET_KEY=你的SecretKey
 
 接口地址和路径已经写入程序默认配置，通常不需要修改。接口无结果时，该来源字段按规则留空并写入 `issues.json`，不会用其他来源冒填。
 
-### 百炼 GLM
+### 百炼模型
 
-在[阿里云百炼控制台](https://bailian.console.aliyun.com/)开通兼容 OpenAI 接口并创建 API Key。默认配置为 `glm-5.2`，模型和网关都可以自行修改：
+在[阿里云百炼控制台](https://bailian.console.aliyun.com/)开通兼容 OpenAI 接口并创建 API Key。默认配置为 `qwen3.7-flash`，模型和网关都可以自行修改：
 
 ```dotenv
 DASHSCOPE_API_KEY=你的百炼APIKey
-APPRAISAL_LLM_MODEL=glm-5.2
+APPRAISAL_LLM_MODEL=qwen3.7-flash
 ```
+
+项目配置还支持为 `narrative`、`format_review`、`data_validation`、`semantic_review` 分别指定模型；未指定时统一使用 `default_model`，环境变量优先级更高。
 
 例如切换到其他模型，只改 `APPRAISAL_LLM_MODEL`。Prompt 和结构化输出契约分别位于：
 
 - `demo/prompts/yellow_narratives.v1.txt`
 - `demo/prompts/yellow_narratives_output.v1.json`
+- `demo/prompts/review_format.v1.txt`
+- `demo/prompts/review_data.v1.txt`
+- `demo/prompts/review_semantic.v1.txt`
+- `demo/prompts/review_output.v1.json`
 
 修改模型时应保持输出字段白名单和 JSON 结构；业务代码不会读取 `.env` 创建全局客户端，凭证只在 CLI/API 入口注入。
 
@@ -114,6 +120,8 @@ npm run dev -- --host 127.0.0.1 --port 5173
 - 上报表 XLSX：应包含表 1、表 4-6、表 4-12 等资产基础法和长期资产数据。
 
 Word 模板由后端固定提供。上传的 3 个 XLSX 会覆盖本次任务的项目材料路径，生成结果不会修改原文件；如果工作表名称或表格结构也不同，需要先在项目配置中增加对应映射。
+
+生成 Word 后，若启用百炼模型，还会生成 `格式审核.json`、`数据校验.json`、`语义审核.json` 和 `审核汇总.json`。审核只提出问题和证据，不直接改写 Word；所有问题同时汇总到 `issues.json`。
 
 ```bash
 cd frontend

@@ -370,7 +370,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--pdf", type=Path, help="启用端到端 OCR 流程时指定的 PDF")
     parser.add_argument("--template", type=Path, help="可选 Word 模板；始终只读")
     parser.add_argument("--ocr-engine", choices=["paddle"], default="paddle")
-    parser.add_argument("--use-glm", action="store_true", help="使用百炼 glm-5.2 生成七个叙述字段")
+    parser.add_argument("--use-glm", action="store_true", help="使用百炼模型生成叙述字段并执行三类审核")
     parser.add_argument("--use-qichacha", action="store_true", help="使用配置的企查查兼容 API")
     parser.add_argument("--node-inputs-json", type=Path, help="两个节点输入字段的 JSON 文件")
     parser.add_argument("--commissioning-party-name", help="用户输入：委托方全称")
@@ -394,6 +394,7 @@ def main(argv: list[str] | None = None) -> int:
 
         ocr_adapter = PaddleStructureOcrAdapter(create_local_pipeline())
         llm_adapter = None
+        review_adapters = None
         qichacha_adapter = None
         http_client = None
         if args.use_glm or args.use_qichacha:
@@ -403,22 +404,25 @@ def main(argv: list[str] | None = None) -> int:
                 parser.error(f"使用外部服务需安装 services 依赖：{exc}")
             http_client = httpx.Client(timeout=120)
         if args.use_glm:
-            from .adapters.bailian_glm import BailianYellowNarrativeAdapter
-
             api_key = os.environ.get("DASHSCOPE_API_KEY", "")
             if not api_key:
                 parser.error("--use-glm 需要环境变量 DASHSCOPE_API_KEY")
-            prompt = (Path(__file__).parent / "prompts/yellow_narratives.v1.txt").read_text(encoding="utf-8")
-            llm_adapter = BailianYellowNarrativeAdapter(
-                http_client,
-                api_key,
-                prompt,
+            from .adapters.llm_factory import build_bailian_adapters
+
+            project_config = json.loads(Path(args.project).read_text(encoding="utf-8"))
+            adapters = build_bailian_adapters(
+                client=http_client,
+                api_key=api_key,
+                root=Path(__file__).parent,
+                config=project_config,
+                env=os.environ,
                 base_url=os.environ.get(
                     "APPRAISAL_LLM_BASE_URL",
                     "https://dashscope.aliyuncs.com/compatible-mode/v1",
                 ),
-                model=os.environ.get("APPRAISAL_LLM_MODEL", "glm-5.2"),
             )
+            llm_adapter = adapters["narrative"]
+            review_adapters = adapters["reviews"]
         if args.use_qichacha:
             from .adapters.company_api import QichachaApiAdapter
 
@@ -478,6 +482,7 @@ def main(argv: list[str] | None = None) -> int:
             template_path=args.template,
             template_page_reader=LibreOfficeTemplatePageReader(),
             report_date=args.report_date,
+            review_adapters=review_adapters,
         )
         print(f"OCR Excel：{result.ocr_workbook_path}")
         print(f"报告：{result.report_path}")

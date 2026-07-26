@@ -15,7 +15,9 @@ from demo.adapters.audit import export_audit, write_json
 from demo.adapters.document import read_table_matrix
 from demo.adapters.excel import read_cells, read_configured_table
 from demo.adapters.ocr_workbook import export_ocr_workbook, normalized_from_ocr_workbook
+from demo.adapters.review_inputs import build_data_review_evidence, build_format_review_evidence, build_semantic_review_evidence
 from demo.adapters.word import document_paragraph_texts, fill_template, inventory_template, replace_image_markers, replace_report_number_year, unresolved_placeholders
+from demo.domain.review import aggregate_reviews
 from demo.domain.field_validation import require_financial_fields
 from demo.domain.field_validation import validate_valuation_subject_type
 from demo.domain.mapping import validate_mapping
@@ -457,6 +459,7 @@ def run_pipeline(
     manual_inputs_override: dict[str, Any] | None = None,
     ocr_workbook_path: Path | None = None,
     source_overrides: dict[str, Path] | None = None,
+    review_adapters: dict[str, Any] | None = None,
 ) -> PipelineResult:
     config_path = project_config.resolve()
     config = json.loads(config_path.read_text(encoding="utf-8"))
@@ -831,6 +834,29 @@ def run_pipeline(
         evidence,
         template_pages=template_pages,
     )
+    reviews: dict[str, dict[str, Any]] = {}
+    review_output_paths: list[str] = []
+    if review_adapters:
+        review_inputs = {
+            "format": build_format_review_evidence(template, report),
+            "data": build_data_review_evidence(report, fields, audit, evidence),
+            "semantic": build_semantic_review_evidence(report, fields),
+        }
+        review_files = {"format": "格式审核.json", "data": "数据校验.json", "semantic": "语义审核.json"}
+        for review_name, adapter in review_adapters.items():
+            if review_name not in review_inputs or adapter is None:
+                continue
+            review_result, review_issues = adapter.review(review_inputs[review_name])
+            reviews[review_name] = review_result
+            issues.extend(review_issues)
+            for finding in review_result.get("findings", []):
+                location = finding.get("location", "")
+                problem = finding.get("problem", "")
+                issues.append(f"LLM {review_name}审核：{location}：{problem}".strip("："))
+            review_path = write_json(output_dir / review_files[review_name], review_result)
+            review_output_paths.append(str(review_path))
+        if reviews:
+            review_output_paths.append(str(write_json(output_dir / "审核汇总.json", aggregate_reviews(reviews))))
     write_json(output_dir / "normalized_fields.json", fields)
     write_json(output_dir / "issues.json", issues)
     manifest = {
@@ -844,9 +870,20 @@ def run_pipeline(
         "yellow_route_version": "yellow_routes.v1",
         "financial_rule_version": "financial_aliases.v1",
         "prompt_version": getattr(llm_adapter, "prompt_version", "yellow_narratives.v1"),
+        "llm_models": {
+            name: review.get("model", "") for name, review in reviews.items()
+        },
         "ocr_cache_reused": bool(ocr_workbook_path),
         "ocr_cache_source": str(ocr_workbook_path) if ocr_workbook_path else "",
-        "outputs": [str(ocr_workbook), str(report), str(audit)],
+        "outputs": [str(ocr_workbook), str(report), str(audit), *review_output_paths],
+        "reviews": {
+            name: {
+                "status": review.get("status", ""),
+                "model": review.get("model", ""),
+                "prompt_version": review.get("prompt_version", ""),
+            }
+            for name, review in reviews.items()
+        },
     }
     manifest_path = write_json(output_dir / "run_manifest.json", manifest)
     return PipelineResult(report, audit, ocr_workbook, manifest_path, issues)

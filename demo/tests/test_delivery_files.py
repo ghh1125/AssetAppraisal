@@ -20,7 +20,7 @@ def test_manifest_and_changelog_cover_handoff_requirements():
     qcc = next(item for item in providers if item["name"] == "qichacha")
     assert set(qcc["api_codes"]) == {"735", "231", "514", "233"}
     glm = next(item for item in providers if item["name"] == "bailian_glm")
-    assert glm["model"] == "glm-5.2"
+    assert glm["model"] == "qwen3.7-flash"
 
 
 def test_prompt_schema_is_the_runtime_seven_field_contract():
@@ -52,7 +52,7 @@ def test_readme_documents_all_outputs_route_counts_and_failure_policy():
         "run_manifest.json",
     ):
         assert output in readme
-    for route_count in ("GLM：7", "企查查 API：5", "PDF OCR/XLSX：6", "节点输入：2"):
+    for route_count in ("百炼叙述：7", "企查查 API：5", "PDF OCR/XLSX：6", "节点输入：2"):
         assert route_count in readme
     assert "Python 3.11" in readme
     assert "DASHSCOPE_API_KEY" in readme

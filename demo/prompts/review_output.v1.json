@@ -1,0 +1,25 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "status": {"type": "string", "enum": ["completed", "completed_with_issues", "failed"]},
+    "summary": {"type": "string"},
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "location": {"type": "string"},
+          "severity": {"type": "string", "enum": ["high", "medium", "low"]},
+          "category": {"type": "string"},
+          "problem": {"type": "string"},
+          "evidence": {"type": "string"},
+          "suggestion": {"type": "string"}
+        },
+        "required": ["location", "severity", "category", "problem", "evidence", "suggestion"]
+      }
+    }
+  },
+  "required": ["status", "summary", "findings"]
+}

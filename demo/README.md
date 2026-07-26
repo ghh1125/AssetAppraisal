@@ -11,11 +11,13 @@
 3. `export_ocr_workbook`：生成独立的 `OCR结构化结果.xlsx`。
 4. `extract_sources`：读取 OCR Excel、其他结构化 Excel、节点参数和外部服务结果。
 5. `resolve_fields`：按字段语义、期间、单位和固定黄色来源路由选择字段值。
-6. `generate_narrative`：通过注入的百炼 GLM 生成限定的叙述内容。
+6. `generate_narrative`：通过注入的百炼模型生成限定的叙述内容。
 7. `fill_word`：复制模板并替换全部占位符和黄色说明。
-8. `export_audit`：导出字段来源清单和运行记录。
+8. `llm_format_review`、`llm_data_validation`、`llm_semantic_review`：对生成 Word 执行格式、数据和语义审核。
+9. `review_aggregate`：汇总三类审核结果和问题。
+10. `export_audit`：导出字段来源清单和运行记录。
 
-人工检查点位于最后一步：评估师审核生成 Word 和字段审计清单。
+人工检查点位于最后一步：评估师审核生成 Word、字段审计清单和三类 LLM 审核问题。
 
 ## 安装与运行
 
@@ -26,7 +28,7 @@ uv run python -m demo.run demo/projects/tongfu.yaml --offline
 
 `--offline` 不调用企业 API 和 LLM；企查查/LLM/人工类字段在无材料时留空，不向 Word 写入“待人工补充”等提示语。项目配置在 `required_financial_fields` 中声明基础财务输入，在 `required_monetary_fields` 中声明最终 Word 绝不允许为空的金额和财务结果；后者会在黄色来源路由完成后再次校验，缺失时终止生成。可用 `--output-dir` 指定独立输出目录。原 Word 永远作为只读模板，不会被覆盖。
 
-在 c2m 或其他宿主中，可直接调用 `run_project(...)` 并通过 `ocr_adapter`、`company_api_adapter`、`llm_adapter` 参数注入已有服务。Demo 不在 `domain/` 内创建客户端或读取密钥；注入结果只接受映射表中已经登记的字段键。
+在 c2m 或其他宿主中，可直接调用 `run_project(...)` / `run_pipeline(...)` 并通过 `ocr_adapter`、`company_api_adapter`、`llm_adapter` 和 `review_adapters` 参数注入已有服务。Demo 不在 `domain/` 内创建客户端或读取密钥；注入结果只接受映射表中已经登记的字段键。
 
 端到端 OCR 使用独立的 Python 3.11 环境（PaddleOCR 当前可选依赖限定 Python `<3.13`）。项目根目录的本地 `.env` 会在 Demo 入口自动加载；也可以由宿主进程自行注入同名环境变量，例如 `DASHSCOPE_API_KEY`、`QICHACHA_APP_KEY` 和 `QICHACHA_SECRET_KEY`：
 
@@ -54,7 +56,8 @@ uv run --python 3.11 python -m demo.run demo/projects/tongfu.yaml \
 
 模板中的 20 个黄色位置固定为四组，配置漏项、重复或模板位置变化会直接报错：
 
-- GLM：7 个——公司概况、行业、业务板块、主要产品、客户供应商、盈利模式/SWOT、可比公司。
+- 百炼叙述：7 个——公司概况、行业、业务板块、主要产品、客户供应商、盈利模式/SWOT、可比公司。
+- 百炼审核：格式、数据、语义 3 个独立任务；默认都使用 `qwen3.7-flash`，可在项目 YAML 的 `llm.tasks` 中分别改模型。
 - 企查查 API：5 个——委托方概况、历史股权沿革、基准日股权、账外无形资产、软件著作权。
 - PDF OCR/XLSX：6 个——历史资产负债表、历史利润表、税率、评估范围、主要长期资产、资产基础法结果。
 - 节点输入：2 个——选用评估方法、评估目的输入。
@@ -69,6 +72,8 @@ uv run --python 3.11 python -m demo.run demo/projects/tongfu.yaml \
 - `字段审计清单.xlsx`
 - `normalized_fields.json`
 - `issues.json`
+- `格式审核.json`、`数据校验.json`、`语义审核.json`
+- `审核汇总.json`
 - `run_manifest.json`
 
 ## Vue 前端工作台
@@ -99,7 +104,8 @@ npm run dev
 - OCR 失败或某个黄色指定来源无结果：记录到 `issues.json`，对应黄色内容留空。
 - 本机无 LibreOffice 或 PyMuPDF：Word 仍可生成，字段审计表的原模板页码留空并记录问题。
 - 金额及财务结果必填字段缺失：停止生成 Word；同字段同期间出现冲突候选时不自动选择，由 c2m 或评估师处理。
-- GLM 返回越权字段、无证据字段或未知证据编号：丢弃该字段并记录问题。
+- 百炼叙述返回越权字段、无证据字段或未知证据编号：丢弃该字段并记录问题。
+- 任一 LLM 审核失败：报告仍保留，审核结果标记为 `failed`，并记录到 `issues.json`，由人工复核。
 - 企查查 API 未配置或企业身份核验不一致：对应 API 字段留空并记录复核事项。
 - 已有同一 PDF 的 OCR 结果：默认复用缓存，不重复执行 OCR；取消“复用已有 OCR 结果”后才会强制重新 OCR。
 - 生成完成：评估师同时审核 Word、字段审计清单和 OCR Excel；Demo 验收不代表生产上线。

@@ -161,6 +161,34 @@ class FillWordOutput(DemoModel):
     replacement_count: int = Field(description="已替换位置数量", examples=[147])
 
 
+class ReviewInput(DemoModel):
+    review_type: str = Field(description="审核类型", examples=["data_validation"])
+    report_path: str = Field(description="待审核 Word 路径", examples=["report.docx"])
+    evidence: dict[str, Any] = Field(description="供模型审核的结构化证据", examples=[{"fields": {}}])
+
+
+class ReviewOutput(DemoModel):
+    review_type: str = Field(description="审核类型", examples=["semantic_review"])
+    status: str = Field(description="审核状态", examples=["completed_with_issues"])
+    summary: str = Field(description="审核摘要", examples=["发现一项问题"])
+    findings: list[dict[str, Any]] = Field(description="审核发现的问题列表", examples=[[{"severity": "medium"}]])
+    model: str = Field(description="实际使用的模型", examples=["qwen3.7-flash"])
+    prompt_version: str = Field(description="审核 Prompt 版本", examples=["review_data.v1"])
+
+
+class ReviewAggregateInput(DemoModel):
+    reviews: dict[str, ReviewOutput] = Field(description="三个审核节点的结果", examples=[{}])
+
+
+class ReviewAggregateOutput(DemoModel):
+    status: str = Field(description="汇总审核状态", examples=["completed_with_issues"])
+    review_count: int = Field(description="已执行审核数量", examples=[3])
+    finding_count: int = Field(description="问题总数", examples=[2])
+    severity_counts: dict[str, int] = Field(description="按严重级别统计的问题数量", examples=[{"high": 1, "medium": 1, "low": 0}])
+    failed_reviews: list[str] = Field(description="执行失败的审核节点", examples=[[]])
+    findings: list[dict[str, Any]] = Field(description="汇总后的问题列表", examples=[[{"severity": "high"}]])
+
+
 class ExportAuditInput(DemoModel):
     report_path: str = Field(description="待审核 Word 路径", examples=["report.docx"])
     fields: list[ResolvedField] = Field(description="需导出的标准字段", examples=[[]])

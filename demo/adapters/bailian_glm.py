@@ -35,7 +35,7 @@ class BailianYellowNarrativeAdapter:
         prompt: str,
         *,
         base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        model: str = "glm-5.2",
+        model: str = "qwen3.7-flash",
         prompt_version: str = "yellow_narratives.v1",
     ):
         self.client = client
