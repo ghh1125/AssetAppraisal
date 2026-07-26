@@ -13,11 +13,12 @@ const form = reactive({
   target_company_name: '',
   report_serial: '',
   valuation_purpose_inputs: '',
-  selected_valuation_method: '收益法、资产基础法',
+  selected_valuation_method: ['收益法', '资产基础法'],
   valuation_subject_type: '股东全部权益价值',
   transaction_type: '收购',
   final_valuation_method: '收益法',
-  target_company_short_name: '通富昆山',
+  target_company_short_name: '',
+  narrative_modules: ['industry_overview', 'business_and_segments', 'main_products', 'customers_suppliers', 'profit_model_swot', 'comparable_list'],
 })
 const files = reactive({ pdf: null, referenceReport: null, auditedFinancials: null, incomeWorkbook: null, reportingWorkbook: null })
 const useGlm = ref(true)
@@ -36,8 +37,12 @@ const canSubmit = computed(() => Boolean(
   && files.reportingWorkbook
   && form.commissioning_party_name
   && form.commissioning_party_short_name
+  && form.target_company_name
+  && form.target_company_short_name
   && form.report_serial
-  && form.valuation_purpose_inputs,
+  && form.valuation_purpose_inputs
+  && form.selected_valuation_method.length
+  && form.narrative_modules.length
 ))
 const statusText = computed(() => t(`asset.${run.value?.status || 'queued'}`))
 
@@ -160,23 +165,31 @@ onBeforeUnmount(clearPoll)
         <a-form layout="vertical">
           <div class="form-row">
             <a-form-item :label="t('asset.commissioningName')" required><a-input v-model:value="form.commissioning_party_name" /></a-form-item>
+            <a-form-item :label="t('asset.targetName')" required><a-input v-model:value="form.target_company_name" :placeholder="t('asset.targetNamePlaceholder')" /></a-form-item>
+          </div>
+          <div class="form-row">
+            <a-form-item :label="t('asset.transaction')" required><a-select v-model:value="form.transaction_type"><a-select-option value="转让">{{ t('asset.transactionOptions.transfer') }}</a-select-option><a-select-option value="收购">{{ t('asset.transactionOptions.acquisition') }}</a-select-option><a-select-option value="增资">{{ t('asset.transactionOptions.capitalIncrease') }}</a-select-option><a-select-option value="减资">{{ t('asset.transactionOptions.capitalDecrease') }}</a-select-option></a-select></a-form-item>
             <a-form-item :label="t('asset.commissioningShortName')" required><a-input v-model:value="form.commissioning_party_short_name" /></a-form-item>
+          </div>
+          <a-form-item :label="t('asset.purpose')" required><a-textarea v-model:value="form.valuation_purpose_inputs" :rows="3" :placeholder="t('asset.purposePlaceholder')" /></a-form-item>
+          <div class="form-row three">
+            <a-form-item :label="t('asset.method')" required><a-select v-model:value="form.selected_valuation_method" mode="multiple" :max-tag-count="2"><a-select-option value="资产基础法">{{ t('asset.methodOptions.asset') }}</a-select-option><a-select-option value="收益法">{{ t('asset.methodOptions.income') }}</a-select-option><a-select-option value="市场法">{{ t('asset.methodOptions.market') }}</a-select-option></a-select></a-form-item>
+            <a-form-item :label="t('asset.subject')"><a-select v-model:value="form.valuation_subject_type"><a-select-option value="股东全部权益价值">股东全部权益价值</a-select-option><a-select-option value="股东部分权益价值">股东部分权益价值</a-select-option><a-select-option value="企业整体价值">企业整体价值</a-select-option><a-select-option value="资产组价值">资产组价值</a-select-option></a-select></a-form-item>
+            <a-form-item :label="t('asset.finalMethod')" required><a-select v-model:value="form.final_valuation_method"><a-select-option value="资产基础法">{{ t('asset.methodOptions.asset') }}</a-select-option><a-select-option value="收益法">{{ t('asset.methodOptions.income') }}</a-select-option><a-select-option value="市场法">{{ t('asset.methodOptions.market') }}</a-select-option></a-select></a-form-item>
           </div>
           <div class="form-row">
             <a-form-item :label="t('asset.reportSerial')" required><a-input v-model:value="form.report_serial" /></a-form-item>
             <a-form-item :label="t('asset.targetShortName')"><a-input v-model:value="form.target_company_short_name" /></a-form-item>
           </div>
-          <a-form-item :label="t('asset.targetName')"><a-input v-model:value="form.target_company_name" :placeholder="t('asset.targetNamePlaceholder')" /></a-form-item>
-          <a-form-item :label="t('asset.purpose')" required><a-textarea v-model:value="form.valuation_purpose_inputs" :rows="3" :placeholder="t('asset.purposePlaceholder')" /></a-form-item>
-          <div class="form-row three">
-            <a-form-item :label="t('asset.method')"><a-select v-model:value="form.selected_valuation_method"><a-select-option value="收益法、资产基础法">{{ t('asset.methodOptions.both') }}</a-select-option><a-select-option value="资产基础法">{{ t('asset.methodOptions.asset') }}</a-select-option><a-select-option value="收益法">{{ t('asset.methodOptions.income') }}</a-select-option></a-select></a-form-item>
-            <a-form-item :label="t('asset.subject')"><a-select v-model:value="form.valuation_subject_type"><a-select-option value="股东全部权益价值">股东全部权益价值</a-select-option><a-select-option value="股东部分权益价值">股东部分权益价值</a-select-option><a-select-option value="企业整体价值">企业整体价值</a-select-option><a-select-option value="资产组价值">资产组价值</a-select-option></a-select></a-form-item>
-            <a-form-item :label="t('asset.transaction')"><a-input v-model:value="form.transaction_type" /></a-form-item>
-          </div>
-          <div class="form-row">
-            <a-form-item :label="t('asset.finalMethod')"><a-input v-model:value="form.final_valuation_method" /></a-form-item>
-            <div class="switches"><a-checkbox v-model:checked="useGlm">{{ t('asset.useGlm') }}</a-checkbox><a-checkbox v-model:checked="useQichacha">{{ t('asset.useQichacha') }}</a-checkbox><a-checkbox v-model:checked="reuseOcr">{{ t('asset.reuseOcr') }}</a-checkbox></div>
-          </div>
+          <a-form-item :label="t('asset.moduleTitle')" required><a-checkbox-group v-model:value="form.narrative_modules" :options="[
+            { label: t('asset.modules.industry'), value: 'industry_overview' },
+            { label: t('asset.modules.business'), value: 'business_and_segments' },
+            { label: t('asset.modules.products'), value: 'main_products' },
+            { label: t('asset.modules.customers'), value: 'customers_suppliers' },
+            { label: t('asset.modules.swot'), value: 'profit_model_swot' },
+            { label: t('asset.modules.comparable'), value: 'comparable_list' },
+          ]" /> </a-form-item>
+          <div class="switches"><a-checkbox v-model:checked="useGlm">{{ t('asset.useGlm') }}</a-checkbox><a-checkbox v-model:checked="useQichacha">{{ t('asset.useQichacha') }}</a-checkbox><a-checkbox v-model:checked="reuseOcr">{{ t('asset.reuseOcr') }}</a-checkbox></div>
         </a-form>
       </a-card>
     </section>
