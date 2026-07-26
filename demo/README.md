@@ -27,7 +27,7 @@ uv sync --extra dev
 uv run python -m demo.run demo/projects/tongfu.yaml --offline
 ```
 
-`--offline` 不调用企业 API 和 LLM；企查查/LLM/人工类字段在无材料时留空，不向 Word 写入“待人工补充”等提示语。项目配置在 `required_financial_fields` 中声明基础财务输入，在 `required_monetary_fields` 中声明最终 Word 绝不允许为空的金额和财务结果；后者会在黄色来源路由完成后再次校验，缺失时终止生成。可用 `--output-dir` 指定独立输出目录。原 Word 永远作为只读模板，不会被覆盖。
+`--offline` 不调用企业 API 和 LLM；企查查/LLM/人工类字段在无材料时留空，不向 Word 写入“待人工补充”等提示语。项目配置在 `required_financial_fields` 中声明基础财务输入，在 `required_monetary_fields` 中声明需要重点复核的金额和财务结果；找不到时保持空白、记录高优先级问题并继续生成待复核 Word。可用 `--output-dir` 指定独立输出目录。原 Word 永远作为只读模板，不会被覆盖。
 
 在 c2m 或其他宿主中，可直接调用 `run_project(...)` / `run_pipeline(...)` 并通过 `ocr_adapter`、`company_api_adapter`、`llm_adapter` 和 `review_adapters` 参数注入已有服务。Demo 不在 `domain/` 内创建客户端或读取密钥；注入结果只接受映射表中已经登记的字段键。
 
@@ -70,7 +70,7 @@ uv run --python 3.11 python -m demo.run demo/projects/tongfu.yaml \
 - `OCR结构化结果.xlsx`
   - `OCR_表格`：逐单元格审计明细；`OCR_表格索引` 及 `表_<页码>_<表格编号>`：按 OCR 行列恢复的矩阵表，便于人工查看和后续映射。
 - `资产评估报告_待复核.docx`
-- `资产评估报告_最终候选.docx`
+- `资产评估报告_最终候选.docx`（仅在财务字段完整且至少一项审核完成时生成）
 - `字段审计清单.xlsx`
 - `normalized_fields.json`
 - `issues.json`
@@ -108,7 +108,8 @@ npm run dev
 - OCR 失败或某个黄色指定来源无结果：记录到 `issues.json`，对应黄色内容留空。
 - `workflow.yaml` 节点、模型、字段说明或依赖不符合契约：在任何外部调用前停止运行。
 - 本机无 LibreOffice 或 PyMuPDF：Word 仍可生成，字段审计表的原模板页码留空并记录问题。
-- 金额及财务结果必填字段缺失：停止生成 Word；同字段同期间出现冲突候选时不自动选择，由 c2m 或评估师处理。
+- 金额及财务结果字段缺失：对应内容和表格金额留空，生成待复核 Word，并在 `issues.json`、字段审计、运行清单和工作流轨迹中标为高优先级；不生成最终候选 Word。
+- 同字段同期间出现冲突候选：不自动选择，保留待复核 Word 和冲突记录，不生成最终候选 Word，由 c2m 或评估师处理。
 - 百炼叙述返回越权字段、无证据字段或未知证据编号：丢弃该字段并记录问题。
 - 任一 LLM 审核失败：报告仍保留，审核结果标记为 `failed`，其他审核继续；未启用的审核在轨迹中标记为 `skipped`。
 - 企查查 API 未配置或企业身份核验不一致：对应 API 字段留空并记录复核事项。

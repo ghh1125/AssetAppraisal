@@ -50,4 +50,5 @@ def test_manifest_registers_contract_trace_and_review_schema_versions():
     assert versions["workflow_contract"] == "workflow_contract.v1"
     assert versions["workflow_trace"] == "workflow_trace.v1"
     assert versions["narrative_policy"] == "narrative_policy.v1"
+    assert versions["financial_validation"] == "financial_validation.v2"
     assert versions["review_output_schema"] == "review_output.v1"

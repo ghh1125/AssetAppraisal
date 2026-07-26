@@ -57,6 +57,17 @@
     }
   },
   {
+    "id": "candidate_with_missing_financial_fields",
+    "op": "candidate",
+    "financial_fields_complete": false,
+    "reviews": {
+      "format": {
+        "status": "completed",
+        "findings": []
+      }
+    }
+  },
+  {
     "id": "aggregate_without_reviews",
     "op": "review_aggregate",
     "reviews": {}

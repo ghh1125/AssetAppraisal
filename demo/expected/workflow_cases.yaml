@@ -19,6 +19,7 @@
   "narrative_does_not_add_unrouted": [],
   "candidate_without_reviews": false,
   "candidate_with_completed_review": true,
+  "candidate_with_missing_financial_fields": false,
   "aggregate_without_reviews": {
     "status": "completed",
     "review_count": 0,

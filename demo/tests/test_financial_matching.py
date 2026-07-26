@@ -3,8 +3,12 @@ from pathlib import Path
 
 import pytest
 
-from demo.domain.field_validation import require_financial_fields
+from demo.domain.field_validation import (
+    apply_missing_field_policy,
+    require_financial_fields,
+)
 from demo.domain.financial_matching import (
+    blank_configured_table,
     match_financial_table,
     normalize_label,
     parse_number,
@@ -45,6 +49,44 @@ def test_fixture_cases_cover_layout_period_unit_missing_and_conflict_rules():
         else:
             raise AssertionError(f"未知样例操作：{case['operation']}")
         assert actual == expected[case["id"]], case["id"]
+
+
+def test_missing_financial_fields_are_left_blank_and_reported():
+    result = apply_missing_field_policy(
+        fields={"total_assets": "100.00"},
+        evidence={"total_assets": {"kind": "xlsx", "file": "audit.xlsx"}},
+        required_fields=["total_assets", "net_assets"],
+        label="财务材料字段",
+    )
+
+    assert result["valid"] is False
+    assert result["missing_fields"] == ["net_assets"]
+    assert result["fields"]["net_assets"] == ""
+    assert result["evidence"]["net_assets"] == {
+        "kind": "blank",
+        "file": "",
+        "locator": "指定来源未匹配到值",
+    }
+    assert result["issues"] == [
+        "高优先级：财务材料字段未匹配到，已留空：net_assets"
+    ]
+
+
+def test_blank_configured_table_preserves_structure_without_template_values():
+    assert blank_configured_table(
+        {
+            "header": ["项目", "2024年", "2025年"],
+            "include_header": True,
+            "rows": [
+                {"label": "资产总计", "cells": ["B2", "C2"]},
+                {"label": "负债合计", "cells": ["B3", "C3"]},
+            ],
+        }
+    ) == [
+        ["项目", "2024年", "2025年"],
+        ["资产总计", "", ""],
+        ["负债合计", "", ""],
+    ]
 
 
 @pytest.mark.parametrize(

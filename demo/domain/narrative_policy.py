@@ -19,9 +19,11 @@ def select_narrative_fields(
 
 def should_create_candidate_report(
     reviews: Mapping[str, Mapping[str, Any]],
+    *,
+    financial_fields_complete: bool = True,
 ) -> bool:
-    """Create a candidate only after at least one review completed."""
-    return any(
+    """Create a candidate only after review and complete financial inputs."""
+    return financial_fields_complete and any(
         review.get("status") in {"completed", "completed_with_issues"}
         for review in reviews.values()
     )

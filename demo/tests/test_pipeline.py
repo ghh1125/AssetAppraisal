@@ -6,7 +6,9 @@ from pathlib import Path
 
 import pytest
 from docx import Document
+from openpyxl import load_workbook
 
+import demo.pipeline as pipeline_module
 from demo.pipeline import _apply_ocr_overrides_to_table, _company_profile_table, _ocr_ownership_matrix, _validated_qcc_payload, run_pipeline
 
 
@@ -303,6 +305,89 @@ def test_pipeline_runs_three_reviews_and_exports_review_artifacts(tmp_path):
         "export_audit",
     ]
     assert str(trace_path) in manifest["outputs"]
+
+
+def test_pipeline_generates_review_report_when_monetary_fields_are_missing(
+    tmp_path,
+    monkeypatch,
+):
+    real_run_project = pipeline_module.run_project
+
+    def run_project_with_missing_fields(*args, **kwargs):
+        result = real_run_project(*args, **kwargs)
+        fields_path = result.report_path.parent / "normalized_fields.json"
+        fields = json.loads(fields_path.read_text(encoding="utf-8"))
+        fields["book_net_assets"] = ""
+        fields["historical_balance_sheet_table"] = ""
+        fields_path.write_text(
+            json.dumps(fields, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        return result
+
+    monkeypatch.setattr(
+        pipeline_module,
+        "run_project",
+        run_project_with_missing_fields,
+    )
+
+    result = run_pipeline(
+        project_config=Path("demo/projects/tongfu.yaml"),
+        pdf_path=Path("资产评估工作流/通富2025.6.30合并及母公司审计报告.pdf"),
+        output_dir=tmp_path,
+        ocr_adapter=FixtureOcrAdapter(),
+        llm_adapter=FixtureLlmAdapter(),
+        qichacha_adapter=FixtureQichachaAdapter(),
+        ocr_field_resolver=fixture_ocr_fields,
+        template_page_reader=FixtureTemplatePageReader(),
+        review_adapters={
+            "format": FixtureReviewAdapter("format_review"),
+        },
+    )
+
+    assert result.report_path.exists()
+    assert not (tmp_path / "资产评估报告_最终候选.docx").exists()
+    assert "高优先级：金额及财务结果字段未匹配到，已留空：book_net_assets" in result.issues
+    fields = json.loads(
+        (tmp_path / "normalized_fields.json").read_text(encoding="utf-8")
+    )
+    assert fields["book_net_assets"] == ""
+    report = Document(result.report_path)
+    assert all(
+        cell.text == ""
+        for row in report.tables[4].rows[1:]
+        for cell in row.cells[1:]
+    )
+
+    audit_sheet = load_workbook(
+        result.audit_path,
+        read_only=True,
+        data_only=True,
+    )["填充结果"]
+    audit_headers = {
+        cell.value: index for index, cell in enumerate(audit_sheet[1])
+    }
+    book_net_assets_row = next(
+        row
+        for row in audit_sheet.iter_rows(min_row=2, values_only=True)
+        if row[audit_headers["标准字段"]] == "book_net_assets"
+    )
+    assert book_net_assets_row[audit_headers["最终填充值"]] in ("", None)
+    assert book_net_assets_row[audit_headers["来源类别"]] == "blank"
+
+    manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+    assert manifest["financial_validation"]["valid"] is False
+    assert set(manifest["financial_validation"]["missing_fields"]) == {
+        "book_net_assets",
+        "historical_balance_sheet_table",
+    }
+    trace = json.loads(
+        (tmp_path / "workflow_trace.json").read_text(encoding="utf-8")
+    )
+    fill_word_node = next(
+        node for node in trace["nodes"] if node["node_name"] == "fill_word"
+    )
+    assert fill_word_node["status"] == "completed_with_issues"
 
 
 def test_pipeline_rejects_invalid_workflow_before_ocr(tmp_path):

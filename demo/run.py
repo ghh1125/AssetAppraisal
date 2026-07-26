@@ -18,6 +18,7 @@ from .adapters.word import fill_template, replace_report_number_year, unresolved
 from .domain.mapping import validate_mapping
 from .domain.calculations import derive_system_fields
 from .domain.field_validation import (
+    apply_missing_field_policy,
     normalize_narrative_modules,
     normalize_report_serial,
     normalize_valuation_methods,
@@ -318,17 +319,22 @@ def run_project(
     )
     for key in set(fields) - before_derived:
         evidence[key] = {"kind": "system", "file": "", "locator": key}
-    missing_financial = [
-        key for key in config.get("required_financial_fields", [])
-        if fields.get(key) in (None, "", [])
-    ]
-    if missing_financial:
-        raise ValueError("财务材料字段未能提取：" + "、".join(missing_financial))
+    required_financial_fields = list(config.get("required_financial_fields", []))
+    financial_validation = apply_missing_field_policy(
+        fields,
+        evidence,
+        required_financial_fields,
+        "财务材料字段",
+    )
+    fields = financial_validation["fields"]
+    evidence = financial_validation["evidence"]
+    issues.extend(financial_validation["issues"])
     for key, record in records_by_key.items():
         if fields.get(key) in (None, "", []):
             fields[key] = ""
             evidence[key] = {"kind": "blank", "file": "", "locator": ""}
-            issues.append(f"{key}：无可用值，已按规则留空")
+            if key not in required_financial_fields:
+                issues.append(f"{key}：无可用值，已按规则留空")
     replacements = build_replacements(locations, fields)
     paragraph_replacements: dict[tuple[str, int], str] = {}
     for spec in config.get("paragraph_replacements", []):
@@ -368,6 +374,11 @@ def run_project(
     manifest = {
         "project_id": config["project_id"], "template": str(template), "template_sha256": before_hash,
         "mapping_version": "1.0.0", "offline": offline, "replacement_count": len(replacements),
+        "financial_validation": {
+            "valid": financial_validation["valid"],
+            "missing_fields": financial_validation["missing_fields"],
+            "conflicts": [],
+        },
         "outputs": [str(report), str(audit)],
     }
     manifest_path = write_json(run_dir / "run_manifest.json", manifest)

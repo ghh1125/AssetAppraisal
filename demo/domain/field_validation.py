@@ -116,3 +116,44 @@ def require_financial_fields(
     )
     conflicts = list(data.get("_conflicts", []))
     return {"valid": not missing and not conflicts, "missing_fields": missing, "conflicts": conflicts}
+
+
+def apply_missing_field_policy(
+    fields: dict[str, Any],
+    evidence: dict[str, dict[str, Any]],
+    required_fields: list[str],
+    label: str,
+) -> dict[str, Any]:
+    """Leave unmatched fields blank and return an explicit review issue.
+
+    The function is intentionally side-effect free so the same business rule
+    can be reused by the CLI, web service, and a future c2m integration.
+    """
+    updated_fields = dict(fields)
+    updated_evidence = {
+        key: dict(value) if isinstance(value, dict) else value
+        for key, value in evidence.items()
+    }
+    missing = sorted(
+        field
+        for field in required_fields
+        if field not in updated_fields
+        or updated_fields[field] in (None, "", [], {})
+    )
+    for field in missing:
+        updated_fields[field] = ""
+        updated_evidence[field] = {
+            "kind": "blank",
+            "file": "",
+            "locator": "指定来源未匹配到值",
+        }
+    return {
+        "valid": not missing,
+        "missing_fields": missing,
+        "fields": updated_fields,
+        "evidence": updated_evidence,
+        "issues": [
+            f"高优先级：{label}未匹配到，已留空：{field}"
+            for field in missing
+        ],
+    }

@@ -107,3 +107,40 @@ def test_non_offline_run_uses_injected_provider_without_domain_dependency(tmp_pa
     fields = json.loads((tmp_path / "normalized_fields.json").read_text(encoding="utf-8"))
     assert fields["company_profile_text"] == "由注入服务生成的公司简介"
     assert not any(issue.startswith("company_profile_text：") for issue in result.issues)
+
+
+def test_missing_required_financial_field_does_not_block_review_report(tmp_path: Path):
+    source_config_path = Path("demo/projects/tongfu.yaml").resolve()
+    source_config = json.loads(source_config_path.read_text(encoding="utf-8"))
+    source_base = source_config_path.parent
+    for key in ("template", "mapping", "manual_inputs"):
+        source_config[key] = str((source_base / source_config[key]).resolve())
+    source_config["sources"] = {
+        key: str((source_base / value).resolve())
+        for key, value in source_config["sources"].items()
+    }
+    source_config["required_financial_fields"].append("synthetic_missing_amount")
+    config_path = tmp_path / "missing-financial.json"
+    config_path.write_text(
+        json.dumps(source_config, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    output_dir = tmp_path / "run"
+    result = run_project(config_path, output_dir=output_dir, offline=True)
+
+    fields = json.loads(
+        (output_dir / "normalized_fields.json").read_text(encoding="utf-8")
+    )
+    manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+    assert result.report_path.exists()
+    assert fields["synthetic_missing_amount"] == ""
+    assert (
+        "高优先级：财务材料字段未匹配到，已留空：synthetic_missing_amount"
+        in result.issues
+    )
+    assert manifest["financial_validation"] == {
+        "valid": False,
+        "missing_fields": ["synthetic_missing_amount"],
+        "conflicts": [],
+    }

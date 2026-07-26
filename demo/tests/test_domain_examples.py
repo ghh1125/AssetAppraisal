@@ -60,7 +60,13 @@ def test_workflow_policy_examples():
                 select_narrative_fields(set(case["routed"]), case["selected"])
             )
         elif case["op"] == "candidate":
-            actual[case["id"]] = should_create_candidate_report(case["reviews"])
+            actual[case["id"]] = should_create_candidate_report(
+                case["reviews"],
+                financial_fields_complete=case.get(
+                    "financial_fields_complete",
+                    True,
+                ),
+            )
         elif case["op"] == "review_aggregate":
             actual[case["id"]] = aggregate_reviews(case["reviews"])
         else:

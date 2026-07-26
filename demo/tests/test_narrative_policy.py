@@ -33,3 +33,13 @@ def test_candidate_report_requires_at_least_one_completed_review():
     assert should_create_candidate_report(
         {"data": {"status": "completed_with_issues", "findings": [{}]}}
     ) is True
+
+
+def test_candidate_report_is_withheld_when_financial_fields_are_incomplete():
+    assert (
+        should_create_candidate_report(
+            {"format": {"status": "completed", "findings": []}},
+            financial_fields_complete=False,
+        )
+        is False
+    )

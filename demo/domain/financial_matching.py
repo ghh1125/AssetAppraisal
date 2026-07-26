@@ -8,6 +8,18 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 
+def blank_configured_table(spec: dict[str, Any]) -> list[list[str]]:
+    """Build a blank matrix from a configured financial table shape."""
+    matrix: list[list[str]] = []
+    header = [str(value) for value in spec.get("header", [])]
+    if spec.get("include_header", True) and header:
+        matrix.append(header)
+    for row in spec.get("rows", []):
+        cells = row.get("cells", [])
+        matrix.append([str(row.get("label", "")), *([""] * len(cells))])
+    return matrix
+
+
 def normalize_label(value: str) -> str:
     text = unicodedata.normalize("NFKC", str(value)).strip()
     text = re.sub(r"^[（(]?[一二三四五六七八九十0-9]+[)）、.．:：]+", "", text)

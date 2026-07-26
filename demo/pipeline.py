@@ -27,8 +27,14 @@ from demo.adapters.workflow_trace import (
 )
 from demo.adapters.word import document_paragraph_texts, fill_template, inventory_template, replace_image_markers, replace_report_number_year, unresolved_placeholders
 from demo.domain.review import aggregate_reviews
-from demo.domain.field_validation import normalize_narrative_modules, normalize_valuation_methods, require_financial_fields
+from demo.domain.field_validation import (
+    apply_missing_field_policy,
+    normalize_narrative_modules,
+    normalize_valuation_methods,
+    require_financial_fields,
+)
 from demo.domain.field_validation import validate_valuation_subject_type
+from demo.domain.financial_matching import blank_configured_table
 from demo.domain.mapping import validate_mapping
 from demo.domain.narrative_policy import (
     select_narrative_fields,
@@ -1036,10 +1042,32 @@ def run_pipeline(
         ],
     )
 
-    monetary_gate = require_financial_fields(fields, config.get("required_monetary_fields", []))
-    if not monetary_gate["valid"]:
-        missing = "、".join(monetary_gate["missing_fields"])
-        raise ValueError(f"金额及财务结果字段缺失，停止生成 Word：{missing}")
+    required_monetary_fields = list(config.get("required_monetary_fields", []))
+    monetary_gate = require_financial_fields(fields, required_monetary_fields)
+    monetary_policy = apply_missing_field_policy(
+        fields,
+        evidence,
+        required_monetary_fields,
+        "金额及财务结果字段",
+    )
+    fields = monetary_policy["fields"]
+    evidence = monetary_policy["evidence"]
+    financial_issues = list(monetary_policy["issues"])
+    if monetary_gate["conflicts"]:
+        financial_issues.append(
+            "高优先级：金额及财务结果存在冲突，已保留待人工复核："
+            + json.dumps(
+                monetary_gate["conflicts"],
+                ensure_ascii=False,
+                default=str,
+            )
+        )
+    issues.extend(financial_issues)
+    financial_validation = {
+        "valid": monetary_policy["valid"] and not monetary_gate["conflicts"],
+        "missing_fields": monetary_policy["missing_fields"],
+        "conflicts": monetary_gate["conflicts"],
+    }
 
     replacements = build_replacements(locations, fields)
     table_replacements = {}
@@ -1051,6 +1079,10 @@ def run_pipeline(
         value = fields.get(spec["field_key"])
         if isinstance(value, dict) and isinstance(value.get("rows"), list):
             table_replacements[int(spec["target_table_index"])] = value["rows"]
+        else:
+            table_replacements[int(spec["target_table_index"])] = blank_configured_table(
+                spec
+            )
     if historical_ownership_matrix and len(historical_ownership_matrix) > 1:
         table_replacements[int(ownership_table_spec["target_table_index"])] = historical_ownership_matrix
     # These tables are present in the communication template but were not
@@ -1118,6 +1150,12 @@ def run_pipeline(
                 "source_locator": "映射位置与表格",
             }
         ],
+        status=(
+            "completed"
+            if financial_validation["valid"]
+            else "completed_with_issues"
+        ),
+        node_issues=financial_issues,
     )
     template_pages: dict[str, int | str] = {}
     if template_page_reader is not None:
@@ -1278,7 +1316,10 @@ def run_pipeline(
         review_output_paths.append(
             str(write_json(output_dir / "审核汇总.json", aggregate))
         )
-    if should_create_candidate_report(reviews):
+    if should_create_candidate_report(
+        reviews,
+        financial_fields_complete=financial_validation["valid"],
+    ):
         final_report = output_dir / "资产评估报告_最终候选.docx"
         shutil.copy2(report, final_report)
         review_output_paths.append(str(final_report))
@@ -1324,6 +1365,7 @@ def run_pipeline(
         "ocr_cache_source": str(ocr_workbook_path) if ocr_workbook_path else "",
         "workflow_version": workflow_definition.version,
         "workflow_contract_version": workflow_definition.contract_version,
+        "financial_validation": financial_validation,
         "outputs": [
             str(ocr_workbook),
             str(report),
