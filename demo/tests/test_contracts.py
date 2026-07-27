@@ -53,5 +53,6 @@ def test_manifest_registers_contract_trace_and_review_schema_versions():
     assert versions["financial_validation"] == "financial_validation.v2"
     assert versions["review_output_schema"] == "review_output.v1"
     assert versions["optional_sources"] == "optional_sources.v1"
-    assert versions["generation_issues"] == "generation_issues.v1"
+    assert versions["workbook_semantics"] == "workbook_semantics.v3"
+    assert versions["generation_issues"] == "generation_issues.v2"
     assert versions["placeholder_policy"] == "placeholder_policy.v1"
