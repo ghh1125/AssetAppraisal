@@ -4,6 +4,7 @@ import { message } from 'ant-design-vue'
 import { useI18n } from 'vue-i18n'
 import { artifactUrl } from '../../api/request'
 import { checkAssetAppraisalOcrCache, createAssetAppraisalRun, getAssetAppraisalRun } from '../../api/asset-appraisal'
+import { canSubmitPartial } from '../../domain/submission'
 
 const { t } = useI18n()
 
@@ -29,21 +30,7 @@ const submitting = ref(false)
 const run = ref(null)
 let pollTimer = null
 
-const canSubmit = computed(() => Boolean(
-  files.pdf
-  && files.referenceReport
-  && files.auditedFinancials
-  && files.incomeWorkbook
-  && files.reportingWorkbook
-  && form.commissioning_party_name
-  && form.commissioning_party_short_name
-  && form.target_company_name
-  && form.target_company_short_name
-  && form.report_serial
-  && form.valuation_purpose_inputs
-  && form.selected_valuation_method.length
-  && form.narrative_modules.length
-))
+const canSubmit = computed(() => canSubmitPartial(files, form))
 const statusText = computed(() => t(`asset.${run.value?.status || 'queued'}`))
 
 function setFile(type, event) {
@@ -139,17 +126,17 @@ onBeforeUnmount(clearPoll)
             <p class="upload-title">{{ t('asset.referenceReportTitle') }}</p>
             <p class="upload-hint">{{ t('asset.referenceReportHint') }}</p>
           </a-upload-dragger>
-          <a-upload-dragger :max-count="1" accept=".xlsx" :before-upload="() => false" @change="setFile('auditedFinancials', $event)">
+          <a-upload-dragger :max-count="1" accept=".xlsx,.xlsm" :before-upload="() => false" @change="setFile('auditedFinancials', $event)">
             <p class="upload-icon xlsx">XLSX</p>
             <p class="upload-title">{{ t('asset.auditedFinancialsTitle') }}</p>
             <p class="upload-hint">{{ t('asset.auditedFinancialsHint') }}</p>
           </a-upload-dragger>
-          <a-upload-dragger :max-count="1" accept=".xlsx" :before-upload="() => false" @change="setFile('incomeWorkbook', $event)">
+          <a-upload-dragger :max-count="1" accept=".xlsx,.xlsm" :before-upload="() => false" @change="setFile('incomeWorkbook', $event)">
             <p class="upload-icon xlsx">XLSX</p>
             <p class="upload-title">{{ t('asset.incomeWorkbookTitle') }}</p>
             <p class="upload-hint">{{ t('asset.incomeWorkbookHint') }}</p>
           </a-upload-dragger>
-          <a-upload-dragger :max-count="1" accept=".xlsx" :before-upload="() => false" @change="setFile('reportingWorkbook', $event)">
+          <a-upload-dragger :max-count="1" accept=".xlsx,.xlsm" :before-upload="() => false" @change="setFile('reportingWorkbook', $event)">
             <p class="upload-icon xlsx">XLSX</p>
             <p class="upload-title">{{ t('asset.reportingWorkbookTitle') }}</p>
             <p class="upload-hint">{{ t('asset.reportingWorkbookHint') }}</p>
@@ -164,24 +151,24 @@ onBeforeUnmount(clearPoll)
       <a-card class="panel" :title="t('asset.inputTitle')" :bordered="false">
         <a-form layout="vertical">
           <div class="form-row">
-            <a-form-item :label="t('asset.commissioningName')" required><a-input v-model:value="form.commissioning_party_name" /></a-form-item>
-            <a-form-item :label="t('asset.targetName')" required><a-input v-model:value="form.target_company_name" :placeholder="t('asset.targetNamePlaceholder')" /></a-form-item>
+            <a-form-item :label="t('asset.commissioningName')"><a-input v-model:value="form.commissioning_party_name" /></a-form-item>
+            <a-form-item :label="t('asset.targetName')"><a-input v-model:value="form.target_company_name" :placeholder="t('asset.targetNamePlaceholder')" /></a-form-item>
           </div>
           <div class="form-row">
-            <a-form-item :label="t('asset.transaction')" required><a-select v-model:value="form.transaction_type"><a-select-option value="转让">{{ t('asset.transactionOptions.transfer') }}</a-select-option><a-select-option value="收购">{{ t('asset.transactionOptions.acquisition') }}</a-select-option><a-select-option value="增资">{{ t('asset.transactionOptions.capitalIncrease') }}</a-select-option><a-select-option value="减资">{{ t('asset.transactionOptions.capitalDecrease') }}</a-select-option></a-select></a-form-item>
-            <a-form-item :label="t('asset.commissioningShortName')" required><a-input v-model:value="form.commissioning_party_short_name" /></a-form-item>
+            <a-form-item :label="t('asset.transaction')"><a-select v-model:value="form.transaction_type"><a-select-option value="转让">{{ t('asset.transactionOptions.transfer') }}</a-select-option><a-select-option value="收购">{{ t('asset.transactionOptions.acquisition') }}</a-select-option><a-select-option value="增资">{{ t('asset.transactionOptions.capitalIncrease') }}</a-select-option><a-select-option value="减资">{{ t('asset.transactionOptions.capitalDecrease') }}</a-select-option></a-select></a-form-item>
+            <a-form-item :label="t('asset.commissioningShortName')"><a-input v-model:value="form.commissioning_party_short_name" /></a-form-item>
           </div>
-          <a-form-item :label="t('asset.purpose')" required><a-textarea v-model:value="form.valuation_purpose_inputs" :rows="3" :placeholder="t('asset.purposePlaceholder')" /></a-form-item>
+          <a-form-item :label="t('asset.purpose')"><a-textarea v-model:value="form.valuation_purpose_inputs" :rows="3" :placeholder="t('asset.purposePlaceholder')" /></a-form-item>
           <div class="form-row three">
-            <a-form-item :label="t('asset.method')" required><a-select v-model:value="form.selected_valuation_method" mode="multiple" :max-tag-count="2"><a-select-option value="资产基础法">{{ t('asset.methodOptions.asset') }}</a-select-option><a-select-option value="收益法">{{ t('asset.methodOptions.income') }}</a-select-option><a-select-option value="市场法">{{ t('asset.methodOptions.market') }}</a-select-option></a-select></a-form-item>
+            <a-form-item :label="t('asset.method')"><a-select v-model:value="form.selected_valuation_method" mode="multiple" :max-tag-count="2"><a-select-option value="资产基础法">{{ t('asset.methodOptions.asset') }}</a-select-option><a-select-option value="收益法">{{ t('asset.methodOptions.income') }}</a-select-option><a-select-option value="市场法">{{ t('asset.methodOptions.market') }}</a-select-option></a-select></a-form-item>
             <a-form-item :label="t('asset.subject')"><a-select v-model:value="form.valuation_subject_type"><a-select-option value="股东全部权益价值">股东全部权益价值</a-select-option><a-select-option value="股东部分权益价值">股东部分权益价值</a-select-option><a-select-option value="企业整体价值">企业整体价值</a-select-option><a-select-option value="资产组价值">资产组价值</a-select-option></a-select></a-form-item>
-            <a-form-item :label="t('asset.finalMethod')" required><a-select v-model:value="form.final_valuation_method"><a-select-option value="资产基础法">{{ t('asset.methodOptions.asset') }}</a-select-option><a-select-option value="收益法">{{ t('asset.methodOptions.income') }}</a-select-option><a-select-option value="市场法">{{ t('asset.methodOptions.market') }}</a-select-option></a-select></a-form-item>
+            <a-form-item :label="t('asset.finalMethod')"><a-select v-model:value="form.final_valuation_method"><a-select-option value="资产基础法">{{ t('asset.methodOptions.asset') }}</a-select-option><a-select-option value="收益法">{{ t('asset.methodOptions.income') }}</a-select-option><a-select-option value="市场法">{{ t('asset.methodOptions.market') }}</a-select-option></a-select></a-form-item>
           </div>
           <div class="form-row">
-            <a-form-item :label="t('asset.reportSerial')" required><a-input v-model:value="form.report_serial" /></a-form-item>
+            <a-form-item :label="t('asset.reportSerial')"><a-input v-model:value="form.report_serial" /></a-form-item>
             <a-form-item :label="t('asset.targetShortName')"><a-input v-model:value="form.target_company_short_name" /></a-form-item>
           </div>
-          <a-form-item :label="t('asset.moduleTitle')" required><a-checkbox-group v-model:value="form.narrative_modules" :options="[
+          <a-form-item :label="t('asset.moduleTitle')"><a-checkbox-group v-model:value="form.narrative_modules" :options="[
             { label: t('asset.modules.industry'), value: 'industry_overview' },
             { label: t('asset.modules.business'), value: 'business_and_segments' },
             { label: t('asset.modules.products'), value: 'main_products' },
