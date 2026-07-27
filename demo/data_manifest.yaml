@@ -1,5 +1,5 @@
 {
-  "version": "2026-07-27.3",
+  "version": "2026-07-27.4",
   "rule_versions": {
     "workflow_contract": "workflow_contract.v1",
     "workflow_trace": "workflow_trace.v1",

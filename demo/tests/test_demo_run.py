@@ -219,3 +219,41 @@ def test_run_project_uses_semantic_excel_fallback_for_changed_layouts(tmp_path: 
     assert fields["book_net_assets"] == 8697.968929
     assert fields["asset_approach_value"] == 9397.200569
     assert fields["income_approach_value"] == 6850
+    assert fields["final_appraisal_value"] == 6850
+
+
+def test_run_project_uses_selected_market_result_as_final_value(tmp_path: Path):
+    market = tmp_path / "任意名称.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "汇总表"
+    sheet.append(["评估方法", "市场法"])
+    sheet.append(["金额单位：人民币万元"])
+    sheet.append(["项目", "序号", "账面价值", "评估价值"])
+    sheet.append(["净资产", 1, 29_151.74, 101_000])
+    workbook.save(market)
+
+    output = tmp_path / "run"
+    run_project(
+        Path("demo/projects/tongfu.yaml"),
+        output_dir=output,
+        offline=True,
+        manual_inputs_override={
+            "target_company_name": "示例公司",
+            "valuation_subject_type": "股东全部权益价值",
+            "selected_valuation_method": "市场法",
+            "final_valuation_method": "市场法",
+            "transaction_type": "收购",
+        },
+        source_overrides={
+            "audit_pdf": None,
+            "reference_report": None,
+            "audited_financials": None,
+            "income_workbook": market,
+            "reporting_workbook": None,
+        },
+    )
+
+    fields = json.loads((output / "normalized_fields.json").read_text(encoding="utf-8"))
+    assert fields["market_approach_value"] == 101_000
+    assert fields["final_appraisal_value"] == 101_000

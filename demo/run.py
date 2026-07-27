@@ -496,10 +496,18 @@ def run_project(
         }
 
     before_derived = set(fields)
+    final_value_field = {
+        "收益法": "income_approach_value",
+        "市场法": "market_approach_value",
+        "资产基础法": "asset_approach_value",
+    }.get(
+        str(fields.get("final_valuation_method", "")).strip(),
+        config.get("final_value_field"),
+    )
     fields = derive_system_fields(
         fields,
         report_date or datetime.now().date().isoformat(),
-        final_value_field=config.get("final_value_field"),
+        final_value_field=final_value_field,
     )
     for key in set(fields) - before_derived:
         evidence[key] = {"kind": "system", "file": "", "locator": key}
