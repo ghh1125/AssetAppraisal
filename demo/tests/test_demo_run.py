@@ -222,6 +222,53 @@ def test_run_project_uses_semantic_excel_fallback_for_changed_layouts(tmp_path: 
     assert fields["final_appraisal_value"] == 6850
 
 
+def test_run_project_prefers_complete_dated_history_from_later_workbook(tmp_path: Path):
+    reporting = tmp_path / "资产基础法.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "资产负债表"
+    sheet.append(["金额单位：人民币元"])
+    sheet.append(["项目", "期初数", "期末数"])
+    sheet.append(["资产总计", 200, 300])
+    sheet.append(["负债合计", 70, 90])
+    sheet.append(["所有者权益合计", 130, 210])
+    workbook.save(reporting)
+
+    income = tmp_path / "收益法.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "历资表"
+    sheet.append(["金额单位：人民币元"])
+    sheet.append(["项目", "2022年度", "2023年度", "2024年度"])
+    sheet.append(["资产总计", 100, 200, 300])
+    sheet.append(["负债合计", 40, 70, 90])
+    sheet.append(["所有者权益合计", 60, 130, 210])
+    workbook.save(income)
+
+    output = tmp_path / "run"
+    run_project(
+        Path("demo/projects/tongfu.yaml"),
+        output_dir=output,
+        offline=True,
+        manual_inputs_override={"target_company_name": "示例公司"},
+        source_overrides={
+            "audit_pdf": None,
+            "reference_report": None,
+            "audited_financials": None,
+            "reporting_workbook": reporting,
+            "income_workbook": income,
+        },
+    )
+
+    fields = json.loads((output / "normalized_fields.json").read_text(encoding="utf-8"))
+    assert fields["historical_balance_sheet_table"]["rows"] == [
+        ["项目\\报表日", "2022年度", "2023年度", "2024年度"],
+        ["总资产", "100.00", "200.00", "300.00"],
+        ["负债", "40.00", "70.00", "90.00"],
+        ["所有者权益", "60.00", "130.00", "210.00"],
+    ]
+
+
 def test_run_project_uses_selected_market_result_as_final_value(tmp_path: Path):
     market = tmp_path / "任意名称.xlsx"
     workbook = Workbook()

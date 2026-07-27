@@ -41,6 +41,7 @@ from .domain.field_validation import (
 )
 from .domain.replacement import build_replacements
 from .domain.financial_matching import blank_configured_table
+from .domain.historical_table_merge import merge_historical_tables
 from .domain.generation_issues import (
     apply_page_locations,
     issues_from_word_findings,
@@ -415,6 +416,57 @@ def run_project(
                 existing not in (None, "", [])
                 and evidence.get(field_key, {}).get("kind") != "missing"
             )
+            if (
+                field_key
+                in {
+                    "historical_balance_sheet_table",
+                    "historical_income_statement_table",
+                }
+                and existing_is_valid
+                and isinstance(existing, dict)
+                and isinstance(value, dict)
+            ):
+                merged = merge_historical_tables(existing, value)
+                if merged != existing:
+                    fields[field_key] = merged
+                    semantic_source = semantic.get("evidence", {}).get(
+                        field_key,
+                        {
+                            "kind": "semantic_excel",
+                            "file": source_path.name,
+                            "locator": field_key,
+                        },
+                    )
+                    if merged == value:
+                        evidence[field_key] = semantic_source
+                    else:
+                        previous_source = evidence.get(field_key, {})
+                        evidence[field_key] = {
+                            "kind": "semantic_excel_merged",
+                            "file": "；".join(
+                                dict.fromkeys(
+                                    filter(
+                                        None,
+                                        (
+                                            str(previous_source.get("file", "")),
+                                            str(semantic_source.get("file", "")),
+                                        ),
+                                    )
+                                )
+                            ),
+                            "locator": "；".join(
+                                dict.fromkeys(
+                                    filter(
+                                        None,
+                                        (
+                                            str(previous_source.get("locator", "")),
+                                            str(semantic_source.get("locator", "")),
+                                        ),
+                                    )
+                                )
+                            ),
+                        }
+                continue
             if existing_is_valid:
                 if (
                     field_key in comparable_amount_fields
