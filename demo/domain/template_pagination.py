@@ -49,6 +49,8 @@ def map_location_pages(
             for item in document_locations
         ]
     )
+    if not ordered_texts:
+        return result
     scores = [[_score(_normal(text), page) for page in pages] for _, text in ordered_texts]
     previous = scores[0][:]
     backtracks: list[list[int]] = [[0] * len(pages)]
@@ -78,7 +80,14 @@ def map_location_pages(
     }
     known_indices = sorted(page_by_paragraph)
     for item in document_locations:
-        paragraph_index = int(re.search(r"-P(\d+)-", str(item["location_id"])).group(1))
+        match = re.search(r"-P(\d+)-", str(item["location_id"]))
+        paragraph_index = (
+            int(match.group(1))
+            if match
+            else int(item.get("paragraph_index", 0))
+        )
+        if paragraph_index <= 0:
+            continue
         if paragraph_index in page_by_paragraph:
             page = page_by_paragraph[paragraph_index]
         else:

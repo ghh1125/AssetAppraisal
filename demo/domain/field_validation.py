@@ -124,7 +124,7 @@ def apply_missing_field_policy(
     required_fields: list[str],
     label: str,
 ) -> dict[str, Any]:
-    """Leave unmatched fields blank and return an explicit review issue.
+    """Keep unmatched values empty and mark their evidence as missing.
 
     The function is intentionally side-effect free so the same business rule
     can be reused by the CLI, web service, and a future c2m integration.
@@ -143,7 +143,7 @@ def apply_missing_field_policy(
     for field in missing:
         updated_fields[field] = ""
         updated_evidence[field] = {
-            "kind": "blank",
+            "kind": "missing",
             "file": "",
             "locator": "指定来源未匹配到值",
         }
@@ -153,7 +153,7 @@ def apply_missing_field_policy(
         "fields": updated_fields,
         "evidence": updated_evidence,
         "issues": [
-            f"高优先级：{label}未匹配到，已留空：{field}"
+            f"高优先级：{label}未匹配到，Word已保留黄色占位符：{field}"
             for field in missing
         ],
     }

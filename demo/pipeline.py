@@ -5,6 +5,7 @@ import json
 import re
 import shutil
 import tempfile
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -15,7 +16,12 @@ from openpyxl import load_workbook
 from demo import schemas
 from demo.adapters.audit import export_audit, write_json
 from demo.adapters.document import read_table_matrix
-from demo.adapters.excel import read_cells, read_configured_table
+from demo.adapters.excel import (
+    read_cells,
+    try_read_cells,
+    try_read_configured_table,
+)
+from demo.adapters.generation_issues import export_generation_issues
 from demo.adapters.ocr_workbook import export_ocr_workbook, normalized_from_ocr_workbook
 from demo.adapters.review_inputs import build_data_review_evidence, build_format_review_evidence, build_semantic_review_evidence
 from demo.adapters.workflow_trace import (
@@ -25,7 +31,18 @@ from demo.adapters.workflow_trace import (
     trace_mappings,
     trace_resolved_fields,
 )
-from demo.adapters.word import document_paragraph_texts, fill_template, inventory_template, replace_image_markers, replace_report_number_year, unresolved_placeholders
+from demo.adapters.word import (
+    document_paragraph_texts,
+    fill_template,
+    highlight_unresolved_placeholders,
+    inventory_template,
+    replace_image_markers,
+    replace_report_number_year,
+)
+from demo.domain.generation_issues import (
+    apply_page_locations,
+    issues_from_word_findings,
+)
 from demo.domain.review import aggregate_reviews
 from demo.domain.field_validation import (
     apply_missing_field_policy,
@@ -58,7 +75,7 @@ from demo.run import run_project
 class PipelineResult:
     report_path: Path
     audit_path: Path
-    ocr_workbook_path: Path
+    ocr_workbook_path: Path | None
     manifest_path: Path
     issues: list[str]
 
@@ -153,7 +170,7 @@ def _asset_method_label(selected: Any) -> str:
         return "市场法"
     if "收益法" in text:
         return "收益法"
-    return "资产基础法"
+    return ""
 
 
 def _filter_provider(
@@ -173,7 +190,10 @@ def _filter_provider(
 
 def _paragraph_replacements(config: dict[str, Any], fields: dict[str, Any]) -> dict[tuple[str, int], str]:
     result = {}
-    string_fields = {key: str(value) for key, value in fields.items()}
+    string_fields = defaultdict(
+        lambda: "XXX",
+        {key: str(value) for key, value in fields.items()},
+    )
     for spec in config.get("paragraph_replacements", []):
         if "field_key" in spec:
             value = str(fields.get(spec["field_key"], ""))
@@ -192,21 +212,35 @@ def _paragraph_replacements(config: dict[str, Any], fields: dict[str, Any]) -> d
     return result
 
 
+def _source_path(
+    base: Path,
+    config: dict[str, Any],
+    overrides: dict[str, Path | None] | None,
+    source_name: str,
+) -> Path | None:
+    if overrides is not None and source_name in overrides:
+        override = overrides[source_name]
+        return Path(override).resolve() if override is not None else None
+    configured = config.get("sources", {}).get(source_name)
+    return _path(base, configured) if configured else None
+
+
 def _company_profile_table(profile: dict[str, Any], fallback_name: Any = "", fallback_capital: Any = "") -> list[list[str]]:
     """Render the backend-provided company profile into the template's 2-cell table."""
     profile = profile if isinstance(profile, dict) else {}
-    credit_code = str(profile.get("credit_code") or "")
-    name = str(profile.get("name") or fallback_name or "")
-    capital = str(profile.get("registered_capital") or fallback_capital or "")
+    present = lambda value: str(value) if value not in (None, "") else "XXX"
+    credit_code = present(profile.get("credit_code"))
+    name = present(profile.get("name") or fallback_name)
+    capital = present(profile.get("registered_capital") or fallback_capital)
     return [
         [f"统一社会信用代码：{credit_code}", f"企业名称：{name}"],
-        [f"类型：{profile.get('company_type', '')}", f"法定代表人：{profile.get('legal_representative', '')}"],
-        [f"注册资本：{capital}", f"成立日期：{profile.get('establish_date', '')}"],
-        [f"营业期限自：{profile.get('term_start', '')}", f"营业期限至：{profile.get('term_end', '')}"],
-        [f"登记机关：{profile.get('registration_authority', '')}", f"核准日期：{profile.get('approval_date', '')}"],
-        [f"登记状态：{profile.get('status', '')}"],
-        [f"注册地址：{profile.get('address', '')}"],
-        [f"许可项目：{profile.get('business_scope', '')}"],
+        [f"类型：{present(profile.get('company_type'))}", f"法定代表人：{present(profile.get('legal_representative'))}"],
+        [f"注册资本：{capital}", f"成立日期：{present(profile.get('establish_date'))}"],
+        [f"营业期限自：{present(profile.get('term_start'))}", f"营业期限至：{present(profile.get('term_end'))}"],
+        [f"登记机关：{present(profile.get('registration_authority'))}", f"核准日期：{present(profile.get('approval_date'))}"],
+        [f"登记状态：{present(profile.get('status'))}"],
+        [f"注册地址：{present(profile.get('address'))}"],
+        [f"许可项目：{present(profile.get('business_scope'))}"],
     ]
 
 
@@ -224,15 +258,21 @@ def _configured_cross_source_table(
     config: dict[str, Any],
     rows: list[dict[str, Any]],
     ocr_overrides: dict[str, str] | None = None,
-    source_overrides: dict[str, Path] | None = None,
+    source_overrides: dict[str, Path | None] | None = None,
 ) -> list[list[str]]:
     matrix = [["项目", "账面金额（元）", "数量", "现状、特点"]]
     for row in rows:
         source_name = row["source"]
-        source_path = (source_overrides or {}).get(source_name) or _path(base, config["sources"][source_name])
+        source_path = _source_path(
+            base,
+            config,
+            source_overrides,
+            source_name,
+        )
         value = (ocr_overrides or {}).get(str(row.get("ocr_field_key")))
         if value in (None, ""):
-            value = read_cells(source_path, [row["locator"]])[row["locator"]]
+            values, _ = try_read_cells(source_path, [row["locator"]])
+            value = values.get(row["locator"], "XXX")
         matrix.append([str(row["label"]), _amount_text(value), str(row.get("quantity", "")), str(row.get("condition", ""))])
     return matrix
 
@@ -466,7 +506,7 @@ def _profile_matrix_from_reference(base: Path, config: dict[str, Any], table_ind
 def run_pipeline(
     *,
     project_config: Path,
-    pdf_path: Path,
+    pdf_path: Path | None,
     output_dir: Path,
     ocr_adapter: Any,
     llm_adapter: Any = None,
@@ -478,7 +518,7 @@ def run_pipeline(
     report_date: str | None = None,
     manual_inputs_override: dict[str, Any] | None = None,
     ocr_workbook_path: Path | None = None,
-    source_overrides: dict[str, Path] | None = None,
+    source_overrides: dict[str, Path | None] | None = None,
     review_adapters: dict[str, Any] | None = None,
     workflow_path: Path | None = None,
 ) -> PipelineResult:
@@ -534,7 +574,7 @@ def run_pipeline(
 
     base = config_path.parent
     template = template_path.resolve() if template_path else _path(base, config["template"])
-    pdf = pdf_path.resolve()
+    pdf = pdf_path.resolve() if pdf_path is not None else None
     output_dir = output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -606,14 +646,38 @@ def run_pipeline(
     scope_table = config.get("asset_scope_summary_table")
     if isinstance(scope_table, dict):
         source_name = str(scope_table["source"])
-        source_path = (source_overrides or {}).get(source_name) or _path(base, config["sources"][source_name])
+        source_path = _source_path(
+            base,
+            config,
+            source_overrides,
+            source_name,
+        )
+        scope_rows, scope_issues = try_read_configured_table(
+            source_path,
+            scope_table,
+        )
+        if scope_rows is None:
+            scope_rows = blank_configured_table(
+                scope_table,
+                placeholder="XXX",
+            )
+        issues.extend(
+            f"{scope_table['field_key']}：{message}"
+            for message in scope_issues
+        )
         fields[scope_table["field_key"]] = {
             "caption": scope_table.get("caption", ""),
-            "rows": read_configured_table(source_path, scope_table),
+            "rows": scope_rows,
         }
         evidence[scope_table["field_key"]] = {
-            "kind": config.get("source_lineage", {}).get(source_name, {}).get("kind", source_name),
-            "file": source_path.name,
+            "kind": (
+                config.get("source_lineage", {})
+                .get(source_name, {})
+                .get("kind", source_name)
+                if source_path is not None and not scope_issues
+                else "missing"
+            ),
+            "file": source_path.name if source_path is not None else "",
             "locator": scope_table.get("source_locator", ""),
         }
 
@@ -622,20 +686,27 @@ def run_pipeline(
         try:
             normalized = normalized_from_ocr_workbook(ocr_workbook_path.resolve())
         except Exception as exc:
-            if ocr_adapter is None:
-                raise ValueError(f"OCR 缓存读取失败且未配置 OCR：{exc}") from exc
-            cache_issue = f"OCR 缓存读取失败，改为重新 OCR：{exc}"
+            cache_issue = f"OCR 缓存读取失败：{exc}"
             issues.append(cache_issue)
             ocr_node_issues.append(cache_issue)
-            pages, ocr_issues = ocr_adapter.extract(pdf)
-            issues.extend(ocr_issues)
-            ocr_node_issues.extend(ocr_issues)
-            normalized = normalize_ocr_pages(pages)
-    else:
-        pages, ocr_issues = ocr_adapter.extract(pdf) if ocr_adapter is not None else ([], ["OCR 未配置"])
+            if pdf is not None and ocr_adapter is not None:
+                pages, ocr_issues = ocr_adapter.extract(pdf)
+                issues.extend(ocr_issues)
+                ocr_node_issues.extend(ocr_issues)
+                normalized = normalize_ocr_pages(pages)
+            else:
+                normalized = normalize_ocr_pages([])
+    elif pdf is not None:
+        pages, ocr_issues = (
+            ocr_adapter.extract(pdf)
+            if ocr_adapter is not None
+            else ([], ["OCR 未配置"])
+        )
         issues.extend(ocr_issues)
         ocr_node_issues.extend(ocr_issues)
         normalized = normalize_ocr_pages(pages)
+    else:
+        normalized = normalize_ocr_pages([])
 
     page_counts: dict[int, int] = {}
     for record in [*normalized.get("text_blocks", []), *normalized.get("table_cells", [])]:
@@ -657,26 +728,48 @@ def run_pipeline(
     ]
     record_node(
         "ocr_pdf",
-        {"pdf_path": str(pdf)},
+        {"pdf_path": str(pdf) if pdf is not None else ""},
         {
             "document": {
-                "source_file": pdf.name,
+                "source_file": pdf.name if pdf is not None else "",
                 "pages": ocr_page_summary,
                 "issues": ocr_node_issues,
             }
         },
-        status="completed_with_issues" if ocr_node_issues else "completed",
-        node_evidence=[
-            {
-                "source_kind": "ocr_cache" if ocr_workbook_path else "pdf_ocr",
-                "source_file": (
-                    ocr_workbook_path.name if ocr_workbook_path else pdf.name
-                ),
-                "source_locator": "页级 OCR 结构",
-                "text_block_count": len(normalized.get("text_blocks", [])),
-                "table_cell_count": len(normalized.get("table_cells", [])),
-            }
-        ],
+        status=(
+            "skipped"
+            if pdf is None and ocr_workbook_path is None
+            else "completed_with_issues"
+            if ocr_node_issues
+            else "completed"
+        ),
+        node_evidence=(
+            [
+                {
+                    "source_kind": (
+                        "ocr_cache"
+                        if ocr_workbook_path
+                        else "pdf_ocr"
+                    ),
+                    "source_file": (
+                        ocr_workbook_path.name
+                        if ocr_workbook_path
+                        else pdf.name
+                        if pdf is not None
+                        else ""
+                    ),
+                    "source_locator": "页级 OCR 结构",
+                    "text_block_count": len(
+                        normalized.get("text_blocks", [])
+                    ),
+                    "table_cell_count": len(
+                        normalized.get("table_cells", [])
+                    ),
+                }
+            ]
+            if pdf is not None or ocr_workbook_path is not None
+            else []
+        ),
         node_issues=ocr_node_issues,
     )
 
@@ -694,7 +787,13 @@ def run_pipeline(
             fields["founding_shareholder_2"] = founding_names[1] if len(founding_names) > 1 else ""
             evidence["founding_shareholder_1"] = {
                 "kind": "pdf_ocr_xlsx",
-                "file": ocr_workbook_path.name if ocr_workbook_path else pdf.name,
+                "file": (
+                    ocr_workbook_path.name
+                    if ocr_workbook_path
+                    else pdf.name
+                    if pdf is not None
+                    else ""
+                ),
                 "locator": f"OCR_表格!{ownership_table_spec.get('table_id', '')}",
             }
             evidence["founding_shareholder_2"] = dict(evidence["founding_shareholder_1"])
@@ -735,7 +834,14 @@ def run_pipeline(
                     "evidence_id": source.get("locator", "ocr:xlsx"),
                 }
             )
-    ocr_workbook = export_ocr_workbook(output_dir / "OCR结构化结果.xlsx", normalized)
+    ocr_workbook = (
+        export_ocr_workbook(
+            output_dir / "OCR结构化结果.xlsx",
+            normalized,
+        )
+        if pdf is not None or ocr_workbook_path is not None
+        else None
+    )
     record_node(
         "export_ocr_workbook",
         {
@@ -751,25 +857,28 @@ def run_pipeline(
                 ],
                 "issues": [{"count": len(normalized.get("issues", []))}],
             },
-            "output_path": str(ocr_workbook),
+            "output_path": str(ocr_workbook) if ocr_workbook else "",
         },
-        {"workbook_path": str(ocr_workbook)},
-        node_evidence=[
-            {
-                "source_kind": "generated_artifact",
-                "source_file": ocr_workbook.name,
-                "source_locator": "OCR_文本、OCR_表格、标准财务数据、识别问题",
-            }
-        ],
+        {"workbook_path": str(ocr_workbook) if ocr_workbook else ""},
+        status="completed" if ocr_workbook else "skipped",
+        node_evidence=(
+            [
+                {
+                    "source_kind": "generated_artifact",
+                    "source_file": ocr_workbook.name,
+                    "source_locator": "OCR_文本、OCR_表格、标准财务数据、识别问题",
+                }
+            ]
+            if ocr_workbook
+            else []
+        ),
     )
 
-    configured_source_paths = {
-        name: str(
-            (source_overrides or {}).get(name)
-            or _path(base, configured_path)
-        )
-        for name, configured_path in config.get("sources", {}).items()
-    }
+    configured_source_paths = {}
+    for name in config.get("sources", {}):
+        path = _source_path(base, config, source_overrides, name)
+        if path is not None:
+            configured_source_paths[name] = str(path)
     base_candidates = trace_candidates(fields, evidence, field_names)
     record_node(
         "extract_sources",
@@ -792,7 +901,11 @@ def run_pipeline(
 
     manual_path = _path(base, config["manual_inputs"])
     configured_inputs = (
-        json.loads(manual_path.read_text(encoding="utf-8")) if manual_path.exists() else {}
+        {}
+        if manual_inputs_override is not None
+        else json.loads(manual_path.read_text(encoding="utf-8"))
+        if manual_path.exists()
+        else {}
     )
     if manual_inputs_override:
         configured_inputs.update({key: value for key, value in manual_inputs_override.items() if value not in (None, "")})
@@ -916,17 +1029,18 @@ def run_pipeline(
         prior_source = evidence.get(route.field_key, {})
         preserve_material_locator = route.route_kind == RouteKind.PDF_OCR_XLSX and value
         evidence_fallback = source_kind == "bailian_glm_evidence_fallback" and value
+        pdf_name = pdf.name if pdf is not None else ""
+        if preserve_material_locator:
+            evidence_file = prior_source.get("file", "") or pdf_name
+        elif evidence_fallback:
+            evidence_file = pdf_name
+        elif source_kind == "qichacha_api" and value:
+            evidence_file = "企查查 API（735/231/514/233）"
+        else:
+            evidence_file = ""
         evidence[route.field_key] = {
-            "kind": source_kind if value not in (None, "", []) else "blank",
-            "file": (
-                prior_source.get("file", "") or pdf.name
-                if preserve_material_locator
-                else pdf.name
-                if evidence_fallback
-                else "企查查 API（735/231/514/233）"
-                if source_kind == "qichacha_api" and value
-                else ""
-            ),
+            "kind": source_kind if value not in (None, "", []) else "missing",
+            "file": evidence_file,
             "locator": (
                 prior_source.get("locator", "") or route.location_id
                 if preserve_material_locator
@@ -945,7 +1059,7 @@ def run_pipeline(
         fields["company_profile_text"] = str(fields["company_profile_section"]).rstrip("。；; ")
         evidence["company_profile_text"] = {
             "kind": "bailian_glm_profile_alias",
-            "file": pdf.name,
+            "file": pdf.name if pdf is not None else "",
             "locator": "company_profile_section",
         }
 
@@ -1081,10 +1195,21 @@ def run_pipeline(
             table_replacements[int(spec["target_table_index"])] = value["rows"]
         else:
             table_replacements[int(spec["target_table_index"])] = blank_configured_table(
-                spec
+                spec,
+                placeholder="XXX",
             )
     if historical_ownership_matrix and len(historical_ownership_matrix) > 1:
         table_replacements[int(ownership_table_spec["target_table_index"])] = historical_ownership_matrix
+    elif isinstance(ownership_table_spec, dict):
+        table_replacements[int(ownership_table_spec["target_table_index"])] = [
+            list(
+                ownership_table_spec.get(
+                    "header",
+                    ["序号", "股东名称", "总出资（元）", "股权比例"],
+                )
+            ),
+            ["XXX", "XXX", "XXX", "XXX"],
+        ]
     # These tables are present in the communication template but were not
     # represented by yellow paragraphs.  Fill them explicitly so template
     # defaults (such as the listed-company capital) cannot leak into output.
@@ -1099,6 +1224,11 @@ def run_pipeline(
     partner_rows = qcc_payloads.get("target", {}).get("partner_rows", [])
     if partner_rows:
         table_replacements[3] = _equity_matrix_from_partners(partner_rows)
+    else:
+        table_replacements[3] = [
+            ["序号", "股东名称", "总出资（元）", "股权比例"],
+            ["XXX", "XXX", "XXX", "XXX"],
+        ]
     long_term_table = config.get("long_term_assets_table")
     if isinstance(long_term_table, dict):
         table_replacements[int(long_term_table["target_table_index"])] = _configured_cross_source_table(
@@ -1108,12 +1238,22 @@ def run_pipeline(
     software_rows = _qcc_table_rows(qcc_payloads.get("target", {}), "software_rows", 5)
     if trademark_rows:
         table_replacements[8] = [["申请日期", "商标", "商标名称", "注册号", "国际分类", "商标状态", "注册公告日期"], *trademark_rows]
+    else:
+        table_replacements[8] = [
+            ["申请日期", "商标", "商标名称", "注册号", "国际分类", "商标状态", "注册公告日期"],
+            ["XXX", "XXX", "XXX", "XXX", "XXX", "XXX", "XXX"],
+        ]
     if "software_copyrights" in qcc_allowed:
         table_replacements[9] = [["序号", "软件名称", "登记号", "首次发表日期", "登记批准日期"], ["", "", "", "", ""]]
     if software_rows:
         table_replacements[9] = [["序号", "软件名称", "登记号", "首次发表日期", "登记批准日期"], *software_rows]
     elif software_no_result and "software_copyrights" in qcc_allowed:
         table_replacements[9] = [["序号", "软件名称", "登记号", "首次发表日期", "登记批准日期"], ["", "未查询到软件著作权登记记录。", "", "", ""]]
+    elif "software_copyrights" in qcc_allowed:
+        table_replacements[9] = [
+            ["序号", "软件名称", "登记号", "首次发表日期", "登记批准日期"],
+            ["XXX", "XXX", "XXX", "XXX", "XXX"],
+        ]
 
     report = output_dir / "资产评估报告_待复核.docx"
     audit = output_dir / "字段审计清单.xlsx"
@@ -1127,9 +1267,13 @@ def run_pipeline(
     )
     replace_image_markers(report)
     replace_report_number_year(report, fields.get("report_number_year"))
-    remaining_placeholders = unresolved_placeholders(report)
-    if remaining_placeholders:
-        raise ValueError("Word 模板仍有未替换占位符：" + "、".join(remaining_placeholders))
+    unresolved_findings = highlight_unresolved_placeholders(report)
+    generation_issues = issues_from_word_findings(
+        unresolved_findings,
+        [*locations, *static_locations],
+        fields,
+        evidence,
+    )
     if _sha256(template) != template_hash:
         raise RuntimeError("模板被意外修改")
     record_node(
@@ -1158,13 +1302,58 @@ def run_pipeline(
         node_issues=financial_issues,
     )
     template_pages: dict[str, int | str] = {}
+    generated_pages: dict[str, int | str] = {}
     if template_page_reader is not None:
-        page_texts, page_issues = template_page_reader.extract(template)
-        issues.extend(page_issues)
-        template_pages = map_location_pages(
-            [*locations, *static_locations],
-            page_texts,
-            document_paragraph_texts(template),
+        try:
+            report_page_texts, report_page_issues = (
+                template_page_reader.extract(report)
+            )
+            issues.extend(report_page_issues)
+            generated_pages = map_location_pages(
+                unresolved_findings,
+                report_page_texts,
+                document_paragraph_texts(report),
+            )
+        except Exception as exc:
+            issues.append(f"生成报告页码解析失败：{exc}")
+        try:
+            template_page_texts, template_page_issues = (
+                template_page_reader.extract(template)
+            )
+            issues.extend(template_page_issues)
+            template_pages = map_location_pages(
+                [*locations, *static_locations],
+                template_page_texts,
+                document_paragraph_texts(template),
+            )
+            template_issue_pages = map_location_pages(
+                unresolved_findings,
+                template_page_texts,
+                document_paragraph_texts(template),
+            )
+        except Exception as exc:
+            issues.append(f"模板页码解析失败：{exc}")
+            template_issue_pages = {}
+    else:
+        template_issue_pages = {}
+    generation_issues = apply_page_locations(
+        generation_issues,
+        generated_pages,
+        template_issue_pages,
+    )
+    issue_workbook = export_generation_issues(
+        output_dir / "生成问题清单.xlsx",
+        generation_issues,
+    )
+    issue_json = write_json(
+        output_dir / "生成问题清单.json",
+        generation_issues,
+    )
+    for issue in generation_issues:
+        page = issue.get("page_number") or "页码不可用"
+        issues.append(
+            f"Word第{page}页 {issue.get('location_description', '')}："
+            f"{issue.get('problem', '')}"
         )
     export_audit(
         audit,
@@ -1316,9 +1505,12 @@ def run_pipeline(
         review_output_paths.append(
             str(write_json(output_dir / "审核汇总.json", aggregate))
         )
-    if should_create_candidate_report(
-        reviews,
-        financial_fields_complete=financial_validation["valid"],
+    if (
+        not generation_issues
+        and should_create_candidate_report(
+            reviews,
+            financial_fields_complete=financial_validation["valid"],
+        )
     ):
         final_report = output_dir / "资产评估报告_最终候选.docx"
         shutil.copy2(report, final_report)
@@ -1352,8 +1544,8 @@ def run_pipeline(
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "template": str(template),
         "template_sha256": template_hash,
-        "pdf": str(pdf),
-        "pdf_sha256": _sha256(pdf),
+        "pdf": str(pdf) if pdf is not None else "",
+        "pdf_sha256": _sha256(pdf) if pdf is not None else "",
         "mapping_version": "1.0.0",
         "yellow_route_version": "yellow_routes.v1",
         "financial_rule_version": "financial_aliases.v1",
@@ -1366,10 +1558,16 @@ def run_pipeline(
         "workflow_version": workflow_definition.version,
         "workflow_contract_version": workflow_definition.contract_version,
         "financial_validation": financial_validation,
+        "generation_validation": {
+            "valid": not generation_issues,
+            "unresolved_count": len(generation_issues),
+        },
         "outputs": [
-            str(ocr_workbook),
+            *([str(ocr_workbook)] if ocr_workbook else []),
             str(report),
             str(audit),
+            str(issue_workbook),
+            str(issue_json),
             str(trace_path),
             *review_output_paths,
         ],

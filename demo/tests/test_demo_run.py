@@ -137,7 +137,7 @@ def test_missing_required_financial_field_does_not_block_review_report(tmp_path:
     assert result.report_path.exists()
     assert fields["synthetic_missing_amount"] == ""
     assert (
-        "高优先级：财务材料字段未匹配到，已留空：synthetic_missing_amount"
+        "高优先级：财务材料字段未匹配到，Word已保留黄色占位符：synthetic_missing_amount"
         in result.issues
     )
     assert manifest["financial_validation"] == {
@@ -163,6 +163,8 @@ def test_run_project_generates_with_only_one_manual_field(tmp_path: Path):
     )
 
     assert result.report_path.exists()
+    assert (tmp_path / "生成问题清单.xlsx").exists()
+    assert (tmp_path / "生成问题清单.json").exists()
     document = Document(result.report_path)
     text = "\n".join(paragraph.text for paragraph in document.paragraphs)
     text += "\n" + "\n".join(

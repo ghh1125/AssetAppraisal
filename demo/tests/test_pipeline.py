@@ -250,9 +250,10 @@ def test_pipeline_creates_ocr_xlsx_word_and_audit_without_cross_route_fallback(t
             for name in archive.namelist()
             if re.fullmatch(r"word/(document|header\d+|footer\d+)\.xml", name)
         )
-    assert 'w:val="yellow"' not in xml
+    assert 'w:val="yellow"' in xml
     assert "待人工补充" not in xml
     assert "不应采用" not in xml
+    assert (tmp_path / "生成问题清单.xlsx").exists()
 
     manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
     assert manifest["yellow_route_version"] == "yellow_routes.v1"
@@ -279,7 +280,7 @@ def test_pipeline_runs_three_reviews_and_exports_review_artifacts(tmp_path):
     assert (tmp_path / "格式审核.json").exists()
     assert (tmp_path / "数据校验.json").exists()
     assert (tmp_path / "语义审核.json").exists()
-    assert (tmp_path / "资产评估报告_最终候选.docx").exists()
+    assert not (tmp_path / "资产评估报告_最终候选.docx").exists()
     summary = json.loads((tmp_path / "审核汇总.json").read_text(encoding="utf-8"))
     assert summary["finding_count"] == 3
     assert any("测试问题" in item for item in json.loads((tmp_path / "issues.json").read_text(encoding="utf-8")));
@@ -347,14 +348,14 @@ def test_pipeline_generates_review_report_when_monetary_fields_are_missing(
 
     assert result.report_path.exists()
     assert not (tmp_path / "资产评估报告_最终候选.docx").exists()
-    assert "高优先级：金额及财务结果字段未匹配到，已留空：book_net_assets" in result.issues
+    assert "高优先级：金额及财务结果字段未匹配到，Word已保留黄色占位符：book_net_assets" in result.issues
     fields = json.loads(
         (tmp_path / "normalized_fields.json").read_text(encoding="utf-8")
     )
     assert fields["book_net_assets"] == ""
     report = Document(result.report_path)
     assert all(
-        cell.text == ""
+        cell.text == "XXX"
         for row in report.tables[4].rows[1:]
         for cell in row.cells[1:]
     )
@@ -373,7 +374,7 @@ def test_pipeline_generates_review_report_when_monetary_fields_are_missing(
         if row[audit_headers["标准字段"]] == "book_net_assets"
     )
     assert book_net_assets_row[audit_headers["最终填充值"]] in ("", None)
-    assert book_net_assets_row[audit_headers["来源类别"]] == "blank"
+    assert book_net_assets_row[audit_headers["来源类别"]] == "missing"
 
     manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
     assert manifest["financial_validation"]["valid"] is False
@@ -388,6 +389,35 @@ def test_pipeline_generates_review_report_when_monetary_fields_are_missing(
         node for node in trace["nodes"] if node["node_name"] == "fill_word"
     )
     assert fill_word_node["status"] == "completed_with_issues"
+
+
+def test_pipeline_without_pdf_exports_report_and_issue_list(tmp_path):
+    result = run_pipeline(
+        project_config=Path("demo/projects/tongfu.yaml"),
+        pdf_path=None,
+        output_dir=tmp_path,
+        ocr_adapter=None,
+        source_overrides={
+            "audit_pdf": None,
+            "reference_report": None,
+            "audited_financials": None,
+            "income_workbook": None,
+            "reporting_workbook": None,
+        },
+        manual_inputs_override={"target_company_name": "示例有限公司"},
+    )
+
+    assert result.report_path.exists()
+    assert result.ocr_workbook_path is None
+    assert (tmp_path / "生成问题清单.xlsx").exists()
+    issues = json.loads(
+        (tmp_path / "生成问题清单.json").read_text(encoding="utf-8")
+    )
+    assert issues
+    assert all("page_basis" in item for item in issues)
+    manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+    assert manifest["financial_validation"]["valid"] is False
+    assert manifest["generation_validation"]["valid"] is False
 
 
 def test_pipeline_rejects_invalid_workflow_before_ocr(tmp_path):

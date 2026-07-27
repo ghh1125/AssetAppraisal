@@ -63,12 +63,12 @@ def test_missing_financial_fields_are_left_blank_and_reported():
     assert result["missing_fields"] == ["net_assets"]
     assert result["fields"]["net_assets"] == ""
     assert result["evidence"]["net_assets"] == {
-        "kind": "blank",
+        "kind": "missing",
         "file": "",
         "locator": "指定来源未匹配到值",
     }
     assert result["issues"] == [
-        "高优先级：财务材料字段未匹配到，已留空：net_assets"
+        "高优先级：财务材料字段未匹配到，Word已保留黄色占位符：net_assets"
     ]
 
 

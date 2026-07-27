@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from .adapters.audit import export_audit, write_json
+from .adapters.generation_issues import export_generation_issues
 from .adapters.excel import (
     read_cells,
     try_read_cells,
@@ -39,6 +40,10 @@ from .domain.field_validation import (
 )
 from .domain.replacement import build_replacements
 from .domain.financial_matching import blank_configured_table
+from .domain.generation_issues import (
+    apply_page_locations,
+    issues_from_word_findings,
+)
 
 
 @dataclass
@@ -461,7 +466,30 @@ def run_project(
         },
     )
     replace_report_number_year(report, fields.get("report_number_year"))
-    highlight_unresolved_placeholders(report)
+    unresolved_findings = highlight_unresolved_placeholders(report)
+    generation_issues = apply_page_locations(
+        issues_from_word_findings(
+            unresolved_findings,
+            [*locations, *static_locations],
+            fields,
+            evidence,
+        ),
+        {},
+        {},
+    )
+    issue_workbook = export_generation_issues(
+        run_dir / "生成问题清单.xlsx",
+        generation_issues,
+    )
+    issue_json = write_json(
+        run_dir / "生成问题清单.json",
+        generation_issues,
+    )
+    for issue in generation_issues:
+        issues.append(
+            f"Word页码不可用 {issue.get('location_description', '')}："
+            f"{issue.get('problem', '')}"
+        )
     if hashlib.sha256(template.read_bytes()).hexdigest() != before_hash:
         raise RuntimeError("模板被意外修改")
     export_audit(audit, [*locations, *static_locations], fields, evidence)
@@ -473,7 +501,16 @@ def run_project(
             "missing_fields": financial_validation["missing_fields"],
             "conflicts": [],
         },
-        "outputs": [str(report), str(audit)],
+        "generation_validation": {
+            "valid": not generation_issues,
+            "unresolved_count": len(generation_issues),
+        },
+        "outputs": [
+            str(report),
+            str(audit),
+            str(issue_workbook),
+            str(issue_json),
+        ],
     }
     manifest_path = write_json(run_dir / "run_manifest.json", manifest)
     write_json(run_dir / "issues.json", issues)
