@@ -109,6 +109,9 @@ def issues_from_word_findings(
             else "word_table_placeholder"
         )
         source = evidence.get(field_key, {})
+        unfinished_appraisal = (
+            str(source.get("kind", "")) == "unfinished_appraisal"
+        )
         location_id = str(finding["location_id"])
         digest = hashlib.sha1(location_id.encode("utf-8")).hexdigest()[:10]
         issues.append(
@@ -116,7 +119,9 @@ def issues_from_word_findings(
                 "issue_id": f"GEN-{digest}",
                 "priority": "高",
                 "category": (
-                    "missing_field"
+                    "unfinished_appraisal"
+                    if unfinished_appraisal
+                    else "missing_field"
                     if mapped
                     else "unmapped_placeholder"
                 ),
@@ -138,7 +143,11 @@ def issues_from_word_findings(
                 "current_text": str(
                     finding.get("current_text", "XXX")
                 ),
-                "problem": "生成后仍存在未解析占位符",
+                "problem": (
+                    "疑似尚未完成评估，评估列为空或全零"
+                    if unfinished_appraisal
+                    else "生成后仍存在未解析占位符"
+                ),
                 "expected_source": (
                     str(mapped.get("source_kind", ""))
                     if mapped
@@ -153,7 +162,12 @@ def issues_from_word_findings(
                         else ""
                     )
                 ),
-                "suggestion": "补充对应材料或人工确认后替换黄色占位符",
+                "suggestion": (
+                    "确认评估工作簿是否已完成；完成后重新上传，"
+                    "未完成则保持黄色 XXX"
+                    if unfinished_appraisal
+                    else "补充对应材料或人工确认后替换黄色占位符"
+                ),
                 "status": "待人工处理",
                 "part": str(finding.get("part", "")),
                 "paragraph_index": int(
@@ -162,6 +176,48 @@ def issues_from_word_findings(
             }
         )
     return issues
+
+
+def organize_generation_issues(
+    issues: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Prepare unresolved items for page-by-page business review."""
+    priority_rank = {"高": 0, "中": 1, "低": 2}
+    organized: list[dict[str, Any]] = []
+    for issue in issues:
+        item = dict(issue)
+        page = item.get("page_number", "")
+        description = str(
+            item.get("location_description", "")
+            or item.get("field_name", "")
+            or item.get("location_id", "")
+        )
+        item["review_location"] = (
+            f"第{page}页｜{description}"
+            if page not in (None, "")
+            else f"页码待确认｜{description}"
+        )
+        item["review_action"] = str(
+            item.get("suggestion", "") or "人工核对并更新"
+        )
+        organized.append(item)
+
+    def sort_key(item: dict[str, Any]) -> tuple[Any, ...]:
+        page = item.get("page_number", "")
+        try:
+            page_number = int(page)
+            page_missing = 0
+        except (TypeError, ValueError):
+            page_number = 10**9
+            page_missing = 1
+        return (
+            page_missing,
+            page_number,
+            priority_rank.get(str(item.get("priority", "")), 9),
+            str(item.get("location_id", "")),
+        )
+
+    return sorted(organized, key=sort_key)
 
 
 def apply_page_locations(

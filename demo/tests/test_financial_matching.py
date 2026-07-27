@@ -72,6 +72,28 @@ def test_missing_financial_fields_are_left_blank_and_reported():
     ]
 
 
+def test_missing_policy_preserves_unfinished_appraisal_evidence():
+    result = apply_missing_field_policy(
+        fields={},
+        evidence={
+            "asset_approach_value": {
+                "kind": "unfinished_appraisal",
+                "file": "资产清查.xlsx",
+                "locator": "汇总表!D22",
+            }
+        },
+        required_fields=["asset_approach_value"],
+        label="金额及财务结果字段",
+    )
+
+    assert result["fields"]["asset_approach_value"] == ""
+    assert result["evidence"]["asset_approach_value"] == {
+        "kind": "unfinished_appraisal",
+        "file": "资产清查.xlsx",
+        "locator": "汇总表!D22",
+    }
+
+
 def test_blank_configured_table_preserves_structure_without_template_values():
     assert blank_configured_table(
         {

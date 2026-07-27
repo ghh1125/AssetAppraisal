@@ -873,6 +873,11 @@ def extract_workbook_facts(path: Path, role: str) -> dict[str, Any]:
                     "locator": net_asset["appraised_cell"],
                 }
             elif net_asset.get("unfinished_appraisal"):
+                evidence["asset_approach_value"] = {
+                    "kind": "unfinished_appraisal",
+                    "file": path.name,
+                    "locator": net_asset["appraised_cell"],
+                }
                 issues.append(
                     "asset_approach_value：[unfinished_appraisal] "
                     f"{path.name} {net_asset['appraised_cell']} "

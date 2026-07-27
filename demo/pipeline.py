@@ -42,6 +42,7 @@ from demo.adapters.word import (
 from demo.domain.generation_issues import (
     apply_page_locations,
     issues_from_word_findings,
+    organize_generation_issues,
 )
 from demo.domain.review import aggregate_reviews
 from demo.domain.field_validation import (
@@ -1448,6 +1449,9 @@ def run_pipeline(
         generation_issues,
         generated_pages,
         template_issue_pages,
+    )
+    generation_issues = organize_generation_issues(
+        generation_issues
     )
     issue_workbook = export_generation_issues(
         output_dir / "生成问题清单.xlsx",

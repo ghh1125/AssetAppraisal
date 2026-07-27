@@ -46,6 +46,7 @@ from .domain.source_precedence import prefer_semantic_result
 from .domain.generation_issues import (
     apply_page_locations,
     issues_from_word_findings,
+    organize_generation_issues,
 )
 
 
@@ -416,6 +417,16 @@ def run_project(
             issues.append(f"{source_name}：语义定位失败：{exc}")
             continue
         issues.extend(semantic.get("issues", []))
+        for rejected_key, rejected_source in semantic.get(
+            "evidence",
+            {},
+        ).items():
+            if (
+                isinstance(rejected_source, dict)
+                and rejected_source.get("kind") == "unfinished_appraisal"
+            ):
+                fields.pop(rejected_key, None)
+                evidence[rejected_key] = rejected_source
         for field_key, value in semantic.get("fields", {}).items():
             if value in (None, "", []):
                 continue
@@ -645,6 +656,9 @@ def run_project(
         ),
         {},
         {},
+    )
+    generation_issues = organize_generation_issues(
+        generation_issues
     )
     issue_workbook = export_generation_issues(
         run_dir / "生成问题清单.xlsx",

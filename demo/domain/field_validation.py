@@ -142,11 +142,16 @@ def apply_missing_field_policy(
     )
     for field in missing:
         updated_fields[field] = ""
-        updated_evidence[field] = {
-            "kind": "missing",
-            "file": "",
-            "locator": "指定来源未匹配到值",
-        }
+        if (
+            not isinstance(updated_evidence.get(field), dict)
+            or updated_evidence[field].get("kind")
+            != "unfinished_appraisal"
+        ):
+            updated_evidence[field] = {
+                "kind": "missing",
+                "file": "",
+                "locator": "指定来源未匹配到值",
+            }
     return {
         "valid": not missing,
         "missing_fields": missing,

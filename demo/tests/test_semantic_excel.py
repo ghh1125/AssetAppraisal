@@ -54,6 +54,11 @@ def test_all_zero_appraisal_column_keeps_asset_result_unresolved(tmp_path: Path)
 
     assert facts["fields"]["book_net_assets"] == 230
     assert "asset_approach_value" not in facts["fields"]
+    assert facts["evidence"]["asset_approach_value"] == {
+        "kind": "unfinished_appraisal",
+        "file": path.name,
+        "locator": "1-汇总表!C6",
+    }
     assert any("[unfinished_appraisal]" in issue for issue in facts["issues"])
 
 
