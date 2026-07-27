@@ -542,14 +542,44 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--target-company-short-name", help="用户输入：被评估单位简称")
     parser.add_argument("--report-date")
     args = parser.parse_args(argv)
-    if args.pdf:
+    pipeline_requested = bool(
+        args.pdf
+        or args.template
+        or args.use_glm
+        or args.use_qichacha
+        or args.node_inputs_json
+        or any(
+            value
+            for value in (
+                args.commissioning_party_name,
+                args.commissioning_party_short_name,
+                args.report_serial,
+                args.target_company_name,
+                args.valuation_purpose_inputs,
+                args.selected_valuation_method,
+                args.valuation_subject_type,
+                args.transaction_type,
+                args.final_valuation_method,
+                args.target_company_short_name,
+            )
+        )
+    )
+    if pipeline_requested:
         if args.output_dir is None:
-            parser.error("端到端 OCR 流程必须指定 --output-dir")
-        from .adapters.paddle_ocr import PaddleStructureOcrAdapter, create_local_pipeline
+            parser.error("端到端流程必须指定 --output-dir")
         from .adapters.template_pages import LibreOfficeTemplatePageReader
         from .pipeline import run_pipeline
 
-        ocr_adapter = PaddleStructureOcrAdapter(create_local_pipeline())
+        ocr_adapter = None
+        if args.pdf is not None:
+            from .adapters.paddle_ocr import (
+                PaddleStructureOcrAdapter,
+                create_local_pipeline,
+            )
+
+            ocr_adapter = PaddleStructureOcrAdapter(
+                create_local_pipeline()
+            )
         llm_adapter = None
         review_adapters = None
         qichacha_adapter = None
@@ -641,7 +671,10 @@ def main(argv: list[str] | None = None) -> int:
             report_date=args.report_date,
             review_adapters=review_adapters,
         )
-        print(f"OCR Excel：{result.ocr_workbook_path}")
+        if result.ocr_workbook_path is not None:
+            print(f"OCR Excel：{result.ocr_workbook_path}")
+        else:
+            print("OCR Excel：未提供 PDF，已跳过")
         print(f"报告：{result.report_path}")
         print(f"审计：{result.audit_path}")
         print(f"留空或复核事项：{len(result.issues)}")

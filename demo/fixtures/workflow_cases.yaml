@@ -90,5 +90,21 @@
         ]
       }
     }
+  },
+  {
+    "id": "missing_marker_preserves_20xx",
+    "op": "missing_marker",
+    "location": {
+      "marker": "20XX",
+      "context": "评估基准日：20XX年"
+    }
+  },
+  {
+    "id": "missing_marker_defaults_to_xxx",
+    "op": "missing_marker",
+    "location": {
+      "marker": "黄色标注",
+      "context": "办公地址（人工输入）"
+    }
   }
 ]

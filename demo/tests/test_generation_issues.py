@@ -1,7 +1,10 @@
 from openpyxl import load_workbook
 
 from demo.adapters.generation_issues import export_generation_issues
-from demo.domain.generation_issues import issues_for_missing_locations
+from demo.domain.generation_issues import (
+    issues_for_missing_locations,
+    issues_from_word_findings,
+)
 from demo.domain.replacement import build_replacements
 
 
@@ -68,3 +71,33 @@ def test_generation_issue_export_has_required_columns(tmp_path):
     sheet = load_workbook(output, read_only=True)["生成问题"]
     assert sheet["D2"].value == 9
     assert sheet["F2"].value == "DOCUMENT-P0100-X01"
+
+
+def test_word_finding_keeps_mapped_field_source():
+    issues = issues_from_word_findings(
+        [
+            {
+                "location_id": "DOCUMENT-P0005-X01",
+                "part": "word/document.xml",
+                "paragraph_index": 5,
+                "occurrence_index": 1,
+                "location_type": "段落",
+                "context": "XXX有限责任公司拟收购",
+                "current_text": "XXX",
+            }
+        ],
+        [
+            {
+                "location_id": "DOCUMENT-P0005-X01",
+                "field_key": "commissioning_party_name",
+                "field_name": "委托方名称",
+                "source_kind": "人工输入",
+                "source_locator": "委托方名称",
+            }
+        ],
+        {"commissioning_party_name": ""},
+        {"commissioning_party_name": {"kind": "missing"}},
+    )
+
+    assert issues[0]["field_key"] == "commissioning_party_name"
+    assert issues[0]["expected_source"] == "人工输入"

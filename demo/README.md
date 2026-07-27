@@ -7,13 +7,13 @@
 ## 工作流节点
 
 1. `inventory`：识别 Word 中的稳定位置。
-2. `ocr_pdf`：用 PP-StructureV3 将扫描 PDF 识别为页、文本块、表格和单元格。
-3. `export_ocr_workbook`：生成独立的 `OCR结构化结果.xlsx`。
+2. `ocr_pdf`：有 PDF 时用 PP-StructureV3 识别页、文本块、表格和单元格；无 PDF 时标记为 `skipped`。
+3. `export_ocr_workbook`：有 OCR 输入时生成独立的 `OCR结构化结果.xlsx`，否则跳过。
 4. `extract_sources`：读取 OCR Excel、其他结构化 Excel、节点参数和外部服务结果。
 5. `resolve_fields`：按字段语义、期间、单位和固定黄色来源路由选择字段值。
 6. `select_narrative_modules`：校验用户勾选的六类主体概况模块。
 7. `generate_narrative`：通过注入的百炼模型生成用户勾选的叙述内容。
-8. `fill_word`：复制模板并替换全部占位符和黄色说明。
+8. `fill_word`：复制模板并填入可用值；未解析位置保留黄色占位符。
 9. `llm_format_review`、`llm_data_validation`、`llm_semantic_review`：对生成 Word 执行格式、数据和语义审核。
 10. `review_aggregate`：汇总三类审核结果和问题。
 11. `export_audit`：导出字段来源清单和运行记录。
@@ -27,11 +27,13 @@ uv sync --extra dev
 uv run python -m demo.run demo/projects/tongfu.yaml --offline
 ```
 
-`--offline` 不调用企业 API 和 LLM；企查查/LLM/人工类字段在无材料时留空，不向 Word 写入“待人工补充”等提示语。项目配置在 `required_financial_fields` 中声明基础财务输入，在 `required_monetary_fields` 中声明需要重点复核的金额和财务结果；找不到时保持空白、记录高优先级问题并继续生成待复核 Word。可用 `--output-dir` 指定独立输出目录。原 Word 永远作为只读模板，不会被覆盖。
+`--offline` 不调用企业 API 和 LLM。所有业务材料均可缺省；找不到的字段在 Word 保留原 `XX/XXX/20XX`（没有原标记时使用 `XXX`），只标黄占位符本身，并记录到生成问题清单。可用 `--output-dir` 指定独立输出目录。原 Word 永远作为只读模板，不会被覆盖。
 
 在 c2m 或其他宿主中，可直接调用 `run_project(...)` / `run_pipeline(...)` 并通过 `ocr_adapter`、`company_api_adapter`、`llm_adapter` 和 `review_adapters` 参数注入已有服务。Demo 不在 `domain/` 内创建客户端或读取密钥；注入结果只接受映射表中已经登记的字段键。
 
 端到端 OCR 使用独立的 Python 3.11 环境（PaddleOCR 当前可选依赖限定 Python `<3.13`）。项目根目录的本地 `.env` 会在 Demo 入口自动加载；也可以由宿主进程自行注入同名环境变量，例如 `DASHSCOPE_API_KEY`、`QICHACHA_APP_KEY` 和 `QICHACHA_SECRET_KEY`：
+
+命令中的 `--pdf` 可省略；省略后不会加载 PaddleOCR，工作流从其他可用材料和人工输入继续。
 
 ```bash
 uv python install 3.11
@@ -70,8 +72,9 @@ uv run --python 3.11 python -m demo.run demo/projects/tongfu.yaml \
 - `OCR结构化结果.xlsx`
   - `OCR_表格`：逐单元格审计明细；`OCR_表格索引` 及 `表_<页码>_<表格编号>`：按 OCR 行列恢复的矩阵表，便于人工查看和后续映射。
 - `资产评估报告_待复核.docx`
-- `资产评估报告_最终候选.docx`（仅在财务字段完整且至少一项审核完成时生成）
+- `资产评估报告_最终候选.docx`（仅在财务字段完整、无黄色占位符且至少一项审核完成时生成）
 - `字段审计清单.xlsx`
+- `生成问题清单.xlsx`、`生成问题清单.json`
 - `normalized_fields.json`
 - `issues.json`
 - `格式审核.json`、`数据校验.json`、`语义审核.json`
@@ -82,7 +85,7 @@ uv run --python 3.11 python -m demo.run demo/projects/tongfu.yaml \
 
 ## Vue 前端工作台
 
-`frontend/` 将黄色提示中的人工输入、材料上传、后端固定 Word 模板、GLM/企查查开关和产物下载做成页面。每次任务需要上传审计 PDF、参考评估报告 DOCX、审计财务 XLSX、收益法 XLSX 和上报表 XLSX；Word 模板由后端固定提供，不需要上传。上传 PDF 后会先调用 `/api/v1/asset-appraisal/ocr-cache/check`，按 PDF SHA-256 查找已有 `OCR结构化结果.xlsx`；命中时生成任务复用 OCR，跳过 PaddleOCR。前端调用 `/api/v1/asset-appraisal/runs`；本地可用下面的 HTTP 桥接服务承接现有流水线：
+`frontend/` 将人工输入、可选材料上传、后端固定 Word 模板、GLM/企查查开关和产物下载做成页面。PDF、参考 DOCX 和三个项目工作簿均可选，只需至少上传一份材料或填写一项基础信息；工作簿支持 `.xlsx/.xlsm`。只有选择 PDF 后才检查 OCR 缓存。Word 模板由后端固定提供，不需要上传。
 
 上传框按材料角色接收文件，原文件名不需要与配置一致。审计财务 XLSX 应包含 `06N_资产负债表`、`07N_利润表`；收益法 XLSX 应包含主要产品及服务、所得税表、净现金流计算表；上报表 XLSX 应包含表 1、表 4-6、表 4-12。若工作表名称或表格布局变化，需要在项目 YAML 映射中配置新的定位规则。
 
@@ -105,14 +108,15 @@ npm run dev
 
 ## 失败与人工审核策略
 
-- OCR 失败或某个黄色指定来源无结果：记录到 `issues.json`，对应黄色内容留空。
+- 未上传 PDF：OCR 和 OCR Excel 导出节点标记为 `skipped`，其余节点继续。
+- OCR 失败或某个指定来源无结果：Word 保留黄色占位符，并写入 `issues.json` 和生成问题清单。
 - `workflow.yaml` 节点、模型、字段说明或依赖不符合契约：在任何外部调用前停止运行。
 - 本机无 LibreOffice 或 PyMuPDF：Word 仍可生成，字段审计表的原模板页码留空并记录问题。
-- 金额及财务结果字段缺失：对应内容和表格金额留空，生成待复核 Word，并在 `issues.json`、字段审计、运行清单和工作流轨迹中标为高优先级；不生成最终候选 Word。
+- 金额及财务结果字段缺失：对应段落或表格单元格写黄色 `XXX`，生成待复核 Word，并在问题清单、字段审计、运行清单和工作流轨迹中标为高优先级；不生成最终候选 Word。
 - 同字段同期间出现冲突候选：不自动选择，保留待复核 Word 和冲突记录，不生成最终候选 Word，由 c2m 或评估师处理。
 - 百炼叙述返回越权字段、无证据字段或未知证据编号：丢弃该字段并记录问题。
 - 任一 LLM 审核失败：报告仍保留，审核结果标记为 `failed`，其他审核继续；未启用的审核在轨迹中标记为 `skipped`。
-- 企查查 API 未配置或企业身份核验不一致：对应 API 字段留空并记录复核事项。
+- 企查查 API 未配置或企业身份核验不一致：对应 API 字段保留黄色占位符并记录复核事项。
 - 已有同一 PDF 的 OCR 结果：默认复用缓存，不重复执行 OCR；取消“复用已有 OCR 结果”后才会强制重新 OCR。
 - 生成完成：评估师同时审核 Word、字段审计清单和 OCR Excel；Demo 验收不代表生产上线。
 
@@ -126,7 +130,7 @@ npm run dev
 - 新材料叙述：在 `material_fields` 中组合 Excel 单元格、Excel 范围、文件名或参考 Word 段落/表格；用 `paragraph_replacements` 替换模板中没有占位符的静态旧项目文字。
 - 新模板：新增映射文件并运行模板回归测试。
 - 新服务商：在 `adapters/` 实现相同输入输出契约，通过 `run.py` 注入。
-- 新规则：修改 `domain/` 纯函数，同时更新 fixture、expected、测试和 `CHANGELOG.md`。Word 生成完成后必须没有任何 `XX/XXX/20XX` 占位符残留。
+- 新规则：修改 `domain/` 纯函数，同时更新 fixture、expected、测试和 `CHANGELOG.md`。未解决的 `XX/XXX/20XX` 必须标黄并逐项进入生成问题清单。
 - 新 Prompt：新增带版本号的 Prompt 和输出结构，不覆盖旧版本。
 
 ## c2m 接入资产

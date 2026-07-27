@@ -48,5 +48,7 @@
         "problem": "金额与来源不一致"
       }
     ]
-  }
+  },
+  "missing_marker_preserves_20xx": "20XX",
+  "missing_marker_defaults_to_xxx": "XXX"
 }

@@ -11,6 +11,7 @@ from demo.domain.narrative_policy import (
     should_create_candidate_report,
 )
 from demo.domain.review import aggregate_reviews
+from demo.domain.generation_issues import missing_marker
 
 
 def test_ten_representative_business_examples():
@@ -69,6 +70,8 @@ def test_workflow_policy_examples():
             )
         elif case["op"] == "review_aggregate":
             actual[case["id"]] = aggregate_reviews(case["reviews"])
+        elif case["op"] == "missing_marker":
+            actual[case["id"]] = missing_marker(case["location"])
         else:
             raise AssertionError(f"未知样例操作：{case['op']}")
     assert actual == expected

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from typing import Any
 
 
@@ -53,30 +54,55 @@ def issues_from_word_findings(
     fields: dict[str, Any],
     evidence: dict[str, dict[str, Any]],
 ) -> list[dict[str, Any]]:
+    mapped_by_id = {
+        str(location.get("location_id", "")): location
+        for location in locations
+    }
     mapped_by_paragraph: dict[tuple[str, int], list[dict[str, Any]]] = {}
     for location in locations:
+        location_id = str(location.get("location_id", ""))
+        match = re.search(r"^(.+)-P(\d+)-[XH]\d+$", location_id)
         key = (
-            str(location.get("part", "")),
-            int(location.get("paragraph_index", 0)),
+            str(location.get("part", ""))
+            or (match.group(1) if match else ""),
+            int(location.get("paragraph_index", 0))
+            or (int(match.group(2)) if match else 0),
         )
         mapped_by_paragraph.setdefault(key, []).append(location)
 
     issues: list[dict[str, Any]] = []
     for finding in findings:
+        part = str(finding.get("part", ""))
+        short_part = (
+            part.rsplit("/", 1)[-1].removesuffix(".xml").upper()
+        )
         key = (
-            str(finding.get("part", "")),
+            short_part,
             int(finding.get("paragraph_index", 0)),
         )
         candidates = mapped_by_paragraph.get(key, [])
-        mapped = next(
-            (
-                item
-                for item in candidates
-                if fields.get(str(item.get("field_key", "")))
-                in (None, "", [], {})
-            ),
-            candidates[0] if candidates else None,
-        )
+        occurrence = int(finding.get("occurrence_index", 1))
+        mapped = mapped_by_id.get(str(finding.get("location_id", "")))
+        if mapped is None:
+            mapped = next(
+                (
+                    item
+                    for item in candidates
+                    if int(item.get("occurrence_index", 1))
+                    == occurrence
+                    if fields.get(str(item.get("field_key", "")))
+                    in (None, "", [], {})
+                ),
+                next(
+                    (
+                        item
+                        for item in candidates
+                        if int(item.get("occurrence_index", 1))
+                        == occurrence
+                    ),
+                    None,
+                ),
+            )
         field_key = (
             str(mapped.get("field_key", ""))
             if mapped
