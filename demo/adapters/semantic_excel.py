@@ -9,6 +9,7 @@ from openpyxl.utils import get_column_letter
 
 from demo.domain.financial_table_semantics import (
     CanonicalPeriod,
+    appraisal_zero_is_unfinished,
     canonical_long_term_asset_category,
     canonical_period,
     choose_historical_columns,
@@ -127,17 +128,28 @@ def _net_asset_candidate(sheet) -> dict[str, Any] | None:
             appraised = _number(sheet.cell(label_cell.row, appraised_column).value)
             if book is None and appraised is None:
                 continue
+            unfinished_appraisal = appraisal_zero_is_unfinished(
+                book_value=book,
+                appraised_value=appraised,
+                appraisal_column_values=[
+                    sheet.cell(row_number, appraised_column).value
+                    for row_number in range(1, sheet.max_row + 1)
+                ],
+            )
             score = 10
             if "汇总" in sheet.title:
                 score += 5
             if "分类" not in sheet.title:
                 score += 2
+            if appraised is not None and not unfinished_appraisal:
+                score += 1
             candidate = {
                 "score": score,
                 "book": book,
-                "appraised": appraised,
+                "appraised": None if unfinished_appraisal else appraised,
                 "book_cell": f"{sheet.title}!{get_column_letter(book_column)}{label_cell.row}",
                 "appraised_cell": f"{sheet.title}!{get_column_letter(appraised_column)}{label_cell.row}",
+                "unfinished_appraisal": unfinished_appraisal,
                 "scale": _unit_scale_to_wan(sheet),
             }
             if best is None or candidate["score"] > best["score"]:
@@ -860,6 +872,12 @@ def extract_workbook_facts(path: Path, role: str) -> dict[str, Any]:
                     "file": path.name,
                     "locator": net_asset["appraised_cell"],
                 }
+            elif net_asset.get("unfinished_appraisal"):
+                issues.append(
+                    "asset_approach_value：[unfinished_appraisal] "
+                    f"{path.name} {net_asset['appraised_cell']} "
+                    "所在评估列为空或全零，已保留 XXX"
+                )
         if role in {"reporting_workbook", "audited_financials"}:
             table_fields, table_evidence, table_issues = _asset_tables(workbook)
             fields.update(table_fields)

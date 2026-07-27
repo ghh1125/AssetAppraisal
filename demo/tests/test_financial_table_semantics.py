@@ -1,9 +1,26 @@
 from demo.domain.financial_table_semantics import (
+    appraisal_zero_is_unfinished,
     canonical_long_term_asset_category,
     canonical_period,
     choose_historical_columns,
     detail_header_role,
 )
+
+
+def test_all_zero_appraisal_column_is_unfinished():
+    assert appraisal_zero_is_unfinished(
+        book_value=120.0,
+        appraised_value=0.0,
+        appraisal_column_values=[0, 0, None],
+    )
+
+
+def test_zero_result_is_valid_when_column_contains_appraisal_activity():
+    assert not appraisal_zero_is_unfinished(
+        book_value=120.0,
+        appraised_value=0.0,
+        appraisal_column_values=[80, -80, 0],
+    )
 
 
 def test_canonical_period_accepts_dates_and_rejects_rates():

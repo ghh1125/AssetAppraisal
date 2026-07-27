@@ -35,6 +35,50 @@ def test_asset_summary_is_matched_by_labels_and_normalized_to_wan(tmp_path: Path
     assert facts["evidence"]["asset_approach_value"]["locator"].endswith("!D3")
 
 
+def test_all_zero_appraisal_column_keeps_asset_result_unresolved(tmp_path: Path):
+    path = _save_workbook(
+        tmp_path / "unfinished-appraisal.xlsx",
+        {
+            "1-汇总表": [
+                ["金额单位：人民币万元"],
+                ["项目", "账面价值", "评估价值"],
+                ["流动资产", 100, 0],
+                ["非流动资产", 200, 0],
+                ["负债合计", 70, 0],
+                ["净资产", 230, 0],
+            ]
+        },
+    )
+
+    facts = extract_workbook_facts(path, "reporting_workbook")
+
+    assert facts["fields"]["book_net_assets"] == 230
+    assert "asset_approach_value" not in facts["fields"]
+    assert any("[unfinished_appraisal]" in issue for issue in facts["issues"])
+
+
+def test_zero_net_result_remains_valid_when_appraisal_column_has_activity(
+    tmp_path: Path,
+):
+    path = _save_workbook(
+        tmp_path / "valid-zero-appraisal.xlsx",
+        {
+            "汇总表": [
+                ["金额单位：人民币万元"],
+                ["项目", "账面价值", "评估价值"],
+                ["资产总计", 100, 80],
+                ["负债合计", 50, 80],
+                ["净资产", 50, 0],
+            ]
+        },
+    )
+
+    facts = extract_workbook_facts(path, "reporting_workbook")
+
+    assert facts["fields"]["asset_approach_value"] == 0
+    assert not any("[unfinished_appraisal]" in issue for issue in facts["issues"])
+
+
 def test_income_value_uses_equity_label_and_sheet_unit(tmp_path: Path):
     path = _save_workbook(
         tmp_path / "income-any-name.xlsx",

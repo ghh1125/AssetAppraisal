@@ -43,6 +43,23 @@ _ELECTRONIC_EQUIPMENT_ALIASES = (
 )
 
 
+def appraisal_zero_is_unfinished(
+    *,
+    book_value: float | None,
+    appraised_value: float | None,
+    appraisal_column_values: Sequence[object],
+) -> bool:
+    """Treat an isolated all-zero appraisal column as not yet appraised."""
+    if book_value in (None, 0) or appraised_value != 0:
+        return False
+    numeric = [
+        float(value)
+        for value in appraisal_column_values
+        if isinstance(value, (int, float)) and not isinstance(value, bool)
+    ]
+    return not any(value != 0 for value in numeric)
+
+
 def _normalized_label(value: object) -> str:
     return re.sub(
         r"[\s：:()（）一二三四五六七八九十、．.]+",
