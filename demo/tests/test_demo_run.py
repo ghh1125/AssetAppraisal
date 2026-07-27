@@ -28,7 +28,8 @@ def test_offline_real_template_run_creates_new_report_and_audit(tmp_path: Path):
     assert (tmp_path / "issues.json").exists()
     with zipfile.ZipFile(result.report_path) as zf:
         xml = "".join(zf.read(name).decode("utf-8") for name in zf.namelist() if re.fullmatch(r"word/(document|header\d+|footer\d+)\.xml", name))
-    assert not re.search(r"X{2,}", xml)
+    assert "XXX" in xml
+    assert 'w:highlight w:val="yellow"' in xml
     assert "企查查API获取" not in xml
 
 
@@ -144,3 +145,30 @@ def test_missing_required_financial_field_does_not_block_review_report(tmp_path:
         "missing_fields": ["synthetic_missing_amount"],
         "conflicts": [],
     }
+
+
+def test_run_project_generates_with_only_one_manual_field(tmp_path: Path):
+    result = run_project(
+        Path("demo/projects/tongfu.yaml"),
+        output_dir=tmp_path,
+        offline=True,
+        manual_inputs_override={"target_company_name": "示例有限公司"},
+        source_overrides={
+            "audit_pdf": None,
+            "reference_report": None,
+            "audited_financials": None,
+            "income_workbook": None,
+            "reporting_workbook": None,
+        },
+    )
+
+    assert result.report_path.exists()
+    document = Document(result.report_path)
+    text = "\n".join(paragraph.text for paragraph in document.paragraphs)
+    text += "\n" + "\n".join(
+        cell.text
+        for table in document.tables
+        for row in table.rows
+        for cell in row.cells
+    )
+    assert "XXX" in text

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from zipfile import BadZipFile
 
 from openpyxl import load_workbook
 from openpyxl.utils.cell import range_boundaries
@@ -16,6 +17,20 @@ def read_cells(path: Path, locators: list[str]) -> dict[str, object]:
         return result
     finally:
         workbook.close()
+
+
+def try_read_cells(
+    path: Path | None,
+    locators: list[str],
+) -> tuple[dict[str, object], list[str]]:
+    if path is None:
+        return {}, ["缺少来源文件"]
+    try:
+        return read_cells(path, locators), []
+    except KeyError as exc:
+        return {}, [f"缺少工作表：{exc}"]
+    except (OSError, ValueError, BadZipFile) as exc:
+        return {}, [f"材料无法读取：{exc}"]
 
 
 def read_range_values(path: Path, locator: str) -> list[object]:
@@ -72,3 +87,17 @@ def read_configured_table(path: Path, spec: dict) -> list[list[str]]:
         return matrix
     finally:
         workbook.close()
+
+
+def try_read_configured_table(
+    path: Path | None,
+    spec: dict,
+) -> tuple[list[list[str]] | None, list[str]]:
+    if path is None:
+        return None, ["缺少来源文件"]
+    try:
+        return read_configured_table(path, spec), []
+    except KeyError as exc:
+        return None, [f"缺少工作表：{exc}"]
+    except (OSError, ValueError, BadZipFile) as exc:
+        return None, [f"材料无法读取：{exc}"]

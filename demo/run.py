@@ -5,6 +5,8 @@ import hashlib
 import json
 import os
 import re
+from collections import defaultdict
+from zipfile import BadZipFile
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -12,9 +14,17 @@ from pathlib import Path
 from typing import Any
 
 from .adapters.audit import export_audit, write_json
-from .adapters.excel import read_cells, read_configured_table
+from .adapters.excel import (
+    read_cells,
+    try_read_cells,
+    try_read_configured_table,
+)
 from .adapters.materials import resolve_material_field
-from .adapters.word import fill_template, replace_report_number_year, unresolved_placeholders
+from .adapters.word import (
+    fill_template,
+    highlight_unresolved_placeholders,
+    replace_report_number_year,
+)
 from .domain.mapping import validate_mapping
 from .domain.calculations import derive_system_fields
 from .domain.field_validation import (
@@ -27,8 +37,8 @@ from .domain.field_validation import (
     validate_transaction_type,
     validate_valuation_subject_type,
 )
-from .domain.registry import human_fill
 from .domain.replacement import build_replacements
+from .domain.financial_matching import blank_configured_table
 
 
 @dataclass
@@ -47,7 +57,7 @@ def _asset_method_label(value: Any) -> str:
         return "市场法"
     if "收益法" in text:
         return "收益法"
-    return "资产基础法"
+    return ""
 
 
 def _load_local_env() -> None:
@@ -119,16 +129,26 @@ def _excel_value(
     return None, None
 
 
-def _read_long_term_assets_table(config: dict[str, Any], sources: dict[str, Path]) -> list[list[str]]:
+def _read_long_term_assets_table(
+    config: dict[str, Any],
+    sources: dict[str, Path],
+    issues: list[str],
+) -> list[list[str]]:
     matrix = [["项目", "账面金额（元）", "数量", "现状、特点"]]
     for row in config.get("long_term_assets_table", {}).get("rows", []):
         locator = str(row["locator"])
-        value = read_cells(sources[row["source"]], [locator])[locator]
+        source_name = str(row["source"])
+        values, read_issues = try_read_cells(sources.get(source_name), [locator])
+        value = values.get(locator, "XXX")
+        issues.extend(
+            f"{row.get('label', source_name)}：{message}"
+            for message in read_issues
+        )
         if isinstance(value, (int, float)):
             value = f"{value:,.2f}"
         matrix.append([
             str(row.get("label", "")),
-            str(value if value not in (None, "") else ""),
+            str(value if value not in (None, "") else "XXX"),
             str(row.get("quantity", "")),
             str(row.get("condition", "")),
         ])
@@ -171,7 +191,7 @@ def run_project(
     company_api_adapter: Any = None,
     llm_adapter: Any = None,
     manual_inputs_override: dict[str, Any] | None = None,
-    source_overrides: dict[str, Path] | None = None,
+    source_overrides: dict[str, Path | None] | None = None,
 ) -> RunResult:
     config_path = config_path.resolve()
     config = json.loads(config_path.read_text(encoding="utf-8"))
@@ -180,13 +200,23 @@ def run_project(
     mapping_path = _path(base, config["mapping"])
     manual_path = _path(base, config["manual_inputs"])
     sources = {name: _path(base, value) for name, value in config.get("sources", {}).items()}
-    if source_overrides:
-        sources.update({name: Path(path).resolve() for name, path in source_overrides.items()})
+    if source_overrides is not None:
+        for name, path in source_overrides.items():
+            if path is None:
+                sources.pop(name, None)
+            else:
+                sources[name] = Path(path).resolve()
     source_lineage = config.get("source_lineage", {})
     mapping = json.loads(mapping_path.read_text(encoding="utf-8"))
     locations = validate_mapping(mapping)
     static_locations = mapping.get("static_locations", [])
-    manual = json.loads(manual_path.read_text(encoding="utf-8")) if manual_path.exists() else {}
+    manual = (
+        {}
+        if manual_inputs_override is not None
+        else json.loads(manual_path.read_text(encoding="utf-8"))
+        if manual_path.exists()
+        else {}
+    )
     if manual_inputs_override:
         manual.update({key: value for key, value in manual_inputs_override.items() if value not in (None, "")})
     if manual.get("report_serial") not in (None, ""):
@@ -230,11 +260,30 @@ def run_project(
 
     for spec in config.get("financial_tables", []):
         source_name = spec["source"]
-        matrix = read_configured_table(sources[source_name], spec)
+        matrix, read_issues = try_read_configured_table(
+            sources.get(source_name),
+            spec,
+        )
+        if matrix is None:
+            matrix = blank_configured_table(spec, placeholder="XXX")
+        issues.extend(
+            f"{spec['field_key']}：{message}" for message in read_issues
+        )
         key = spec["field_key"]
         fields[key] = {"caption": spec["caption"], "rows": matrix}
-        evidence[key] = _source_evidence(
-            source_name, sources, spec["source_locator"], source_lineage
+        evidence[key] = (
+            _source_evidence(
+                source_name,
+                sources,
+                spec["source_locator"],
+                source_lineage,
+            )
+            if source_name in sources and not read_issues
+            else {
+                "kind": "missing",
+                "file": "",
+                "locator": spec["source_locator"],
+            }
         )
         table_replacements[int(spec["target_table_index"])] = matrix
 
@@ -244,17 +293,40 @@ def run_project(
     scope_table = config.get("asset_scope_summary_table")
     if isinstance(scope_table, dict):
         source_name = str(scope_table["source"])
-        matrix = read_configured_table(sources[source_name], scope_table)
+        matrix, read_issues = try_read_configured_table(
+            sources.get(source_name),
+            scope_table,
+        )
+        if matrix is None:
+            matrix = blank_configured_table(
+                scope_table,
+                placeholder="XXX",
+            )
+        issues.extend(
+            f"{scope_table['field_key']}：{message}"
+            for message in read_issues
+        )
         key = str(scope_table["field_key"])
         fields[key] = {"caption": scope_table.get("caption", ""), "rows": matrix}
-        evidence[key] = _source_evidence(
-            source_name, sources, scope_table.get("source_locator", ""), source_lineage
+        evidence[key] = (
+            _source_evidence(
+                source_name,
+                sources,
+                scope_table.get("source_locator", ""),
+                source_lineage,
+            )
+            if source_name in sources and not read_issues
+            else {
+                "kind": "missing",
+                "file": "",
+                "locator": scope_table.get("source_locator", ""),
+            }
         )
         table_replacements[int(scope_table["target_table_index"])] = matrix
 
     long_term_table = config.get("long_term_assets_table")
     if isinstance(long_term_table, dict):
-        matrix = _read_long_term_assets_table(config, sources)
+        matrix = _read_long_term_assets_table(config, sources, issues)
         table_replacements[int(long_term_table["target_table_index"])] = matrix
 
     # The communication template's second IP table is software copyright,
@@ -270,7 +342,14 @@ def run_project(
     for spec in config.get("financial_fields", []):
         source_name = spec["source"]
         locator = spec["locator"]
-        raw = read_cells(sources[source_name], [locator])[locator]
+        values, read_issues = try_read_cells(
+            sources.get(source_name),
+            [locator],
+        )
+        issues.extend(
+            f"{spec['field_key']}：{message}" for message in read_issues
+        )
+        raw = values.get(locator)
         if raw in (None, ""):
             issues.append(f"{spec['field_key']}：来源单元格 {locator} 为空")
             continue
@@ -281,7 +360,20 @@ def run_project(
         )
 
     for spec in config.get("material_fields", []):
-        value, source = resolve_material_field(spec, sources, source_lineage)
+        try:
+            value, source = resolve_material_field(
+                spec,
+                sources,
+                source_lineage,
+            )
+        except (KeyError, OSError, ValueError, BadZipFile) as exc:
+            value = ""
+            source = {
+                "kind": "missing",
+                "file": "",
+                "locator": "",
+            }
+            issues.append(f"{spec['field_key']}：材料无法读取：{exc}")
         fields[spec["field_key"]] = value
         evidence[spec["field_key"]] = source
 
@@ -332,7 +424,7 @@ def run_project(
     for key, record in records_by_key.items():
         if fields.get(key) in (None, "", []):
             fields[key] = ""
-            evidence[key] = {"kind": "blank", "file": "", "locator": ""}
+            evidence[key] = {"kind": "missing", "file": "", "locator": ""}
             if key not in required_financial_fields:
                 issues.append(f"{key}：无可用值，已按规则留空")
     replacements = build_replacements(locations, fields)
@@ -344,7 +436,11 @@ def run_project(
             if spec.get("blank_if_empty") and not str(fields.get(spec["blank_if_empty"], "") or "").strip():
                 value = ""
             else:
-                value = spec["template"].format_map({key: str(value) for key, value in fields.items()})
+                values = defaultdict(
+                    lambda: "XXX",
+                    {key: str(value) for key, value in fields.items()},
+                )
+                value = spec["template"].format_map(values)
         else:
             value = str(spec.get("value", ""))
         paragraph_replacements[(spec["part"], int(spec["paragraph_index"]))] = value
@@ -365,9 +461,7 @@ def run_project(
         },
     )
     replace_report_number_year(report, fields.get("report_number_year"))
-    remaining_placeholders = unresolved_placeholders(report)
-    if remaining_placeholders:
-        raise ValueError("Word 模板仍有未替换占位符：" + "、".join(remaining_placeholders))
+    highlight_unresolved_placeholders(report)
     if hashlib.sha256(template.read_bytes()).hexdigest() != before_hash:
         raise RuntimeError("模板被意外修改")
     export_audit(audit, [*locations, *static_locations], fields, evidence)

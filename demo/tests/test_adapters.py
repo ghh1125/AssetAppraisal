@@ -3,7 +3,7 @@ from pathlib import Path
 from openpyxl import Workbook
 
 from demo.adapters.company_api import CompanyApiAdapter, QichachaApiAdapter
-from demo.adapters.excel import read_cells
+from demo.adapters.excel import read_cells, try_read_cells
 from demo.adapters.llm import LlmAdapter
 from demo.adapters.ocr import OcrAdapter
 
@@ -18,6 +18,21 @@ def test_excel_adapter_reads_exact_cells_without_modifying_source(tmp_path: Path
     before = path.read_bytes()
     assert read_cells(path, ["项目信息!B5"])["项目信息!B5"] == "示例有限公司"
     assert path.read_bytes() == before
+
+
+def test_optional_excel_cell_returns_issue_instead_of_raising(tmp_path: Path):
+    workbook_path = tmp_path / "other-layout.xlsx"
+    workbook = Workbook()
+    workbook.active.title = "资产负债表"
+    workbook.save(workbook_path)
+
+    values, issues = try_read_cells(
+        workbook_path,
+        ["06N_资产负债表!L75"],
+    )
+
+    assert values == {}
+    assert "缺少工作表" in issues[0]
 
 
 def test_optional_adapters_degrade_without_clients_or_credentials(tmp_path: Path):
