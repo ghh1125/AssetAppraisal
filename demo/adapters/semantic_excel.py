@@ -9,8 +9,10 @@ from openpyxl.utils import get_column_letter
 
 from demo.domain.financial_table_semantics import (
     CanonicalPeriod,
+    canonical_long_term_asset_category,
     canonical_period,
     choose_historical_columns,
+    detail_header_role,
 )
 
 
@@ -47,27 +49,64 @@ def _unit_scale_to_wan(sheet) -> float:
 
 
 def _header_columns(sheet, row_number: int) -> tuple[int | None, int | None]:
+    def scores(value: Any) -> tuple[int, int]:
+        label = _text(str(value or "").replace("帐", "账"))
+        if not label or any(token in label for token in ("增值", "减值", "增减")):
+            return 0, 0
+        book_score = 0
+        appraised_score = 0
+        if "账面" in label and "调整" not in label:
+            if "净值" in label or "净额" in label:
+                book_score = 30
+            elif "原值" in label:
+                book_score = 5
+            elif "价值" in label or label.endswith("值"):
+                book_score = 10
+        if "评估" in label:
+            if "净值" in label or "净额" in label:
+                appraised_score = 30
+            elif "原值" in label:
+                appraised_score = 5
+            elif "价值" in label or label.endswith("值"):
+                appraised_score = 10
+        return book_score, appraised_score
+
+    best: tuple[int, int | None, int | None] = (0, None, None)
     for header_row in range(max(1, row_number - 100), row_number):
-        book_column = None
-        appraised_column = None
-        for cell in sheet[header_row]:
-            value = _text(cell.value)
-            if (
-                ("账面" in value or "帐面" in value)
-                and ("价值" in value or "值" in value)
-                and "调整" not in value
-            ):
-                book_column = cell.column
-            if (
-                "评估" in value
-                and ("价值" in value or "值" in value)
-                and "增" not in value
-                and "减" not in value
-            ):
-                appraised_column = cell.column
-        if book_column and appraised_column:
-            return book_column, appraised_column
-    return None, None
+        variants: list[list[str]] = [
+            [str(sheet.cell(header_row, column).value or "") for column in range(1, sheet.max_column + 1)]
+        ]
+        if header_row + 1 < row_number:
+            inherited = ""
+            combined: list[str] = []
+            for column in range(1, sheet.max_column + 1):
+                top = str(sheet.cell(header_row, column).value or "").strip()
+                sub = str(sheet.cell(header_row + 1, column).value or "").strip()
+                if top:
+                    inherited = top
+                combined.append(f"{top or inherited}{sub}" if sub else top)
+            variants.append(combined)
+        for labels in variants:
+            book_candidates: list[tuple[int, int]] = []
+            appraised_candidates: list[tuple[int, int]] = []
+            for column, label in enumerate(labels, start=1):
+                book_score, appraised_score = scores(label)
+                if book_score:
+                    book_candidates.append((book_score, column))
+                if appraised_score:
+                    appraised_candidates.append((appraised_score, column))
+            if not book_candidates or not appraised_candidates:
+                continue
+            book_score, book_column = max(book_candidates)
+            appraised_score, appraised_column = max(appraised_candidates)
+            candidate = (
+                book_score + appraised_score,
+                book_column,
+                appraised_column,
+            )
+            if candidate[0] > best[0]:
+                best = candidate
+    return best[1], best[2]
 
 
 def _net_asset_candidate(sheet) -> dict[str, Any] | None:
@@ -242,25 +281,190 @@ def _summary_book_values(workbook) -> tuple[dict[str, float], dict[str, str]]:
     return best_values, best_locators
 
 
-def _electronic_equipment_value(workbook) -> tuple[float | None, str]:
+def _detail_locator(sheet_title: str, column: int, rows: list[int]) -> str:
+    letter = get_column_letter(column)
+    if rows and rows == list(range(rows[0], rows[-1] + 1)):
+        return f"{sheet_title}!{letter}{rows[0]}:{letter}{rows[-1]}"
+    return "；".join(f"{sheet_title}!{letter}{row}" for row in rows)
+
+
+def _detail_header_columns(
+    sheet,
+    header_row: int,
+) -> tuple[dict[str, list[int]], dict[int, str], int]:
+    direct: dict[str, list[int]] = {}
+    labels: dict[int, str] = {}
+    for cell in sheet[header_row]:
+        role = detail_header_role(cell.value)
+        if role:
+            direct.setdefault(role, []).append(cell.column)
+            labels[cell.column] = str(cell.value or "")
+    next_row_has_value_subheaders = (
+        header_row < sheet.max_row
+        and any(
+            _text(sheet.cell(header_row + 1, column).value)
+            in {"原值", "净值", "净额"}
+            for column in range(1, sheet.max_column + 1)
+        )
+    )
+    if (
+        len(direct.get("book_net", [])) == 1
+        and not next_row_has_value_subheaders
+    ):
+        return direct, labels, header_row + 1
+    if header_row >= sheet.max_row:
+        return direct, labels, header_row + 1
+
+    combined: dict[str, list[int]] = {}
+    combined_labels: dict[int, str] = {}
+    inherited_top = ""
+    for column in range(1, sheet.max_column + 1):
+        top = str(sheet.cell(header_row, column).value or "").strip()
+        sub = str(sheet.cell(header_row + 1, column).value or "").strip()
+        if top:
+            inherited_top = top
+        label = f"{top or inherited_top}{sub}" if sub else top
+        role = detail_header_role(label)
+        if role:
+            combined.setdefault(role, []).append(column)
+            combined_labels[column] = label
+    return combined or direct, combined_labels or labels, header_row + 2
+
+
+def _preferred_book_net_column(
+    columns: list[int],
+    labels: dict[int, str],
+) -> int | None:
+    preferred = [
+        column
+        for column in columns
+        if "审计前" not in labels.get(column, "")
+        and "调整前" not in labels.get(column, "")
+    ]
+    candidates = preferred or columns
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _electronic_equipment_detail_value(
+    workbook,
+) -> tuple[float | None, str, str]:
+    best: tuple[int, float, str, str] | None = None
     for sheet in workbook.worksheets:
-        if "固定资产汇总" not in sheet.title and "固定汇总" not in sheet.title:
+        if not any(token in sheet.title for token in ("固定资产", "设备", "资产明细")):
+            continue
+        scale_to_yuan = _unit_scale_to_wan(sheet) * 10_000
+        whole_sheet_is_electronic = (
+            canonical_long_term_asset_category(sheet.title) == "电子设备"
+            or any(
+                canonical_long_term_asset_category(
+                    sheet.cell(row, 1).value
+                )
+                == "电子设备"
+                for row in range(1, min(sheet.max_row, 6) + 1)
+            )
+        )
+        for header_row in range(1, min(sheet.max_row, 30) + 1):
+            roles, labels, first_data_row = _detail_header_columns(
+                sheet,
+                header_row,
+            )
+            if not whole_sheet_is_electronic and len(roles.get("category", [])) != 1:
+                continue
+            amount_column = _preferred_book_net_column(
+                roles.get("book_net", []),
+                labels,
+            )
+            if amount_column is None:
+                continue
+            category_column = (
+                (roles.get("category") or [None])[0]
+                if not whole_sheet_is_electronic
+                else None
+            )
+            id_column = (roles.get("asset_id") or [None])[0]
+            name_column = (roles.get("asset_name") or [None])[0]
+            if id_column is None and name_column is None:
+                continue
+            amount = 0.0
+            rows: list[int] = []
+            for row_number in range(first_data_row, sheet.max_row + 1):
+                category = (
+                    "电子设备"
+                    if category_column is None
+                    else sheet.cell(row_number, category_column).value
+                )
+                if (
+                    canonical_long_term_asset_category(category)
+                    != "电子设备"
+                ):
+                    continue
+                identity_values = [
+                    sheet.cell(row_number, column).value
+                    for column in (id_column, name_column)
+                    if column is not None
+                ]
+                if any("合计" in str(value or "") for value in [category, *identity_values]):
+                    continue
+                if identity_values and not any(
+                    str(value or "").strip() for value in identity_values
+                ):
+                    continue
+                value = _number(sheet.cell(row_number, amount_column).value)
+                if value is None:
+                    continue
+                amount += value * scale_to_yuan
+                rows.append(row_number)
+            if not rows:
+                continue
+            locator = _detail_locator(sheet.title, amount_column, rows)
+            candidate = (len(rows), amount, locator, f"{len(rows)}项")
+            if best is None or candidate[0] > best[0]:
+                best = candidate
+    if best is None:
+        return None, "", ""
+    _, amount, locator, quantity = best
+    return amount, locator, quantity
+
+
+def _electronic_equipment_value(
+    workbook,
+) -> tuple[float | None, str, str]:
+    summary_best: tuple[int, float, str] | None = None
+    for sheet in workbook.worksheets:
+        if "汇总" not in sheet.title:
             continue
         scale_to_yuan = _unit_scale_to_wan(sheet) * 10_000
         for row in sheet.iter_rows():
             for label_cell in row:
-                if _text(label_cell.value) != "电子设备":
+                if (
+                    canonical_long_term_asset_category(label_cell.value)
+                    != "电子设备"
+                ):
                     continue
                 book_column, _ = _header_columns(sheet, label_cell.row)
                 if not book_column:
                     continue
                 value = _number(sheet.cell(label_cell.row, book_column).value)
                 if value is not None:
-                    return (
+                    label = _text(label_cell.value)
+                    score = (
+                        (10 if "净额" in label or label.endswith("净值") else 0)
+                        + (5 if "固定资产汇总" in sheet.title else 0)
+                    )
+                    candidate = (
+                        score,
                         value * scale_to_yuan,
                         f"{sheet.title}!{get_column_letter(book_column)}{label_cell.row}",
                     )
-    return None, ""
+                    if summary_best is None or candidate[0] > summary_best[0]:
+                        summary_best = candidate
+    detail_value, detail_locator, quantity = (
+        _electronic_equipment_detail_value(workbook)
+    )
+    if summary_best is not None:
+        _, value, locator = summary_best
+        return value, locator, quantity
+    return detail_value, detail_locator, quantity
 
 
 def _amount(value: float | None) -> str:
@@ -287,10 +491,17 @@ def _asset_tables(workbook) -> tuple[dict[str, Any], dict[str, dict[str, str]]]:
         ("所有者权益账面金额：", "所有者权益"),
     )
     scope_rows = [[label, _amount(values.get(key))] for label, key in scope_labels]
-    electronic, electronic_locator = _electronic_equipment_value(workbook)
+    electronic, electronic_locator, electronic_quantity = (
+        _electronic_equipment_value(workbook)
+    )
     long_rows = [
         ["项目", "账面金额（元）", "数量", "现状、特点"],
-        ["电子设备", _amount(electronic), "", "以评估明细表为准"],
+        [
+            "电子设备",
+            _amount(electronic),
+            electronic_quantity,
+            "以评估明细表为准",
+        ],
         ["无形资产", _amount(values.get("无形资产")), "", "以评估明细表为准"],
         ["长期待摊费用", _amount(values.get("长期待摊费用")), "", "以评估明细表为准"],
     ]

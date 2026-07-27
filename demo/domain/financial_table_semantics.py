@@ -34,6 +34,53 @@ _RELATIVE_PERIODS = {
     "基准期",
     "基准日",
 }
+_ELECTRONIC_EQUIPMENT_ALIASES = (
+    "电子设备",
+    "办公电子设备",
+    "电脑及电子设备",
+    "电力电子设备",
+    "工器具及电子设备",
+)
+
+
+def _normalized_label(value: object) -> str:
+    return re.sub(
+        r"[\s：:()（）一二三四五六七八九十、．.]+",
+        "",
+        str(value or "").replace("帳", "账").replace("帐", "账"),
+    )
+
+
+def canonical_long_term_asset_category(value: object) -> str | None:
+    """Normalize only categories that unambiguously mean electronic equipment."""
+    label = _normalized_label(value)
+    if any(alias in label for alias in _ELECTRONIC_EQUIPMENT_ALIASES):
+        return "电子设备"
+    return None
+
+
+def detail_header_role(value: object) -> str | None:
+    """Return the business role of a fixed-asset detail column."""
+    label = _normalized_label(value)
+    if not label:
+        return None
+    if label in {"资产编号", "固定资产编号", "设备编号", "卡片编号"}:
+        return "asset_id"
+    if label in {"资产名称", "固定资产名称", "设备名称"}:
+        return "asset_name"
+    if label in {"资产类别", "固定资产类别", "设备类别", "资产分类", "分类"}:
+        return "category"
+    if "评估" in label and ("价值" in label or label.endswith("值")):
+        return "appraised"
+    if "账面" in label and any(token in label for token in ("净值", "净额")):
+        return "book_net"
+    if "账面" in label and ("原值" in label or "原始价值" in label):
+        return "book_cost"
+    if label in {"账面价值", "账面金额"}:
+        return "book_net"
+    if "累计折旧" in label:
+        return "depreciation"
+    return None
 
 
 def canonical_period(value: object) -> CanonicalPeriod | None:

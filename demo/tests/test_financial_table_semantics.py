@@ -1,6 +1,8 @@
 from demo.domain.financial_table_semantics import (
+    canonical_long_term_asset_category,
     canonical_period,
     choose_historical_columns,
+    detail_header_role,
 )
 
 
@@ -48,3 +50,14 @@ def test_historical_columns_keep_relative_valuation_period_after_dated_periods()
     }
 
     assert choose_historical_columns(headers) == [2, 3, 4]
+
+
+def test_long_term_asset_aliases_and_detail_headers_are_normalized():
+    assert canonical_long_term_asset_category("办公电子设备") == "电子设备"
+    assert canonical_long_term_asset_category("电子设备类") == "电子设备"
+    assert canonical_long_term_asset_category("机器设备") is None
+    assert detail_header_role("资产编号") == "asset_id"
+    assert detail_header_role("资产类别") == "category"
+    assert detail_header_role("账面净值") == "book_net"
+    assert detail_header_role("帐面净值") == "book_net"
+    assert detail_header_role("评估价值") == "appraised"

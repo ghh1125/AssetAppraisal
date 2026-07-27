@@ -292,3 +292,125 @@ def test_history_keeps_valuation_period_after_calendar_years(tmp_path: Path):
 
     assert rows[0] == ["项目\\报表年度", "2023年", "2024年", "评估基准期"]
     assert rows[1] == ["一、营业收入", "100.00", "200.00", "300.00"]
+
+
+def test_long_term_assets_fall_back_to_detail_rows(tmp_path: Path):
+    path = _save_workbook(
+        tmp_path / "asset-detail-only.xlsx",
+        {
+            "固定资产明细表": [
+                ["金额单位：人民币元"],
+                [
+                    "资产编号",
+                    "资产名称",
+                    "资产类别",
+                    "账面原值",
+                    "累计折旧",
+                    "账面净值",
+                    "评估值",
+                ],
+                ["D001", "电脑", "办公电子设备", 10_000, 2_000, 8_000, 8_500],
+                ["D002", "打印机", "电子设备类", 5_000, 1_000, 4_000, 4_200],
+                ["", "合计", "", 15_000, 3_000, 12_000, 12_700],
+            ],
+            "汇总表": [
+                ["金额单位：人民币元"],
+                ["项目", "账面价值", "评估价值"],
+                ["无形资产", 30_000, 35_000],
+                ["长期待摊费用", 10_000, 10_000],
+            ],
+        },
+    )
+
+    facts = extract_workbook_facts(path, "reporting_workbook")
+    rows = facts["fields"]["long_term_assets_table"]["rows"]
+
+    assert rows[1] == ["电子设备", "12,000.00", "2项", "以评估明细表为准"]
+    assert "固定资产明细表!F3:F4" in facts["evidence"][
+        "long_term_assets_table"
+    ]["locator"]
+
+
+def test_electronic_summary_accepts_prefixed_category_label(tmp_path: Path):
+    path = _save_workbook(
+        tmp_path / "prefixed-electronics.xlsx",
+        {
+            "其他资产汇总表": [
+                ["金额单位：人民币元"],
+                ["项目", "账面原值", "账面净值", "评估原值", "评估净值"],
+                ["固定资产—电子设备", 15_000, 12_000, 16_000, 13_000],
+                ["无形资产", 30_000, 30_000, 35_000, 35_000],
+            ]
+        },
+    )
+
+    rows = extract_workbook_facts(path, "reporting_workbook")["fields"][
+        "long_term_assets_table"
+    ]["rows"]
+
+    assert rows[1][1] == "12,000.00"
+
+
+def test_electronic_detail_sheet_supports_two_row_headers(tmp_path: Path):
+    path = _save_workbook(
+        tmp_path / "two-row-electronics.xlsx",
+        {
+            "4-8-7电子设备": [
+                ["固定资产—电子设备评估明细表", "金额单位：人民币元"],
+                [
+                    "序号",
+                    "资产编号",
+                    "设备名称",
+                    "数量",
+                    "账面价值",
+                    None,
+                    "评估价值",
+                    None,
+                ],
+                [None, None, None, None, "原值", "净值", "原值", "净值"],
+                [1, "D001", "电脑", 1, 10_000, 8_000, 10_500, 8_500],
+                [2, "D002", "打印机", 1, 5_000, 4_000, 5_200, 4_200],
+                [None, None, "合计", 2, 15_000, 12_000, 15_700, 12_700],
+            ],
+            "汇总表": [
+                ["金额单位：人民币元"],
+                ["项目", "账面价值", "评估价值"],
+                ["无形资产", 30_000, 35_000],
+            ],
+        },
+    )
+
+    facts = extract_workbook_facts(path, "reporting_workbook")
+    rows = facts["fields"]["long_term_assets_table"]["rows"]
+
+    assert rows[1] == ["电子设备", "12,000.00", "2项", "以评估明细表为准"]
+    assert "4-8-7电子设备!F4:F5" in facts["evidence"][
+        "long_term_assets_table"
+    ]["locator"]
+
+
+def test_electronic_summary_uses_book_net_subcolumn(tmp_path: Path):
+    path = _save_workbook(
+        tmp_path / "two-row-summary.xlsx",
+        {
+            "固定资产汇总表": [
+                ["金额单位：人民币元"],
+                ["项目", "账面价值", None, "评估价值", None],
+                [None, "原值", "净值", "原值", "净值"],
+                ["固定资产—电子设备", 15_000, 12_000, 16_000, 13_000],
+            ],
+            "汇总表": [
+                ["金额单位：人民币元"],
+                ["项目", "账面价值", "评估价值"],
+                ["无形资产", 30_000, 35_000],
+            ],
+        },
+    )
+
+    facts = extract_workbook_facts(path, "reporting_workbook")
+    rows = facts["fields"]["long_term_assets_table"]["rows"]
+
+    assert rows[1][1] == "12,000.00"
+    assert facts["evidence"]["long_term_assets_table"]["locator"].endswith(
+        "固定资产汇总表!C4"
+    )
