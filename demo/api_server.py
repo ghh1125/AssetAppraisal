@@ -81,6 +81,8 @@ def _artifact_list(run_dir: Path) -> list[dict[str, str]]:
         "资产评估报告_最终候选.docx": "审核后最终候选 Word",
         "OCR结构化结果.xlsx": "OCR 结构化 Excel",
         "字段审计清单.xlsx": "字段审计清单",
+        "生成问题清单.xlsx": "生成问题清单 Excel",
+        "生成问题清单.json": "生成问题清单 JSON",
         "run_manifest.json": "运行清单",
         "workflow_trace.json": "工作流节点轨迹",
         "issues.json": "复核事项",
@@ -128,8 +130,8 @@ def _find_ocr_cache(pdf_path: Path) -> Path | None:
 
 def _execute_run(
     run_id: str,
-    pdf_path: Path,
-    source_overrides: dict[str, Path],
+    pdf_path: Path | None,
+    source_overrides: dict[str, Path | None],
     inputs: dict[str, Any],
     use_glm: bool,
     use_qichacha: bool,
@@ -143,9 +145,13 @@ def _execute_run(
         from .adapters.template_pages import LibreOfficeTemplatePageReader
         template_path = _project_template()
 
-        ocr_cache = _find_ocr_cache(pdf_path) if reuse_ocr else None
+        ocr_cache = (
+            _find_ocr_cache(pdf_path)
+            if reuse_ocr and pdf_path is not None
+            else None
+        )
         ocr_adapter = None
-        if ocr_cache is None:
+        if pdf_path is not None and ocr_cache is None:
             from .adapters.paddle_ocr import PaddleStructureOcrAdapter, create_local_pipeline
 
             ocr_adapter = PaddleStructureOcrAdapter(create_local_pipeline())
@@ -187,7 +193,13 @@ def _execute_run(
         _set_job(
             run_id,
             progress=15,
-            message=("命中已有 OCR 结果，跳过 OCR" if ocr_cache else "开始 PDF OCR 与字段解析"),
+            message=(
+                "未上传 PDF，跳过 OCR"
+                if pdf_path is None
+                else "命中已有 OCR 结果，跳过 OCR"
+                if ocr_cache
+                else "开始 PDF OCR 与字段解析"
+            ),
             ocr_cache_hit=bool(ocr_cache),
         )
         result = run_pipeline(
@@ -225,32 +237,67 @@ def _execute_run(
 @app.post("/api/v1/asset-appraisal/runs", status_code=202)
 async def create_run(
     background_tasks: BackgroundTasks,
-    pdf: UploadFile = File(...),
-    reference_report: UploadFile = File(...),
-    audited_financials: UploadFile = File(...),
-    income_workbook: UploadFile = File(...),
-    reporting_workbook: UploadFile = File(...),
+    pdf: UploadFile | None = File(None),
+    reference_report: UploadFile | None = File(None),
+    audited_financials: UploadFile | None = File(None),
+    income_workbook: UploadFile | None = File(None),
+    reporting_workbook: UploadFile | None = File(None),
     inputs: str = Form("{}"),
     use_glm: bool = Form(True),
     use_qichacha: bool = Form(True),
     reuse_ocr: bool = Form(True),
 ):
-    required_files = {
-        "pdf": (pdf, ".pdf", "审计报告 PDF"),
-        "reference_report": (reference_report, ".docx", "参考评估报告 DOCX"),
-        "audited_financials": (audited_financials, ".xlsx", "审计财务 XLSX"),
-        "income_workbook": (income_workbook, ".xlsx", "收益法 XLSX"),
-        "reporting_workbook": (reporting_workbook, ".xlsx", "上报表 XLSX"),
+    uploads = {
+        "pdf": (pdf, (".pdf",), "审计报告 PDF"),
+        "reference_report": (
+            reference_report,
+            (".docx",),
+            "参考评估报告 DOCX",
+        ),
+        "audited_financials": (
+            audited_financials,
+            (".xlsx", ".xlsm"),
+            "审计财务工作簿",
+        ),
+        "income_workbook": (
+            income_workbook,
+            (".xlsx", ".xlsm"),
+            "收益法工作簿",
+        ),
+        "reporting_workbook": (
+            reporting_workbook,
+            (".xlsx", ".xlsm"),
+            "上报表/资产或市场法工作簿",
+        ),
     }
-    for field_name, (upload, suffix, label) in required_files.items():
-        if not upload.filename or not upload.filename.lower().endswith(suffix):
-            raise HTTPException(status_code=422, detail=f"请上传{label}（字段：{field_name}）")
+    for field_name, (upload, suffixes, label) in uploads.items():
+        if upload is None:
+            continue
+        if (
+            not upload.filename
+            or not upload.filename.lower().endswith(suffixes)
+        ):
+            allowed = "、".join(suffixes)
+            raise HTTPException(
+                status_code=422,
+                detail=f"{label}格式应为 {allowed}（字段：{field_name}）",
+            )
     try:
         parsed_inputs = json.loads(inputs)
         if not isinstance(parsed_inputs, dict):
             raise ValueError
     except ValueError as exc:
         raise HTTPException(status_code=422, detail="用户输入字段格式错误") from exc
+    has_upload = any(upload is not None for upload, _, _ in uploads.values())
+    has_manual = any(
+        value not in (None, "", [], {})
+        for value in parsed_inputs.values()
+    )
+    if not has_upload and not has_manual:
+        raise HTTPException(
+            status_code=422,
+            detail="请至少上传一份材料或填写一项基础信息",
+        )
     if parsed_inputs.get("valuation_subject_type") not in (None, ""):
         try:
             parsed_inputs["valuation_subject_type"] = validate_valuation_subject_type(
@@ -272,25 +319,42 @@ async def create_run(
         parsed_inputs["narrative_modules"] = normalize_narrative_modules(parsed_inputs.get("narrative_modules"))
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    run_id = _run_id_for_pdf(pdf.filename)
+    first_filename = next(
+        (
+            upload.filename
+            for upload, _, _ in uploads.values()
+            if upload is not None and upload.filename
+        ),
+        str(
+            parsed_inputs.get("target_company_name")
+            or parsed_inputs.get("commissioning_party_name")
+            or "人工输入"
+        ),
+    )
+    run_id = _run_id_for_pdf(first_filename)
     input_dir = RUNS_ROOT / run_id / "input"
     input_dir.mkdir(parents=True, exist_ok=True)
-    stored_files = {
-        "pdf": input_dir / "source.pdf",
-        "reference_report": input_dir / "reference_report.docx",
-        "audited_financials": input_dir / "audited_financials.xlsx",
-        "income_workbook": input_dir / "income_workbook.xlsx",
-        "reporting_workbook": input_dir / "reporting_workbook.xlsx",
-    }
-    for field_name, (upload, _, _) in required_files.items():
+    stored_files: dict[str, Path] = {}
+    for field_name, (upload, _, _) in uploads.items():
+        if upload is None:
+            continue
+        suffix = Path(upload.filename or "").suffix.lower()
+        stored_name = (
+            "source.pdf"
+            if field_name == "pdf"
+            else f"{field_name}{suffix}"
+        )
+        stored_files[field_name] = input_dir / stored_name
         with stored_files[field_name].open("wb") as target:
             shutil.copyfileobj(upload.file, target)
-    pdf_path = stored_files["pdf"]
+    pdf_path = stored_files.get("pdf")
     source_overrides = {
-        name: stored_files[name]
-        for name in ("reference_report", "audited_financials", "income_workbook", "reporting_workbook")
+        "audit_pdf": pdf_path,
+        "reference_report": stored_files.get("reference_report"),
+        "audited_financials": stored_files.get("audited_financials"),
+        "income_workbook": stored_files.get("income_workbook"),
+        "reporting_workbook": stored_files.get("reporting_workbook"),
     }
-    template_path = _project_template()
     _set_job(run_id, run_id=run_id, status="queued", progress=0, message="任务已创建", artifacts=[])
     background_tasks.add_task(
         _execute_run,
