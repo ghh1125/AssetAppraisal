@@ -42,6 +42,7 @@ from .domain.field_validation import (
 from .domain.replacement import build_replacements
 from .domain.financial_matching import blank_configured_table
 from .domain.historical_table_merge import merge_historical_tables
+from .domain.source_precedence import prefer_semantic_result
 from .domain.generation_issues import (
     apply_page_locations,
     issues_from_word_findings,
@@ -389,9 +390,21 @@ def run_project(
     # an exact row/column-header match can replace an accidental value read
     # from a legacy coordinate (for example a zero that is no longer the
     # equity-value cell).
+    semantic_primary_fields = {
+        "book_net_assets",
+        "asset_approach_value",
+        "income_approach_value",
+        "market_approach_value",
+        "asset_scope_summary_table",
+        "long_term_assets_table",
+        "major_long_term_assets",
+        "historical_balance_sheet_table",
+        "historical_income_statement_table",
+    }
+    semantic_history_roles: dict[str, str] = {}
     for source_name in (
-        "audited_financials",
         "reporting_workbook",
+        "audited_financials",
         "income_workbook",
     ):
         source_path = sources.get(source_name)
@@ -403,19 +416,38 @@ def run_project(
             issues.append(f"{source_name}：语义定位失败：{exc}")
             continue
         issues.extend(semantic.get("issues", []))
-        comparable_amount_fields = {
-            "book_net_assets",
-            "income_approach_value",
-            "asset_approach_value",
-        }
         for field_key, value in semantic.get("fields", {}).items():
             if value in (None, "", []):
                 continue
             existing = fields.get(field_key)
+            existing_source = evidence.get(field_key, {})
             existing_is_valid = (
                 existing not in (None, "", [])
-                and evidence.get(field_key, {}).get("kind") != "missing"
+                and existing_source.get("kind") != "missing"
             )
+            existing_is_semantic = str(
+                existing_source.get("kind", "")
+            ).startswith("semantic_excel")
+            semantic_source = semantic.get("evidence", {}).get(
+                field_key,
+                {
+                    "kind": "semantic_excel",
+                    "file": source_path.name,
+                    "locator": field_key,
+                },
+            )
+            if field_key in {
+                "historical_balance_sheet_table",
+                "historical_income_statement_table",
+            }:
+                existing_history_role = semantic_history_roles.get(field_key)
+                if source_name == "audited_financials":
+                    fields[field_key] = value
+                    evidence[field_key] = semantic_source
+                    semantic_history_roles[field_key] = source_name
+                    continue
+                if existing_history_role == "audited_financials":
+                    continue
             if (
                 field_key
                 in {
@@ -423,24 +455,17 @@ def run_project(
                     "historical_income_statement_table",
                 }
                 and existing_is_valid
+                and existing_is_semantic
                 and isinstance(existing, dict)
                 and isinstance(value, dict)
             ):
                 merged = merge_historical_tables(existing, value)
                 if merged != existing:
                     fields[field_key] = merged
-                    semantic_source = semantic.get("evidence", {}).get(
-                        field_key,
-                        {
-                            "kind": "semantic_excel",
-                            "file": source_path.name,
-                            "locator": field_key,
-                        },
-                    )
                     if merged == value:
                         evidence[field_key] = semantic_source
+                        semantic_history_roles[field_key] = source_name
                     else:
-                        previous_source = evidence.get(field_key, {})
                         evidence[field_key] = {
                             "kind": "semantic_excel_merged",
                             "file": "；".join(
@@ -448,7 +473,7 @@ def run_project(
                                     filter(
                                         None,
                                         (
-                                            str(previous_source.get("file", "")),
+                                            str(existing_source.get("file", "")),
                                             str(semantic_source.get("file", "")),
                                         ),
                                     )
@@ -459,7 +484,7 @@ def run_project(
                                     filter(
                                         None,
                                         (
-                                            str(previous_source.get("locator", "")),
+                                            str(existing_source.get("locator", "")),
                                             str(semantic_source.get("locator", "")),
                                         ),
                                     )
@@ -467,26 +492,23 @@ def run_project(
                             ),
                         }
                 continue
-            if existing_is_valid:
-                if (
-                    field_key in comparable_amount_fields
-                    and isinstance(existing, (int, float))
-                    and isinstance(value, (int, float))
-                ):
-                    denominator = max(abs(float(existing)), abs(float(value)), 1.0)
-                    if abs(float(existing) - float(value)) / denominator <= 0.001:
-                        continue
-                else:
-                    continue
-            fields[field_key] = value
-            evidence[field_key] = semantic.get("evidence", {}).get(
-                field_key,
-                {
-                    "kind": "semantic_excel",
-                    "file": source_path.name,
-                    "locator": field_key,
-                },
+            if existing_is_semantic:
+                continue
+            if field_key not in semantic_primary_fields and existing_is_valid:
+                continue
+            selected = prefer_semantic_result(
+                fixed_value=existing,
+                fixed_evidence=existing_source,
+                semantic_value=value,
+                semantic_evidence=semantic_source,
             )
+            fields[field_key] = selected["value"]
+            evidence[field_key] = selected["evidence"]
+            if field_key in {
+                "historical_balance_sheet_table",
+                "historical_income_statement_table",
+            }:
+                semantic_history_roles[field_key] = source_name
 
     book_value = fields.get("book_net_assets")
     appraised_value = fields.get("asset_approach_value")
@@ -640,6 +662,10 @@ def run_project(
     if hashlib.sha256(template.read_bytes()).hexdigest() != before_hash:
         raise RuntimeError("模板被意外修改")
     export_audit(audit, [*locations, *static_locations], fields, evidence)
+    normalized_evidence = write_json(
+        run_dir / "normalized_evidence.json",
+        evidence,
+    )
     manifest = {
         "project_id": config["project_id"], "template": str(template), "template_sha256": before_hash,
         "mapping_version": "1.0.0", "offline": offline, "replacement_count": len(replacements),
@@ -657,6 +683,7 @@ def run_project(
             str(audit),
             str(issue_workbook),
             str(issue_json),
+            str(normalized_evidence),
         ],
     }
     manifest_path = write_json(run_dir / "run_manifest.json", manifest)

@@ -216,10 +216,23 @@ def test_run_project_uses_semantic_excel_fallback_for_changed_layouts(tmp_path: 
     )
 
     fields = json.loads((output / "normalized_fields.json").read_text(encoding="utf-8"))
+    evidence_path = output / "normalized_evidence.json"
+    assert evidence_path.exists()
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
     assert fields["book_net_assets"] == 8697.968929
     assert fields["asset_approach_value"] == 9397.200569
     assert fields["income_approach_value"] == 6850
     assert fields["final_appraisal_value"] == 6850
+    assert evidence["asset_approach_value"] == {
+        "kind": "semantic_excel",
+        "file": reporting.name,
+        "locator": "资产评估结果分类汇总表（元）!D3",
+    }
+    assert evidence["income_approach_value"] == {
+        "kind": "semantic_excel",
+        "file": income.name,
+        "locator": "净现金流计算表!C2",
+    }
 
 
 def test_run_project_prefers_complete_dated_history_from_later_workbook(tmp_path: Path):
@@ -267,6 +280,63 @@ def test_run_project_prefers_complete_dated_history_from_later_workbook(tmp_path
         ["负债", "40.00", "70.00", "90.00"],
         ["所有者权益", "60.00", "130.00", "210.00"],
     ]
+
+
+def test_semantic_scope_table_replaces_readable_legacy_coordinates(tmp_path: Path):
+    reporting = tmp_path / "新格式资产表.xlsx"
+    workbook = Workbook()
+    legacy = workbook.active
+    legacy.title = "06N_资产负债表"
+    for coordinate in (
+        "F28",
+        "F38",
+        "F42",
+        "F43",
+        "F46",
+        "F47",
+        "F48",
+        "F49",
+        "F76",
+        "L32",
+        "L45",
+        "L46",
+        "L75",
+    ):
+        legacy[coordinate] = 999
+    semantic = workbook.create_sheet("汇总表")
+    semantic.append(["金额单位：人民币万元"])
+    semantic.append(["项目", "账面价值", "评估价值"])
+    semantic.append(["流动资产", 100, 110])
+    semantic.append(["负债合计", 40, 42])
+    semantic.append(["净资产", 60, 68])
+    workbook.save(reporting)
+
+    output = tmp_path / "run"
+    run_project(
+        Path("demo/projects/tongfu.yaml"),
+        output_dir=output,
+        offline=True,
+        manual_inputs_override={"target_company_name": "示例公司"},
+        source_overrides={
+            "audit_pdf": None,
+            "reference_report": None,
+            "audited_financials": reporting,
+            "reporting_workbook": reporting,
+            "income_workbook": None,
+        },
+    )
+
+    fields = json.loads((output / "normalized_fields.json").read_text(encoding="utf-8"))
+    evidence = json.loads(
+        (output / "normalized_evidence.json").read_text(encoding="utf-8")
+    )
+    assert fields["asset_scope_summary_table"]["rows"][0] == [
+        "流动资产账面金额：",
+        "1,000,000.00",
+    ]
+    assert evidence["asset_scope_summary_table"]["kind"] == "semantic_excel"
+    assert evidence["asset_scope_summary_table"]["file"] == reporting.name
+    assert "汇总表!B3" in evidence["asset_scope_summary_table"]["locator"]
 
 
 def test_run_project_uses_selected_market_result_as_final_value(tmp_path: Path):

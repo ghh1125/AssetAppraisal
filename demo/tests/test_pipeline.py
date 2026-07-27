@@ -456,6 +456,51 @@ def test_pipeline_without_pdf_exports_report_and_issue_list(tmp_path):
     assert manifest["generation_validation"]["valid"] is False
 
 
+def test_pipeline_preserves_semantic_excel_file_and_cell_evidence(tmp_path):
+    reporting = tmp_path / "任意资产表.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "汇总表"
+    sheet.append(["金额单位：人民币万元"])
+    sheet.append(["项目", "账面价值", "评估价值"])
+    sheet.append(["流动资产", 100, 110])
+    sheet.append(["负债合计", 40, 42])
+    sheet.append(["净资产", 60, 68])
+    workbook.save(reporting)
+
+    output = tmp_path / "run"
+    run_pipeline(
+        project_config=Path("demo/projects/tongfu.yaml"),
+        pdf_path=None,
+        output_dir=output,
+        ocr_adapter=None,
+        source_overrides={
+            "audit_pdf": None,
+            "reference_report": None,
+            "audited_financials": None,
+            "income_workbook": None,
+            "reporting_workbook": reporting,
+        },
+        manual_inputs_override={"target_company_name": "示例有限公司"},
+    )
+
+    trace = json.loads(
+        (output / "workflow_trace.json").read_text(encoding="utf-8")
+    )
+    resolve = next(
+        node for node in trace["nodes"] if node["node_name"] == "resolve_fields"
+    )
+    by_key = {
+        item["field_key"]: item
+        for item in resolve["input_data"]["candidates"]
+    }
+    assert by_key["asset_scope_summary_table"]["evidence"] == {
+        "source_kind": "semantic_excel",
+        "source_file": reporting.name,
+        "source_locator": "汇总表!B3；汇总表!B4；汇总表!B5",
+    }
+
+
 def test_pipeline_without_pdf_passes_material_fields_to_llm(tmp_path):
     output = tmp_path / "run"
     run_pipeline(

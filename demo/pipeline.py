@@ -629,7 +629,12 @@ def run_pipeline(
             source_overrides=source_overrides,
         )
         fields = json.loads((Path(temporary) / "normalized_fields.json").read_text(encoding="utf-8"))
-        evidence = _legacy_evidence(legacy.audit_path)
+        normalized_evidence = Path(temporary) / "normalized_evidence.json"
+        evidence = (
+            json.loads(normalized_evidence.read_text(encoding="utf-8"))
+            if normalized_evidence.exists()
+            else _legacy_evidence(legacy.audit_path)
+        )
 
     # The valuation object is a controlled user input even though the current
     # template does not mark every occurrence in yellow.  Validate it once and
@@ -652,18 +657,26 @@ def run_pipeline(
             source_overrides,
             source_name,
         )
-        scope_rows, scope_issues = try_read_configured_table(
-            source_path,
-            scope_table,
+        semantic_scope = fields.get(scope_table["field_key"])
+        semantic_scope_evidence = evidence.get(
+            scope_table["field_key"],
+            {},
         )
-        if scope_rows is None:
-            semantic_scope = fields.get(scope_table["field_key"])
-            if isinstance(semantic_scope, dict) and isinstance(
-                semantic_scope.get("rows"), list
-            ):
-                scope_rows = semantic_scope["rows"]
-                scope_issues = []
-            else:
+        if (
+            str(semantic_scope_evidence.get("kind", "")).startswith(
+                "semantic_excel"
+            )
+            and isinstance(semantic_scope, dict)
+            and isinstance(semantic_scope.get("rows"), list)
+        ):
+            scope_rows = semantic_scope["rows"]
+            scope_issues = []
+        else:
+            scope_rows, scope_issues = try_read_configured_table(
+                source_path,
+                scope_table,
+            )
+            if scope_rows is None:
                 scope_rows = blank_configured_table(
                     scope_table,
                     placeholder="XXX",
@@ -676,11 +689,9 @@ def run_pipeline(
             "caption": scope_table.get("caption", ""),
             "rows": scope_rows,
         }
-        if not (
-            evidence.get(scope_table["field_key"], {}).get("kind")
-            == "semantic_excel"
-            and not scope_issues
-        ):
+        if not str(
+            evidence.get(scope_table["field_key"], {}).get("kind", "")
+        ).startswith("semantic_excel"):
             evidence[scope_table["field_key"]] = {
                 "kind": (
                     config.get("source_lineage", {})
