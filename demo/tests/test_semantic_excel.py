@@ -2,7 +2,7 @@ from pathlib import Path
 
 from openpyxl import Workbook
 
-from demo.adapters.semantic_excel import extract_workbook_facts
+from demo.adapters.semantic_excel import _income_label, extract_workbook_facts
 
 
 def _save_workbook(path: Path, sheets: dict[str, list[list[object]]]) -> Path:
@@ -60,6 +60,13 @@ def test_all_zero_appraisal_column_keeps_asset_result_unresolved(tmp_path: Path)
         "locator": "1-汇总表!C6",
     }
     assert any("[unfinished_appraisal]" in issue for issue in facts["issues"])
+
+
+def test_net_profit_label_accepts_accounting_loss_suffix():
+    assert (
+        _income_label("五、净利润（净亏损以“-”号填列）")
+        == "四、净利润"
+    )
 
 
 def test_zero_net_result_remains_valid_when_appraisal_column_has_activity(

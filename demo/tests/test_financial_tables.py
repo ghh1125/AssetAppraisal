@@ -36,16 +36,16 @@ def test_real_run_populates_balance_and_income_tables(tmp_path: Path):
     assert fields["historical_income_statement_table"]["rows"][-1] == [
         "四、净利润", "14,357,065.14", "2,600,607.69", "10,028,484.84"
     ]
-    assert fields["book_net_assets"] == 4598.157666
+    assert fields["book_net_assets"] == 4598.16
     assert fields["income_approach_value"] == 8500
-    assert fields["income_increment"] == pytest.approx(3901.842334)
-    assert fields["income_increment_rate"] == pytest.approx(84.85664514836581)
-    assert fields["asset_approach_value"] == 6365.043162
-    assert fields["asset_increment"] == pytest.approx(1766.885496)
-    assert fields["asset_increment_rate"] == pytest.approx(38.42594413551368)
+    assert fields["income_increment"] == pytest.approx(3901.84)
+    assert fields["income_increment_rate"] == pytest.approx(84.85655131617864)
+    assert fields["asset_approach_value"] == 6365.04
+    assert fields["asset_increment"] == pytest.approx(1766.88)
+    assert fields["asset_increment_rate"] == pytest.approx(38.42580510465056)
     assert fields["final_appraisal_value"] == 8500
     assert fields["final_value_chinese"] == "捌仟伍佰万"
     assert fields["final_value_chinese_wan"] == "捌仟伍佰"
-    assert fields["appraisal_increment"] == pytest.approx(3901.842334)
-    assert fields["appraisal_increment_rate"] == pytest.approx(84.85664514836581)
+    assert fields["appraisal_increment"] == pytest.approx(3901.84)
+    assert fields["appraisal_increment_rate"] == pytest.approx(84.85655131617864)
     assert fields["final_valuation_method"] == "收益法"

@@ -677,8 +677,16 @@ def _income_label(value: Any) -> str | None:
         if any(label.endswith(alias) for alias in aliases):
             return canonical
     if (
-        label.endswith("净利润")
-        and not any(word in label for word in ("归属于", "持续经营", "终止经营", "净利润率"))
+        "净利润" in label
+        and not any(
+            word in label
+            for word in (
+                "归属于",
+                "持续经营",
+                "终止经营",
+                "净利润率",
+            )
+        )
     ):
         return "四、净利润"
     return None
