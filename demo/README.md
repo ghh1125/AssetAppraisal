@@ -14,7 +14,8 @@
 6. `select_narrative_modules`：校验用户勾选的六类主体概况模块。
 7. `generate_narrative`：通过注入的百炼模型生成用户勾选的叙述内容。
 8. `fill_word`：复制模板并填入可用值；未解析位置保留黄色占位符。
-9. `llm_format_review`、`llm_data_validation`、`llm_semantic_review`：对生成 Word 执行格式、数据和语义审核。
+9. `generate_narrative`：从参考 Word、工商信息和结构化字段检索证据，按七个叙述字段分别调用模型并校验证据编号。
+10. `llm_format_review`、`llm_data_validation`、`llm_semantic_review`：对生成 Word 执行格式、数据和语义审核。
 10. `review_aggregate`：汇总三类审核结果和问题。
 11. `export_audit`：导出字段来源清单和运行记录。
 
@@ -87,7 +88,7 @@ uv run --python 3.11 python -m demo.run demo/projects/tongfu.yaml \
 
 `frontend/` 将人工输入、可选材料上传、后端固定 Word 模板、GLM/企查查开关和产物下载做成页面。PDF、参考 DOCX 和三个项目工作簿均可选，只需至少上传一份材料或填写一项基础信息；工作簿支持 `.xlsx/.xlsm`。只有选择 PDF 后才检查 OCR 缓存。Word 模板由后端固定提供，不需要上传。
 
-上传框按材料角色接收文件，原文件名不需要与配置一致。审计财务 XLSX 应包含 `06N_资产负债表`、`07N_利润表`；收益法 XLSX 应包含主要产品及服务、所得税表、净现金流计算表；上报表 XLSX 应包含表 1、表 4-6、表 4-12。若工作表名称或表格布局变化，需要在项目 YAML 映射中配置新的定位规则。
+上传框按材料角色接收文件，原文件名不需要与配置一致。程序先使用已验证项目的精确坐标；坐标不存在、为空或与新版式明显冲突时，再按工作表特征、科目行、列标题和金额单位做语义定位。当前通用规则覆盖资产基础法/市场法的账面净资产和评估价值、收益法股东全部权益价值、资产负债汇总、历史资产负债表、历史利润表、主要长期资产、主要产品及增值税率。无法唯一匹配时保留黄色 `XXX` 并进入问题清单，不用相邻非零单元格猜值。
 
 Web 任务输出目录按“`YYYYMMDDHHMM-PDF文件名`”命名，例如 `runs/web/202607231144-通富2025.6.30合并及母公司审计报告/`；同一分钟重复提交会自动追加序号，不覆盖已有任务。
 
@@ -124,10 +125,10 @@ npm run dev
 
 - 新项目：新增 `projects/<project>.yaml` 和人工参数文件。
 - 新 PDF：端到端入口支持替换 PDF，但“任意 PDF 直接盲填”不是可靠承诺。OCR、Excel 导出和 Word 复制是通用步骤；字段含义、审计表行列、黄色字段来源和目标 Word 位置仍由项目 YAML/映射配置声明。新 PDF 与现有审计版式一致时可直接复用；版式或报告模板变化时先更新对应配置并做一次人工验收。
-- 新财务表：在项目配置的 `financial_tables` 中声明来源工作簿、工作表、单元格矩阵和 Word 表格编号。
-- 新财务指标：在 `financial_fields` 中声明来源单元格和换算比例，并用 `final_value_field` 配置最终采用的评估结果字段。
+- 新财务表：通用科目先由 `workbook_semantics.v2` 自动识别，并根据工作簿内的收益法/市场法语义归类估值结果；项目特有表仍在 `financial_tables` 中声明来源工作簿、工作表、单元格矩阵和 Word 表格编号。
+- 新财务指标：通用估值结果优先按标签和表头定位；项目特有指标在 `financial_fields` 中声明来源单元格和换算比例，并用 `final_value_field` 配置最终采用的评估结果字段。
 - PDF OCR：PP-StructureV3 先输出统一页/块/表格契约，再生成独立 OCR Excel；通用财务字段可按别名、期间和单位匹配，版式敏感的附注字段在项目配置中声明页码、表格、行列定位。
-- 新材料叙述：在 `material_fields` 中组合 Excel 单元格、Excel 范围、文件名或参考 Word 段落/表格；用 `paragraph_replacements` 替换模板中没有占位符的静态旧项目文字。
+- 新材料叙述：参考 Word 会按主题自动提取带编号证据；项目特有的确定性内容仍可在 `material_fields` 中组合 Excel 单元格、Excel 范围或参考 Word 段落/表格，并用 `paragraph_replacements` 替换模板中没有占位符的静态旧项目文字。
 - 新模板：新增映射文件并运行模板回归测试。
 - 新服务商：在 `adapters/` 实现相同输入输出契约，通过 `run.py` 注入。
 - 新规则：修改 `domain/` 纯函数，同时更新 fixture、expected、测试和 `CHANGELOG.md`。未解决的 `XX/XXX/20XX` 必须标黄并逐项进入生成问题清单。

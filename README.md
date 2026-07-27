@@ -59,14 +59,14 @@ APPRAISAL_LLM_MODEL=qwen3.7-flash
 
 例如切换到其他模型，只改 `APPRAISAL_LLM_MODEL`。Prompt 和结构化输出契约分别位于：
 
-- `demo/prompts/yellow_narratives.v1.txt`
-- `demo/prompts/yellow_narratives_output.v1.json`
+- `demo/prompts/yellow_narratives.v2.txt`
+- `demo/prompts/yellow_narratives_output.v2.json`
 - `demo/prompts/review_format.v1.txt`
 - `demo/prompts/review_data.v1.txt`
 - `demo/prompts/review_semantic.v1.txt`
 - `demo/prompts/review_output.v1.json`
 
-修改模型时应保持输出字段白名单和 JSON 结构；业务代码不会读取 `.env` 创建全局客户端，凭证只在 CLI/API 入口注入。
+修改模型时应保持输出字段白名单和 JSON 结构；叙述生成会先从上传的参考 Word 检索相关证据，再按七个字段分别调用模型并在本地校验证据编号。业务代码不会读取 `.env` 创建全局客户端，凭证只在 CLI/API 入口注入。
 
 ### OCR
 
@@ -123,7 +123,7 @@ npm run dev -- --host 127.0.0.1 --port 5173
 - 收益法 XLSX/XLSM：通常包含主要产品及服务、所得税表、净现金流计算表等收益法数据。
 - 上报表或资产/市场法 XLSX/XLSM：通常包含资产基础法、长期资产或市场法数据。
 
-Word 模板由后端固定提供。上传的 3 个 XLSX 会覆盖本次任务的项目材料路径，生成结果不会修改原文件；如果工作表名称或表格结构也不同，需要先在项目配置中增加对应映射。
+Word 模板由后端固定提供。上传的 3 个 XLSX 会覆盖本次任务的项目材料路径，生成结果不会修改原文件；文件名可以任意。常见资产基础法、收益法和市场法表会按工作表特征、科目标签、列标题及元/万元自动定位，项目特有字段才需要补充项目映射。
 
 生成 Word 后始终输出 `生成问题清单.xlsx` 和 `生成问题清单.json`。若启用百炼模型，还会生成 `格式审核.json`、`数据校验.json`、`语义审核.json` 和 `审核汇总.json`。工作流契约不合法、模板缺失或模板结构错误时停止生成；普通材料缺失、损坏、字段无结果或布局不匹配时继续生成待复核报告。
 仅当财务字段完整、没有黄色占位符且至少一项审核完成时，才另存 `资产评估报告_最终候选.docx`。

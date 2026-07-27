@@ -530,12 +530,56 @@ def _fill_tables(root, table_replacements: dict[int, list[list[str]]]) -> None:
                 _set_cell_text(cell, str(value))
 
 
+def _set_table_column_ratios(
+    root,
+    table_column_ratios: dict[int, list[float]],
+) -> None:
+    tables = root.xpath(".//w:tbl", namespaces=NS)
+    for table_index, ratios in table_column_ratios.items():
+        if table_index >= len(tables):
+            raise ValueError(f"Word 表格编号不存在：{table_index}")
+        table = tables[table_index]
+        grid_columns = table.xpath("./w:tblGrid/w:gridCol", namespaces=NS)
+        if not grid_columns or len(grid_columns) != len(ratios):
+            raise ValueError(f"Word 表格 {table_index} 的列宽配置与实际列数不匹配")
+        total_ratio = sum(ratios)
+        if total_ratio <= 0 or any(value <= 0 for value in ratios):
+            raise ValueError(f"Word 表格 {table_index} 的列宽比例必须为正数")
+        current_widths = [
+            int(column.get(f"{{{W}}}w") or 0)
+            for column in grid_columns
+        ]
+        total_width = sum(current_widths) or 9000
+        widths = [
+            max(1, round(total_width * ratio / total_ratio))
+            for ratio in ratios
+        ]
+        widths[-1] += total_width - sum(widths)
+        for column, width in zip(grid_columns, widths, strict=True):
+            column.set(f"{{{W}}}w", str(width))
+        for row in table.xpath("./w:tr", namespaces=NS):
+            cells = row.xpath("./w:tc", namespaces=NS)
+            if len(cells) != len(widths):
+                continue
+            for cell, width in zip(cells, widths, strict=True):
+                properties = cell.find("w:tcPr", namespaces=NS)
+                if properties is None:
+                    properties = etree.Element(f"{{{W}}}tcPr")
+                    cell.insert(0, properties)
+                cell_width = properties.find("w:tcW", namespaces=NS)
+                if cell_width is None:
+                    cell_width = etree.SubElement(properties, f"{{{W}}}tcW")
+                cell_width.set(f"{{{W}}}w", str(width))
+                cell_width.set(f"{{{W}}}type", "dxa")
+
+
 def fill_template(
     template: Path,
     output: Path,
     replacements: dict[str, str],
     *,
     table_replacements: dict[int, list[list[str]]] | None = None,
+    table_column_ratios: dict[int, list[float]] | None = None,
     paragraph_replacements: dict[tuple[str, int], str] | None = None,
     replacement_modes: dict[str, str] | None = None,
 ) -> Path:
@@ -548,6 +592,7 @@ def fill_template(
             by_part_para.setdefault((item["part"], item["paragraph_index"]), []).append(item)
     output.parent.mkdir(parents=True, exist_ok=True)
     table_replacements = table_replacements or {}
+    table_column_ratios = table_column_ratios or {}
     paragraph_replacements = paragraph_replacements or {}
     replacement_modes = replacement_modes or {}
     with zipfile.ZipFile(template) as zin, zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as zout:
@@ -557,7 +602,9 @@ def fill_template(
             static_replacements = [
                 (key, value) for key, value in paragraph_replacements.items() if key[0] == info.filename
             ]
-            has_tables = info.filename == "word/document.xml" and bool(table_replacements)
+            has_tables = info.filename == "word/document.xml" and bool(
+                table_replacements or table_column_ratios
+            )
             if relevant or has_tables or static_replacements:
                 root = etree.fromstring(data)
                 paragraphs = root.xpath(".//w:p", namespaces=NS)
@@ -594,6 +641,7 @@ def fill_template(
                     _set_paragraph_text(paragraphs[p_index - 1], str(value), True)
                 if has_tables:
                     _fill_tables(root, table_replacements)
+                    _set_table_column_ratios(root, table_column_ratios)
                 data = etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
             zout.writestr(info, data)
     return output

@@ -1,0 +1,228 @@
+from pathlib import Path
+
+from openpyxl import Workbook
+
+from demo.adapters.semantic_excel import extract_workbook_facts
+
+
+def _save_workbook(path: Path, sheets: dict[str, list[list[object]]]) -> Path:
+    workbook = Workbook()
+    workbook.remove(workbook.active)
+    for title, rows in sheets.items():
+        sheet = workbook.create_sheet(title)
+        for row in rows:
+            sheet.append(row)
+    workbook.save(path)
+    return path
+
+
+def test_asset_summary_is_matched_by_labels_and_normalized_to_wan(tmp_path: Path):
+    path = _save_workbook(
+        tmp_path / "arbitrary-name.xlsx",
+        {
+            "资产评估结果分类汇总表（元）": [
+                ["金额单位：人民币元"],
+                ["序号", "科目名称", "账面价值", "评估价值", "增减值", "增值率%"],
+                [1, "七、所有者权益（净资产）", 86_979_689.29, 93_972_005.69, 6_992_316.4, 8.04],
+            ]
+        },
+    )
+
+    facts = extract_workbook_facts(path, "reporting_workbook")
+
+    assert facts["fields"]["book_net_assets"] == 8697.968929
+    assert facts["fields"]["asset_approach_value"] == 9397.200569
+    assert facts["evidence"]["asset_approach_value"]["locator"].endswith("!D3")
+
+
+def test_income_value_uses_equity_label_and_sheet_unit(tmp_path: Path):
+    path = _save_workbook(
+        tmp_path / "income-any-name.xlsx",
+        {
+            "净现金流计算表": [
+                ["金额单位：元"],
+                ["企业整体价值", None, 69_000_164.71],
+                ["股东全部权益价值", None, 68_500_000],
+            ],
+            "主要产品及服务": [
+                ["主要产品及服务"],
+                ["产品或服务名称", "增值税率（%）"],
+                ["滤波器", 0.13],
+                ["天线", 0.13],
+            ],
+        },
+    )
+
+    facts = extract_workbook_facts(path, "income_workbook")
+
+    assert facts["fields"]["income_approach_value"] == 6850
+    assert facts["fields"]["main_products"] == "主要产品及服务：滤波器、天线。"
+    assert facts["fields"]["tax_rates"].startswith("被评估单位执行《企业会计准则》")
+    assert "13%" in facts["fields"]["tax_rates"]
+
+
+def test_market_value_falls_back_to_net_asset_evaluation_row(tmp_path: Path):
+    path = _save_workbook(
+        tmp_path / "market.xlsx",
+        {
+            "1-汇总表": [
+                ["评估方法", "市场法"],
+                ["金额单位：人民币万元"],
+                ["项目", "序号", "账面价值", "评估价值"],
+                ["净资产", 15, 29_151.74, 101_000],
+            ]
+        },
+    )
+
+    facts = extract_workbook_facts(path, "income_workbook")
+
+    assert facts["fields"]["market_approach_value"] == 101_000
+    assert "income_approach_value" not in facts["fields"]
+
+
+def test_summary_header_can_be_far_above_net_asset_total(tmp_path: Path):
+    rows = [
+        ["金额单位：人民币万元"],
+        ["项目", "序号", "账面价值", "评估价值"],
+    ]
+    rows.extend([[f"资产科目{index}", index, index * 10, index * 11] for index in range(1, 24)])
+    rows.append(["净 资 产（所有者权益）", 24, 21_628.2, 22_249.73])
+    path = _save_workbook(tmp_path / "long-summary.xlsx", {"汇总表": rows})
+
+    facts = extract_workbook_facts(path, "reporting_workbook")
+
+    assert facts["fields"]["book_net_assets"] == 21_628.2
+    assert facts["fields"]["asset_approach_value"] == 22_249.73
+
+
+def test_legacy_accounting_header_uses_zhang_variant(tmp_path: Path):
+    path = _save_workbook(
+        tmp_path / "legacy-income.xlsx",
+        {
+            "结果汇总": [
+                ["评估方法", "收益法"],
+                ["金额单位：人民币万元"],
+                ["项目", "序号", "帐面价值", "调整后帐面值", "评估值", "评估增值"],
+                ["净 资 产", 14, 1_382.65, 1_382.65, 2_800, 1_417.35],
+            ]
+        },
+    )
+
+    facts = extract_workbook_facts(path, "income_workbook")
+
+    assert facts["fields"]["income_approach_value"] == 2_800
+    assert "market_approach_value" not in facts["fields"]
+
+
+def test_asset_summary_builds_scope_and_long_term_tables(tmp_path: Path):
+    path = _save_workbook(
+        tmp_path / "asset-details.xlsx",
+        {
+            "汇总表": [
+                ["金额单位：人民币万元"],
+                ["项目", "序号", "账面价值", "评估价值"],
+                ["流动资产", 1, 100, 101],
+                ["非流动资产", 2, 200, 210],
+                ["其中：固定资产净额", 3, 120, 130],
+                ["其中：无形资产净额", 4, 30, 35],
+                ["长期待摊费用", 5, 10, 10],
+                ["资产总计", 6, 300, 311],
+                ["流动负债", 7, 50, 50],
+                ["非流动负债", 8, 20, 20],
+                ["负债总计", 9, 70, 70],
+                ["净资产", 10, 230, 241],
+            ],
+            "固定资产汇总表": [
+                ["金额单位：人民币元"],
+                ["项目", "账面价值", "评估价值"],
+                ["电子设备", 320_000, 350_000],
+            ],
+        },
+    )
+
+    fields = extract_workbook_facts(path, "reporting_workbook")["fields"]
+
+    scope = fields["asset_scope_summary_table"]["rows"]
+    assert ["流动资产账面金额：", "1,000,000.00"] in scope
+    assert ["所有者权益账面金额：", "2,300,000.00"] in scope
+    long_term = fields["long_term_assets_table"]["rows"]
+    assert long_term[1][:2] == ["电子设备", "320,000.00"]
+    assert "固定资产账面价值1,200,000.00元" in fields["major_long_term_assets"]
+
+
+def test_historical_financial_tables_follow_labels_not_coordinates(tmp_path: Path):
+    path = _save_workbook(
+        tmp_path / "financial-history.xlsx",
+        {
+            "资产负债表": [
+                ["金额单位：人民币元"],
+                ["项目", "2023年", "2024年", "2025年6月30日"],
+                ["资产总计", 100, 200, 300],
+                ["负债合计", 40, 70, 90],
+                ["所有者权益合计", 60, 130, 210],
+            ],
+            "利润表": [
+                ["金额单位：人民币元"],
+                ["项目", "2023年度", "2024年度", "2025年1-6月"],
+                ["一、营业收入", 80, 120, 150],
+                ["减：营业成本", 30, 50, 60],
+                ["四、净利润", 20, 30, 40],
+            ],
+        },
+    )
+
+    fields = extract_workbook_facts(path, "audited_financials")["fields"]
+
+    balance = fields["historical_balance_sheet_table"]["rows"]
+    assert balance[0] == ["项目\\报表日", "2023年", "2024年", "2025年6月30日"]
+    assert balance[1] == ["总资产", "100.00", "200.00", "300.00"]
+    income = fields["historical_income_statement_table"]["rows"]
+    assert income[1] == ["一、营业收入", "80.00", "120.00", "150.00"]
+    assert income[-1] == ["四、净利润", "20.00", "30.00", "40.00"]
+
+
+def test_dual_sided_balance_ignores_the_other_section_sequence_column(tmp_path: Path):
+    path = _save_workbook(
+        tmp_path / "dual-balance.xlsx",
+        {
+            "资产负债表": [
+                ["金额单位：人民币元"],
+                ["资产", "期初数", "期末数", "序号", "负债及所有者权益", "期初数", "期末数"],
+                ["资产总计", 100, 200, 88, "负债及所有者权益合计", 100, 200],
+                [None, None, None, None, "负债合计", 40, 70],
+                [None, None, None, None, "所有者权益合计", 60, 130],
+            ]
+        },
+    )
+
+    rows = extract_workbook_facts(path, "audited_financials")["fields"][
+        "historical_balance_sheet_table"
+    ]["rows"]
+
+    assert rows[1] == ["总资产", "XXX", "100.00", "200.00"]
+
+
+def test_income_workbook_can_supply_history_when_asset_file_has_none(tmp_path: Path):
+    path = _save_workbook(
+        tmp_path / "income-history.xlsx",
+        {
+            "历资表": [
+                ["金额单位：人民币万元"],
+                ["项目", "2023年", "2024年", "2025年"],
+                ["资产总计", 1, 2, 3],
+                ["负债合计", 0.4, 0.7, 0.9],
+                ["所有者权益合计", 0.6, 1.3, 2.1],
+            ],
+            "历利表": [
+                ["金额单位：人民币万元"],
+                ["项目", "2023年", "2024年", "2025年"],
+                ["营业收入", 0.8, 1.2, 1.5],
+                ["净利润", 0.2, 0.3, 0.4],
+            ],
+        },
+    )
+
+    fields = extract_workbook_facts(path, "income_workbook")["fields"]
+
+    assert fields["historical_balance_sheet_table"]["rows"][1][-1] == "30,000.00"
+    assert fields["historical_income_statement_table"]["rows"][-1][-1] == "4,000.00"

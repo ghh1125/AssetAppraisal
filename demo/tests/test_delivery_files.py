@@ -13,7 +13,7 @@ def test_manifest_and_changelog_cover_handoff_requirements():
     assert "147" in changelog and "company_narrative.v1" in changelog
     assert "yellow_routes.v1" in changelog
     assert "financial_aliases.v1" in changelog
-    assert "yellow_narratives.v1" in changelog
+    assert "yellow_narratives.v2" in changelog
 
     providers = manifest["providers"]
     assert {item["name"] for item in providers} >= {"qichacha", "bailian_glm"}
@@ -24,9 +24,10 @@ def test_manifest_and_changelog_cover_handoff_requirements():
 
 
 def test_prompt_schema_is_the_runtime_seven_field_contract():
-    schema = json.loads(Path("demo/prompts/yellow_narratives_output.v1.json").read_text(encoding="utf-8"))
-    assert schema["version"] == "yellow_narratives_output.v1"
+    schema = json.loads(Path("demo/prompts/yellow_narratives_output.v2.json").read_text(encoding="utf-8"))
+    assert schema["version"] == "yellow_narratives_output.v2"
     assert set(schema["properties"]["fields"]["properties"]) == set(ALLOWED_FIELDS)
+    assert set(schema["properties"]["fields"]["required"]) == set(ALLOWED_FIELDS)
     assert schema["properties"]["fields"]["additionalProperties"] is False
     assert schema == OUTPUT_SCHEMA
 

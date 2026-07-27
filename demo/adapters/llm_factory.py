@@ -20,7 +20,7 @@ def build_bailian_adapters(
 ) -> dict[str, Any]:
     prompt_dir = root / "prompts"
     models = resolve_llm_models(config, env or {})
-    narrative_prompt = (prompt_dir / "yellow_narratives.v1.txt").read_text(encoding="utf-8")
+    narrative_prompt = (prompt_dir / "yellow_narratives.v2.txt").read_text(encoding="utf-8")
     reviews = {}
     for task, filename in (
         ("format", "review_format.v1.txt"),

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 from docx import Document
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
 
 import demo.pipeline as pipeline_module
 from demo.pipeline import _apply_ocr_overrides_to_table, _company_profile_table, _ocr_ownership_matrix, _validated_qcc_payload, run_pipeline
@@ -111,12 +111,46 @@ class FixtureLlmAdapter:
         }, ["模拟 LLM 返回了越权字段"]
 
 
+class NoPdfEvidenceLlmAdapter:
+    prompt_version = "yellow_narratives.test"
+
+    def generate(self, evidence):
+        by_id = {item["evidence_id"]: item["text"] for item in evidence["evidence"]}
+        assert "field:target_company_name" in by_id
+        assert "示例有限公司" in by_id["field:target_company_name"]
+        return {"company_profile_section": "根据已上传结构化材料生成。"}, []
+
+
+class ReferenceDocumentEvidenceLlmAdapter:
+    prompt_version = "yellow_narratives.test"
+
+    def generate(self, evidence):
+        document_blocks = [
+            item
+            for item in evidence["evidence"]
+            if item["evidence_id"].startswith("document:reference_report:")
+        ]
+        assert any("主营产品为工业滤波器" in item["text"] for item in document_blocks)
+        return {"main_products": "主营产品为工业滤波器。"}, []
+
+
 class FixtureQichachaAdapter:
     def fetch(self, company_name):
         assert "通富" in company_name
         return {
             "ownership_history": "企查查返回的历史股权沿革。",
             "industry_overview": "不应采用的 API 越权内容",
+        }, []
+
+
+class CapitalQichachaAdapter:
+    def fetch(self, company_name):
+        return {
+            "profile": {
+                "name": company_name,
+                "registered_capital": "1,250万元",
+            },
+            "fields": {},
         }, []
 
 
@@ -214,6 +248,8 @@ def test_pipeline_creates_ocr_xlsx_word_and_audit_without_cross_route_fallback(t
     assert "单体层面各类资产负债的金额为：" in paragraph_text
     balance_text = "\n".join(cell.text for row in report.tables[6].rows for cell in row.cells)
     assert "148,537,259.26" in balance_text
+    income_widths = [column.width for column in report.tables[5].columns]
+    assert income_widths[0] < sum(income_widths[1:]) / 3 * 1.5
     ownership_text = "\n".join(
         cell.text for table_index in (2, 3) for row in report.tables[table_index].rows for cell in row.cells
     )
@@ -418,6 +454,137 @@ def test_pipeline_without_pdf_exports_report_and_issue_list(tmp_path):
     manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
     assert manifest["financial_validation"]["valid"] is False
     assert manifest["generation_validation"]["valid"] is False
+
+
+def test_pipeline_without_pdf_passes_material_fields_to_llm(tmp_path):
+    output = tmp_path / "run"
+    run_pipeline(
+        project_config=Path("demo/projects/tongfu.yaml"),
+        pdf_path=None,
+        output_dir=output,
+        ocr_adapter=None,
+        llm_adapter=NoPdfEvidenceLlmAdapter(),
+        source_overrides={
+            "audit_pdf": None,
+            "reference_report": None,
+            "audited_financials": None,
+            "income_workbook": None,
+            "reporting_workbook": None,
+        },
+        manual_inputs_override={
+            "target_company_name": "示例有限公司",
+            "narrative_modules": ["industry_overview"],
+        },
+    )
+
+    fields = json.loads((output / "normalized_fields.json").read_text(encoding="utf-8"))
+    assert fields["company_profile_section"] == "根据已上传结构化材料生成。"
+    assert fields["industry_overview"] == ""
+
+
+def test_pipeline_passes_uploaded_reference_word_to_llm(tmp_path):
+    reference = tmp_path / "任意名称的参考报告.docx"
+    document = Document()
+    document.add_paragraph("4.2、主要产品")
+    document.add_paragraph("该公司主营产品为工业滤波器，并面向工业自动化客户销售。")
+    document.save(reference)
+    output = tmp_path / "run"
+
+    run_pipeline(
+        project_config=Path("demo/projects/tongfu.yaml"),
+        pdf_path=None,
+        output_dir=output,
+        ocr_adapter=None,
+        llm_adapter=ReferenceDocumentEvidenceLlmAdapter(),
+        source_overrides={
+            "audit_pdf": None,
+            "reference_report": reference,
+            "audited_financials": None,
+            "income_workbook": None,
+            "reporting_workbook": None,
+        },
+        manual_inputs_override={
+            "target_company_name": "示例有限公司",
+            "narrative_modules": ["main_products"],
+        },
+    )
+
+    fields = json.loads((output / "normalized_fields.json").read_text(encoding="utf-8"))
+    assert fields["main_products"] == "主营产品为工业滤波器。"
+
+
+def test_qichacha_profile_supplies_missing_registered_capital(tmp_path):
+    output = tmp_path / "run"
+    run_pipeline(
+        project_config=Path("demo/projects/tongfu.yaml"),
+        pdf_path=None,
+        output_dir=output,
+        ocr_adapter=None,
+        qichacha_adapter=CapitalQichachaAdapter(),
+        source_overrides={
+            "audit_pdf": None,
+            "reference_report": None,
+            "audited_financials": None,
+            "income_workbook": None,
+            "reporting_workbook": None,
+        },
+        manual_inputs_override={"target_company_name": "示例有限公司"},
+    )
+
+    fields = json.loads((output / "normalized_fields.json").read_text(encoding="utf-8"))
+    assert fields["registered_capital"] == "1,250万元"
+
+
+def test_pipeline_keeps_semantically_matched_scope_table(tmp_path):
+    reporting = tmp_path / "changed-layout.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "汇总表"
+    sheet.append(["金额单位：人民币万元"])
+    sheet.append(["项目", "序号", "账面价值", "评估价值"])
+    sheet.append(["流动资产", 1, 100, 101])
+    sheet.append(["非流动资产", 2, 200, 210])
+    sheet.append(["固定资产", 21, 120, 130])
+    sheet.append(["无形资产", 22, 30, 35])
+    sheet.append(["长期待摊费用", 23, 10, 10])
+    sheet.append(["资产总计", 3, 300, 311])
+    sheet.append(["流动负债", 4, 50, 50])
+    sheet.append(["非流动负债", 5, 20, 20])
+    sheet.append(["负债总计", 6, 70, 70])
+    sheet.append(["净资产", 7, 230, 241])
+    detail = workbook.create_sheet("固定资产汇总表")
+    detail.append(["金额单位：人民币元"])
+    detail.append(["项目", "账面价值", "评估价值"])
+    detail.append(["电子设备", 320_000, 350_000])
+    workbook.save(reporting)
+
+    run_pipeline(
+        project_config=Path("demo/projects/tongfu.yaml"),
+        pdf_path=None,
+        output_dir=tmp_path / "run",
+        ocr_adapter=None,
+        source_overrides={
+            "audit_pdf": None,
+            "reference_report": None,
+            "audited_financials": reporting,
+            "income_workbook": None,
+            "reporting_workbook": reporting,
+        },
+        manual_inputs_override={"target_company_name": "示例有限公司"},
+    )
+
+    fields = json.loads(
+        (tmp_path / "run/normalized_fields.json").read_text(encoding="utf-8")
+    )
+    rows = fields["asset_scope_summary_table"]["rows"]
+    assert ["流动资产账面金额：", "1,000,000.00"] in rows
+    assert ["所有者权益账面金额：", "2,300,000.00"] in rows
+    long_term_text = "\n".join(
+        cell.text
+        for row in Document(tmp_path / "run/资产评估报告_待复核.docx").tables[7].rows
+        for cell in row.cells
+    )
+    assert "320,000.00" in long_term_text
 
 
 def test_pipeline_rejects_invalid_workflow_before_ocr(tmp_path):

@@ -1,17 +1,18 @@
 {
-  "version": "2026-07-27.1",
+  "version": "2026-07-27.3",
   "rule_versions": {
     "workflow_contract": "workflow_contract.v1",
     "workflow_trace": "workflow_trace.v1",
     "narrative_policy": "narrative_policy.v1",
     "yellow_routes": "yellow_routes.v1",
     "financial_aliases": "financial_aliases.v1",
+    "workbook_semantics": "workbook_semantics.v2",
     "financial_validation": "financial_validation.v2",
     "optional_sources": "optional_sources.v1",
     "generation_issues": "generation_issues.v1",
     "placeholder_policy": "placeholder_policy.v1",
-    "prompt": "yellow_narratives.v1",
-    "output_schema": "yellow_narratives_output.v1",
+    "prompt": "yellow_narratives.v2",
+    "output_schema": "yellow_narratives_output.v2",
     "review_output_schema": "review_output.v1"
   },
   "sources": [
@@ -40,8 +41,8 @@
       "model": "qwen3.7-flash",
       "base_url_env": "APPRAISAL_LLM_BASE_URL",
       "credential_env": ["DASHSCOPE_API_KEY"],
-      "prompt_version": "yellow_narratives.v1",
-      "output_schema_version": "yellow_narratives_output.v1",
+      "prompt_version": "yellow_narratives.v2",
+      "output_schema_version": "yellow_narratives_output.v2",
       "review_tasks": ["format_review", "data_validation", "semantic_review"],
       "review_prompt_versions": ["review_format.v1", "review_data.v1", "review_semantic.v1"],
       "update_method": "模型或 Prompt 变更时同步结构化输出契约和样例",

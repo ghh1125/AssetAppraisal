@@ -108,6 +108,31 @@ def test_writes_matrix_into_existing_word_table_and_trims_unused_rows(tmp_path: 
     assert [[cell.text for cell in row.cells] for row in filled.tables[0].rows] == matrix
 
 
+def test_applies_semantic_column_ratios_to_financial_table(tmp_path: Path):
+    template = tmp_path / "table-width-template.docx"
+    doc = Document()
+    doc.add_table(rows=2, cols=4)
+    doc.save(template)
+    output = tmp_path / "filled-table.docx"
+
+    fill_template(
+        template,
+        output,
+        {},
+        table_replacements={
+            0: [
+                ["项目", "2022年度", "2023年度", "2024年度"],
+                ["一、营业收入", "317,902,574.06", "280,314,960.30", "262,802,616.74"],
+            ]
+        },
+        table_column_ratios={0: [0.32, 0.2267, 0.2267, 0.2266]},
+    )
+
+    widths = [column.width for column in Document(output).tables[0].columns]
+    assert widths[0] < sum(widths[1:]) / 3 * 1.5
+    assert max(widths[1:]) - min(widths[1:]) < 2_000
+
+
 def test_removes_each_highlighted_instruction_and_its_empty_parentheses(tmp_path: Path):
     template = tmp_path / "instructions.docx"
     doc = Document()

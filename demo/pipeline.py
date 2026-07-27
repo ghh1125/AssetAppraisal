@@ -15,7 +15,7 @@ from openpyxl import load_workbook
 
 from demo import schemas
 from demo.adapters.audit import export_audit, write_json
-from demo.adapters.document import read_table_matrix
+from demo.adapters.document import read_narrative_evidence, read_table_matrix
 from demo.adapters.excel import (
     read_cells,
     try_read_cells,
@@ -657,10 +657,17 @@ def run_pipeline(
             scope_table,
         )
         if scope_rows is None:
-            scope_rows = blank_configured_table(
-                scope_table,
-                placeholder="XXX",
-            )
+            semantic_scope = fields.get(scope_table["field_key"])
+            if isinstance(semantic_scope, dict) and isinstance(
+                semantic_scope.get("rows"), list
+            ):
+                scope_rows = semantic_scope["rows"]
+                scope_issues = []
+            else:
+                scope_rows = blank_configured_table(
+                    scope_table,
+                    placeholder="XXX",
+                )
         issues.extend(
             f"{scope_table['field_key']}：{message}"
             for message in scope_issues
@@ -669,17 +676,22 @@ def run_pipeline(
             "caption": scope_table.get("caption", ""),
             "rows": scope_rows,
         }
-        evidence[scope_table["field_key"]] = {
-            "kind": (
-                config.get("source_lineage", {})
-                .get(source_name, {})
-                .get("kind", source_name)
-                if source_path is not None and not scope_issues
-                else "missing"
-            ),
-            "file": source_path.name if source_path is not None else "",
-            "locator": scope_table.get("source_locator", ""),
-        }
+        if not (
+            evidence.get(scope_table["field_key"], {}).get("kind")
+            == "semantic_excel"
+            and not scope_issues
+        ):
+            evidence[scope_table["field_key"]] = {
+                "kind": (
+                    config.get("source_lineage", {})
+                    .get(source_name, {})
+                    .get("kind", source_name)
+                    if source_path is not None and not scope_issues
+                    else "missing"
+                ),
+                "file": source_path.name if source_path is not None else "",
+                "locator": scope_table.get("source_locator", ""),
+            }
 
     ocr_node_issues: list[str] = []
     if ocr_workbook_path is not None:
@@ -945,6 +957,17 @@ def run_pipeline(
             qcc_payloads["target"] = payload
             qcc_profiles["target"] = qcc_payloads["target"].get("profile", {})
             qcc_values.update(_filter_provider(payload, qcc_allowed - {"commissioning_party_profile"}, "企查查 API（被评估单位）", issues))
+    target_profile = qcc_profiles.get("target", {})
+    if (
+        fields.get("registered_capital") in (None, "", [])
+        and target_profile.get("registered_capital") not in (None, "")
+    ):
+        fields["registered_capital"] = target_profile["registered_capital"]
+        evidence["registered_capital"] = {
+            "kind": "qichacha_api",
+            "file": "企查查 API（735）",
+            "locator": "企业工商详情.注册资本",
+        }
 
     # The detailed IP records belong in the dedicated tables.  Keep the
     # yellow paragraph as a short, stable cross-reference instead of dumping
@@ -983,12 +1006,60 @@ def run_pipeline(
     llm_values: dict[str, Any] = {}
     llm_source_kind = "bailian_glm"
     if llm_adapter is not None:
+        structured_evidence = []
+        for field_key, value in fields.items():
+            source = evidence.get(field_key, {})
+            if (
+                value in (None, "", [], {})
+                or source.get("kind") in {"missing", "bailian_glm"}
+            ):
+                continue
+            if isinstance(value, (dict, list)):
+                rendered = json.dumps(value, ensure_ascii=False, default=str)
+            else:
+                rendered = str(value)
+            structured_evidence.append(
+                {
+                    "evidence_id": f"field:{field_key}",
+                    "text": (
+                        f"{field_names.get(field_key, field_key)}："
+                        f"{rendered[:4000]}"
+                    ),
+                }
+            )
+        reference_report = _source_path(
+            base,
+            config,
+            source_overrides,
+            "reference_report",
+        )
+        if (
+            reference_report is not None
+            and reference_report.suffix.lower() == ".docx"
+        ):
+            try:
+                structured_evidence.extend(
+                    read_narrative_evidence(
+                        reference_report,
+                        source_name="reference_report",
+                    )
+                )
+            except (OSError, ValueError, KeyError) as exc:
+                issues.append(f"参考 Word 叙述证据读取失败：{exc}")
+        if target_profile:
+            structured_evidence.append(
+                {
+                    "evidence_id": "api:qichacha:target_profile",
+                    "text": "被评估单位工商信息："
+                    + json.dumps(target_profile, ensure_ascii=False, default=str),
+                }
+            )
         llm_evidence = {
             "selected_modules": selected_modules,
             "evidence": [
                 {"evidence_id": item["evidence_id"], "text": item["text"]}
                 for item in [*normalized["text_blocks"], *normalized["table_cells"]]
-            ]
+            ] + structured_evidence,
         }
         payload, provider_issues = llm_adapter.generate(llm_evidence)
         issues.extend(provider_issues)
@@ -999,7 +1070,7 @@ def run_pipeline(
     # partial payload.  Merge per field rather than only when the whole payload
     # is empty: GLM may return ``main_products`` while omitting one of the other
     # numbered overview slots, and a blank numbered slot is a formatting defect.
-    if llm_adapter is not None:
+    if llm_adapter is not None and source_overrides is None:
         fallback = config.get("llm_fallback_fields", {})
         if isinstance(fallback, dict):
             fallback_values = {
@@ -1185,6 +1256,7 @@ def run_pipeline(
 
     replacements = build_replacements(locations, fields)
     table_replacements = {}
+    table_column_ratios: dict[int, list[float]] = {}
     table_specs = list(config.get("financial_tables", []))
     scope_table = config.get("asset_scope_summary_table")
     if isinstance(scope_table, dict):
@@ -1198,6 +1270,15 @@ def run_pipeline(
                 spec,
                 placeholder="XXX",
             )
+        if str(spec.get("field_key", "")).startswith("historical_"):
+            matrix = table_replacements[int(spec["target_table_index"])]
+            column_count = len(matrix[0]) if matrix and matrix[0] else 0
+            if column_count > 1:
+                value_ratio = 0.68 / (column_count - 1)
+                table_column_ratios[int(spec["target_table_index"])] = [
+                    0.32,
+                    *([value_ratio] * (column_count - 1)),
+                ]
     if historical_ownership_matrix and len(historical_ownership_matrix) > 1:
         table_replacements[int(ownership_table_spec["target_table_index"])] = historical_ownership_matrix
     elif isinstance(ownership_table_spec, dict):
@@ -1231,9 +1312,24 @@ def run_pipeline(
         ]
     long_term_table = config.get("long_term_assets_table")
     if isinstance(long_term_table, dict):
-        table_replacements[int(long_term_table["target_table_index"])] = _configured_cross_source_table(
-            base, config, long_term_table.get("rows", []), ocr_aux_values, source_overrides
-        )
+        semantic_long_term = fields.get("long_term_assets_table")
+        if isinstance(semantic_long_term, dict) and isinstance(
+            semantic_long_term.get("rows"), list
+        ):
+            long_term_rows = _apply_ocr_overrides_to_table(
+                semantic_long_term["rows"],
+                long_term_table,
+                ocr_aux_values,
+            )
+        else:
+            long_term_rows = _configured_cross_source_table(
+                base,
+                config,
+                long_term_table.get("rows", []),
+                ocr_aux_values,
+                source_overrides,
+            )
+        table_replacements[int(long_term_table["target_table_index"])] = long_term_rows
     trademark_rows = _qcc_table_rows(qcc_payloads.get("target", {}), "trademark_rows", 7)
     software_rows = _qcc_table_rows(qcc_payloads.get("target", {}), "software_rows", 5)
     if trademark_rows:
@@ -1262,6 +1358,7 @@ def run_pipeline(
         report,
         replacements,
         table_replacements=table_replacements,
+        table_column_ratios=table_column_ratios,
         paragraph_replacements=_paragraph_replacements(config, fields),
         replacement_modes={route.location_id: route.replacement_mode for route in routes},
     )

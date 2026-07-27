@@ -5,7 +5,7 @@ import zipfile
 from pathlib import Path
 
 from docx import Document
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
 
 from demo.run import run_project
 
@@ -174,3 +174,48 @@ def test_run_project_generates_with_only_one_manual_field(tmp_path: Path):
         for cell in row.cells
     )
     assert "XXX" in text
+
+
+def test_run_project_uses_semantic_excel_fallback_for_changed_layouts(tmp_path: Path):
+    reporting = tmp_path / "任意名称-资产表.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "资产评估结果分类汇总表（元）"
+    sheet.append(["金额单位：人民币元"])
+    sheet.append(["序号", "科目名称", "账面价值", "评估价值"])
+    sheet.append([1, "七、所有者权益（净资产）", 86_979_689.29, 93_972_005.69])
+    workbook.save(reporting)
+
+    income = tmp_path / "任意名称-收益表.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "净现金流计算表"
+    sheet.append(["金额单位：元"])
+    sheet.append(["股东全部权益价值", None, 68_500_000])
+    workbook.save(income)
+
+    output = tmp_path / "run"
+    run_project(
+        Path("demo/projects/tongfu.yaml"),
+        output_dir=output,
+        offline=True,
+        manual_inputs_override={
+            "target_company_name": "示例公司",
+            "valuation_subject_type": "股东全部权益价值",
+            "selected_valuation_method": "收益法、资产基础法",
+            "final_valuation_method": "收益法",
+            "transaction_type": "收购",
+        },
+        source_overrides={
+            "audit_pdf": None,
+            "reference_report": None,
+            "audited_financials": reporting,
+            "income_workbook": income,
+            "reporting_workbook": reporting,
+        },
+    )
+
+    fields = json.loads((output / "normalized_fields.json").read_text(encoding="utf-8"))
+    assert fields["book_net_assets"] == 8697.968929
+    assert fields["asset_approach_value"] == 9397.200569
+    assert fields["income_approach_value"] == 6850

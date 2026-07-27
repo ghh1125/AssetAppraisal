@@ -21,6 +21,7 @@ from .adapters.excel import (
     try_read_configured_table,
 )
 from .adapters.materials import resolve_material_field
+from .adapters.semantic_excel import extract_workbook_facts
 from .adapters.word import (
     fill_template,
     highlight_unresolved_placeholders,
@@ -381,6 +382,92 @@ def run_project(
             issues.append(f"{spec['field_key']}：材料无法读取：{exc}")
         fields[spec["field_key"]] = value
         evidence[spec["field_key"]] = source
+
+    # Project workbooks evolve and frequently rename sheets or move cells.
+    # Apply the deterministic semantic reader after fixed project locators so
+    # an exact row/column-header match can replace an accidental value read
+    # from a legacy coordinate (for example a zero that is no longer the
+    # equity-value cell).
+    for source_name in (
+        "audited_financials",
+        "reporting_workbook",
+        "income_workbook",
+    ):
+        source_path = sources.get(source_name)
+        if source_path is None or source_path.suffix.lower() not in {".xlsx", ".xlsm"}:
+            continue
+        try:
+            semantic = extract_workbook_facts(source_path, source_name)
+        except (KeyError, OSError, ValueError, BadZipFile) as exc:
+            issues.append(f"{source_name}：语义定位失败：{exc}")
+            continue
+        issues.extend(semantic.get("issues", []))
+        comparable_amount_fields = {
+            "book_net_assets",
+            "income_approach_value",
+            "asset_approach_value",
+        }
+        for field_key, value in semantic.get("fields", {}).items():
+            if value in (None, "", []):
+                continue
+            existing = fields.get(field_key)
+            existing_is_valid = (
+                existing not in (None, "", [])
+                and evidence.get(field_key, {}).get("kind") != "missing"
+            )
+            if existing_is_valid:
+                if (
+                    field_key in comparable_amount_fields
+                    and isinstance(existing, (int, float))
+                    and isinstance(value, (int, float))
+                ):
+                    denominator = max(abs(float(existing)), abs(float(value)), 1.0)
+                    if abs(float(existing) - float(value)) / denominator <= 0.001:
+                        continue
+                else:
+                    continue
+            fields[field_key] = value
+            evidence[field_key] = semantic.get("evidence", {}).get(
+                field_key,
+                {
+                    "kind": "semantic_excel",
+                    "file": source_path.name,
+                    "locator": field_key,
+                },
+            )
+
+    book_value = fields.get("book_net_assets")
+    appraised_value = fields.get("asset_approach_value")
+    result_section_is_missing = (
+        fields.get("asset_approach_result_section") in (None, "", [])
+        or evidence.get("asset_approach_result_section", {}).get("kind") == "missing"
+    )
+    if (
+        result_section_is_missing
+        and isinstance(book_value, (int, float))
+        and isinstance(appraised_value, (int, float))
+    ):
+        increase = appraised_value - book_value
+        increase_rate = increase / book_value if book_value else 0
+        fields["asset_approach_result_section"] = (
+            "（二）资产基础法评估结果："
+            f"净资产账面价值{book_value:,.2f}万元，"
+            f"评估价值{appraised_value:,.2f}万元，"
+            f"增值{increase:,.2f}万元，增值率{increase_rate:.2%}。"
+        )
+        evidence["asset_approach_result_section"] = {
+            "kind": "semantic_excel_derived",
+            "file": "；".join(
+                sorted(
+                    {
+                        str(evidence.get("book_net_assets", {}).get("file", "")),
+                        str(evidence.get("asset_approach_value", {}).get("file", "")),
+                    }
+                    - {""}
+                )
+            ),
+            "locator": "账面净资产、评估净资产派生",
+        }
 
     if not offline:
         known_fields = set(records_by_key)
