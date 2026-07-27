@@ -347,8 +347,9 @@ def _preferred_book_net_column(
 
 def _electronic_equipment_detail_value(
     workbook,
-) -> tuple[float | None, str, str]:
+) -> tuple[float | None, str, str, str]:
     best: tuple[int, float, str, str] | None = None
+    ambiguous = False
     for sheet in workbook.worksheets:
         if not any(token in sheet.title for token in ("固定资产", "设备", "资产明细")):
             continue
@@ -375,6 +376,8 @@ def _electronic_equipment_detail_value(
                 labels,
             )
             if amount_column is None:
+                if len(roles.get("book_net", [])) > 1:
+                    ambiguous = True
                 continue
             category_column = (
                 (roles.get("category") or [None])[0]
@@ -421,14 +424,19 @@ def _electronic_equipment_detail_value(
             if best is None or candidate[0] > best[0]:
                 best = candidate
     if best is None:
-        return None, "", ""
+        return (
+            None,
+            "",
+            "",
+            "ambiguous_candidate" if ambiguous else "source_absent",
+        )
     _, amount, locator, quantity = best
-    return amount, locator, quantity
+    return amount, locator, quantity, ""
 
 
 def _electronic_equipment_value(
     workbook,
-) -> tuple[float | None, str, str]:
+) -> tuple[float | None, str, str, str]:
     summary_best: tuple[int, float, str] | None = None
     for sheet in workbook.worksheets:
         if "汇总" not in sheet.title:
@@ -458,23 +466,25 @@ def _electronic_equipment_value(
                     )
                     if summary_best is None or candidate[0] > summary_best[0]:
                         summary_best = candidate
-    detail_value, detail_locator, quantity = (
+    detail_value, detail_locator, quantity, detail_reason = (
         _electronic_equipment_detail_value(workbook)
     )
     if summary_best is not None:
         _, value, locator = summary_best
-        return value, locator, quantity
-    return detail_value, detail_locator, quantity
+        return value, locator, quantity, ""
+    return detail_value, detail_locator, quantity, detail_reason
 
 
 def _amount(value: float | None) -> str:
     return "XXX" if value is None else f"{value:,.2f}"
 
 
-def _asset_tables(workbook) -> tuple[dict[str, Any], dict[str, dict[str, str]]]:
+def _asset_tables(
+    workbook,
+) -> tuple[dict[str, Any], dict[str, dict[str, str]], list[str]]:
     values, locators = _summary_book_values(workbook)
     if not values:
-        return {}, {}
+        return {}, {}, []
     scope_labels = (
         ("流动资产账面金额：", "流动资产"),
         ("非流动资产账面金额：", "非流动资产"),
@@ -491,7 +501,7 @@ def _asset_tables(workbook) -> tuple[dict[str, Any], dict[str, dict[str, str]]]:
         ("所有者权益账面金额：", "所有者权益"),
     )
     scope_rows = [[label, _amount(values.get(key))] for label, key in scope_labels]
-    electronic, electronic_locator, electronic_quantity = (
+    electronic, electronic_locator, electronic_quantity, electronic_reason = (
         _electronic_equipment_value(workbook)
     )
     long_rows = [
@@ -549,7 +559,23 @@ def _asset_tables(workbook) -> tuple[dict[str, Any], dict[str, dict[str, str]]]:
             "locator": "；".join(filter(None, [source_locator, electronic_locator])),
         },
     }
-    return fields, evidence
+    issues: list[str] = []
+    if electronic is None:
+        reason = electronic_reason or "source_absent"
+        issues.append(
+            "long_term_assets_table："
+            f"[{reason}] 未找到可唯一确定的电子设备账面净值，已保留 XXX"
+        )
+    for label, key in (
+        ("无形资产", "无形资产"),
+        ("长期待摊费用", "长期待摊费用"),
+    ):
+        if values.get(key) is None:
+            issues.append(
+                "long_term_assets_table："
+                f"[source_absent] 未找到{label}账面金额，已保留 XXX"
+            )
+    return fields, evidence, issues
 
 
 def _historical_header_parts(sheet, label_row: int) -> dict[int, list[Any]]:
@@ -812,6 +838,7 @@ def extract_workbook_facts(path: Path, role: str) -> dict[str, Any]:
     )
     fields: dict[str, Any] = {}
     evidence: dict[str, dict[str, str]] = {}
+    issues: list[str] = []
     try:
         net_asset = None
         for sheet in workbook.worksheets:
@@ -834,8 +861,9 @@ def extract_workbook_facts(path: Path, role: str) -> dict[str, Any]:
                     "locator": net_asset["appraised_cell"],
                 }
         if role in {"reporting_workbook", "audited_financials"}:
-            table_fields, table_evidence = _asset_tables(workbook)
+            table_fields, table_evidence, table_issues = _asset_tables(workbook)
             fields.update(table_fields)
+            issues.extend(table_issues)
             for field_key, source in table_evidence.items():
                 evidence[field_key] = {**source, "file": path.name}
             for history_kind, field_key in (
@@ -922,4 +950,4 @@ def extract_workbook_facts(path: Path, role: str) -> dict[str, Any]:
                     }
     finally:
         workbook.close()
-    return {"fields": fields, "evidence": evidence, "issues": []}
+    return {"fields": fields, "evidence": evidence, "issues": issues}

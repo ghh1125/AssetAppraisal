@@ -414,3 +414,30 @@ def test_electronic_summary_uses_book_net_subcolumn(tmp_path: Path):
     assert facts["evidence"]["long_term_assets_table"]["locator"].endswith(
         "固定资产汇总表!C4"
     )
+
+
+def test_ambiguous_electronic_book_columns_remain_unresolved(tmp_path: Path):
+    path = _save_workbook(
+        tmp_path / "ambiguous-electronics.xlsx",
+        {
+            "电子设备": [
+                ["固定资产—电子设备明细表", "金额单位：人民币元"],
+                ["资产编号", "资产名称", "账面净值", "账面净额"],
+                ["D001", "电脑", 8_000, 7_500],
+            ],
+            "汇总表": [
+                ["金额单位：人民币元"],
+                ["项目", "账面价值", "评估价值"],
+                ["无形资产", 30_000, 35_000],
+            ],
+        },
+    )
+
+    facts = extract_workbook_facts(path, "reporting_workbook")
+
+    assert facts["fields"]["long_term_assets_table"]["rows"][1][1] == "XXX"
+    assert any(
+        "long_term_assets_table" in issue
+        and "[ambiguous_candidate]" in issue
+        for issue in facts["issues"]
+    )
