@@ -6,7 +6,13 @@ from docx import Document
 from docx.enum.text import WD_COLOR_INDEX
 from docx.shared import Pt
 
-from demo.adapters.word import fill_template, inventory_template, replace_report_number_year, unresolved_placeholders
+from demo.adapters.word import (
+    fill_template,
+    highlight_unresolved_placeholders,
+    inventory_template,
+    replace_report_number_year,
+    unresolved_placeholders,
+)
 from demo.domain.replacement import build_replacements
 from demo.domain.field_validation import normalize_report_serial
 
@@ -223,3 +229,87 @@ def test_yellow_annotation_value_keeps_heading_and_removes_parentheses(tmp_path:
         replacement_modes={location["location_id"]: "replace_yellow_annotation"},
     )
     assert Document(output).paragraphs[0].text == "3、被评估单位概述：公司成立于2011年。"
+
+
+def test_missing_placeholder_is_preserved_and_only_marker_is_highlighted(tmp_path: Path):
+    template = tmp_path / "template.docx"
+    document = Document()
+    document.add_paragraph("公司名称：XXX")
+    document.save(template)
+    location = inventory_template(template)[0]
+    output = tmp_path / "output.docx"
+
+    fill_template(template, output, {location["location_id"]: "XXX"})
+    findings = highlight_unresolved_placeholders(output)
+
+    paragraph = Document(output).paragraphs[0]
+    assert paragraph.text == "公司名称：XXX"
+    assert [
+        run.text
+        for run in paragraph.runs
+        if run.font.highlight_color == WD_COLOR_INDEX.YELLOW
+    ] == ["XXX"]
+    assert findings[0]["location_id"] == location["location_id"]
+
+
+def test_missing_table_cell_is_highlighted_and_reported(tmp_path: Path):
+    template = tmp_path / "table.docx"
+    document = Document()
+    document.add_table(rows=2, cols=2)
+    document.save(template)
+    output = tmp_path / "output.docx"
+
+    fill_template(
+        template,
+        output,
+        {},
+        table_replacements={0: [["项目", "金额"], ["资产总计", "XXX"]]},
+    )
+    findings = highlight_unresolved_placeholders(output)
+
+    assert any(item["location_type"] == "表格单元格" for item in findings)
+    cell = Document(output).tables[0].cell(1, 1)
+    assert cell.text == "XXX"
+    assert cell.paragraphs[0].runs[0].font.highlight_color == WD_COLOR_INDEX.YELLOW
+
+
+def test_strip_yellow_only_preserves_missing_marker(tmp_path: Path):
+    template = tmp_path / "yellow-only.docx"
+    document = Document()
+    paragraph = document.add_paragraph("办公地址（")
+    note = paragraph.add_run("人工输入")
+    note.font.highlight_color = WD_COLOR_INDEX.YELLOW
+    paragraph.add_run("）")
+    document.save(template)
+    location = inventory_template(template)[0]
+    output = tmp_path / "output.docx"
+
+    fill_template(
+        template,
+        output,
+        {location["location_id"]: "XXX"},
+        replacement_modes={location["location_id"]: "strip_yellow_only"},
+    )
+    highlight_unresolved_placeholders(output)
+
+    assert Document(output).paragraphs[0].text == "办公地址：XXX"
+
+
+def test_highlights_placeholder_split_across_runs(tmp_path: Path):
+    output = tmp_path / "split.docx"
+    document = Document()
+    paragraph = document.add_paragraph("名称：")
+    paragraph.add_run("X")
+    paragraph.add_run("XX")
+    document.save(output)
+
+    findings = highlight_unresolved_placeholders(output)
+
+    paragraph = Document(output).paragraphs[0]
+    highlighted = "".join(
+        run.text
+        for run in paragraph.runs
+        if run.font.highlight_color == WD_COLOR_INDEX.YELLOW
+    )
+    assert highlighted == "XXX"
+    assert findings[0]["current_text"] == "XXX"

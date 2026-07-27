@@ -15,6 +15,7 @@ from lxml import etree
 W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 NS = {"w": W}
 PLACEHOLDER = re.compile(r"X{2,}", re.I)
+UNRESOLVED_MARKER = re.compile(r"20XX|X{2,}", re.I)
 PART_RE = re.compile(r"word/(document|header\d+|footer\d+|footnotes|endnotes)\.xml")
 
 
@@ -125,6 +126,17 @@ def _clear_run_text(run) -> None:
 def _remove_highlight(run) -> None:
     for highlight in run.xpath("./w:rPr/w:highlight", namespaces=NS):
         highlight.getparent().remove(highlight)
+
+
+def _set_yellow_highlight(run) -> None:
+    properties = run.find("w:rPr", namespaces=NS)
+    if properties is None:
+        properties = etree.Element(f"{{{W}}}rPr")
+        run.insert(0, properties)
+    for highlight in properties.findall("w:highlight", namespaces=NS):
+        properties.remove(highlight)
+    highlight = etree.SubElement(properties, f"{{{W}}}highlight")
+    highlight.set(f"{{{W}}}val", "yellow")
 
 
 def _remove_paragraph_highlights(paragraph) -> None:
@@ -277,6 +289,143 @@ def _set_cell_text(cell, value: str) -> None:
         cell.remove(paragraph)
 
 
+def _split_paragraph_and_highlight_markers(paragraph) -> bool:
+    runs = paragraph.xpath(".//w:r", namespaces=NS)
+    run_texts = [_run_text(run) for run in runs]
+    combined = "".join(run_texts)
+    matches = list(UNRESOLVED_MARKER.finditer(combined))
+    if not matches:
+        return False
+    offset = 0
+    for run, text in zip(runs, run_texts, strict=True):
+        start = offset
+        end = offset + len(text)
+        offset = end
+        if not text:
+            continue
+        boundaries = {0, len(text)}
+        for match in matches:
+            overlap_start = max(start, match.start())
+            overlap_end = min(end, match.end())
+            if overlap_start < overlap_end:
+                boundaries.add(overlap_start - start)
+                boundaries.add(overlap_end - start)
+        ordered = sorted(boundaries)
+        chunks = [
+            (text[left:right], start + left, start + right)
+            for left, right in zip(ordered, ordered[1:])
+            if left < right
+        ]
+        parent = run.getparent()
+        if parent is None:
+            continue
+        position = parent.index(run)
+        for value, global_start, global_end in chunks:
+            clone = deepcopy(run)
+            _set_run_text(clone, value)
+            highlighted = any(
+                match.start() <= global_start and global_end <= match.end()
+                for match in matches
+            )
+            if highlighted:
+                _set_yellow_highlight(clone)
+            else:
+                _remove_highlight(clone)
+            parent.insert(position, clone)
+            position += 1
+        parent.remove(run)
+    return True
+
+
+def _table_coordinates(root, paragraph) -> tuple[int, int, int] | None:
+    cells = paragraph.xpath("ancestor::w:tc[1]", namespaces=NS)
+    tables = paragraph.xpath("ancestor::w:tbl[1]", namespaces=NS)
+    if not cells or not tables:
+        return None
+    cell = cells[0]
+    table = tables[0]
+    all_tables = root.xpath(".//w:tbl", namespaces=NS)
+    table_index = next(
+        (index for index, candidate in enumerate(all_tables, 1) if candidate is table),
+        None,
+    )
+    if table_index is None:
+        return None
+    rows = table.xpath("./w:tr", namespaces=NS)
+    for row_index, row in enumerate(rows, 1):
+        row_cells = row.xpath("./w:tc", namespaces=NS)
+        for column_index, candidate in enumerate(row_cells, 1):
+            if candidate is cell:
+                return table_index, row_index, column_index
+    return None
+
+
+def highlight_unresolved_placeholders(path: Path) -> list[dict[str, Any]]:
+    """Highlight unresolved markers and return exact Word-part locations."""
+    with zipfile.ZipFile(path) as archive:
+        items = archive.infolist()
+        contents = {info.filename: archive.read(info.filename) for info in items}
+
+    findings: list[dict[str, Any]] = []
+    changed = False
+    for part in sorted(name for name in contents if PART_RE.fullmatch(name)):
+        root = etree.fromstring(contents[part])
+        short = Path(part).stem.upper()
+        paragraphs = root.xpath(".//w:p", namespaces=NS)
+        part_changed = False
+        for paragraph_index, paragraph in enumerate(paragraphs, 1):
+            context = re.sub(r"\s+", " ", _paragraph_text(paragraph)).strip()
+            matches = list(UNRESOLVED_MARKER.finditer(context))
+            if not matches:
+                continue
+            coordinates = _table_coordinates(root, paragraph)
+            for occurrence, match in enumerate(matches, 1):
+                if coordinates is None:
+                    location_id = (
+                        f"{short}-P{paragraph_index:04d}-X{occurrence:02d}"
+                    )
+                    location_type = "段落"
+                    table_index = row_index = column_index = ""
+                else:
+                    table_index, row_index, column_index = coordinates
+                    location_id = (
+                        f"{short}-T{table_index:02d}-R{row_index:02d}"
+                        f"-C{column_index:02d}-X{occurrence:02d}"
+                    )
+                    location_type = "表格单元格"
+                findings.append(
+                    {
+                        "location_id": location_id,
+                        "location_type": location_type,
+                        "part": part,
+                        "paragraph_index": paragraph_index,
+                        "occurrence_index": occurrence,
+                        "context": context,
+                        "current_text": match.group(0),
+                        "table_index": table_index,
+                        "row_index": row_index,
+                        "column_index": column_index,
+                    }
+                )
+            part_changed = (
+                _split_paragraph_and_highlight_markers(paragraph) or part_changed
+            )
+        if part_changed:
+            contents[part] = etree.tostring(
+                root,
+                xml_declaration=True,
+                encoding="UTF-8",
+                standalone=True,
+            )
+            changed = True
+
+    if changed:
+        with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as output:
+            for info in items:
+                output.writestr(info, contents[info.filename])
+    return findings
+
+
 def replace_image_markers(path: Path) -> None:
     """Replace QCC image markers with the actual trademark image."""
     from docx import Document
@@ -423,7 +572,14 @@ def fill_template(
                             else:
                                 _set_paragraph_text(paragraph, _strip_yellow_annotation(paragraph), True)
                         elif mode == "strip_yellow_only":
-                            _set_paragraph_text(paragraph, _strip_yellow_annotation(paragraph), True)
+                            if UNRESOLVED_MARKER.fullmatch(value):
+                                _replace_yellow_annotation(paragraph, value)
+                            else:
+                                _set_paragraph_text(
+                                    paragraph,
+                                    _strip_yellow_annotation(paragraph),
+                                    True,
+                                )
                         elif mode == "replace_yellow_annotation":
                             _replace_yellow_annotation(paragraph, value)
                         elif mode == "replace_method_heading":
