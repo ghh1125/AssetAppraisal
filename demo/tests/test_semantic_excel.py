@@ -226,3 +226,69 @@ def test_income_workbook_can_supply_history_when_asset_file_has_none(tmp_path: P
 
     assert fields["historical_balance_sheet_table"]["rows"][1][-1] == "30,000.00"
     assert fields["historical_income_statement_table"]["rows"][-1][-1] == "4,000.00"
+
+
+def test_history_uses_period_columns_and_derives_missing_equity(tmp_path: Path):
+    path = _save_workbook(
+        tmp_path / "multi-header.xlsx",
+        {
+            "资产负债表": [
+                ["金额单位：人民币元"],
+                ["项目", "2023年度", "2024年度", "2024年度", "2025年度"],
+                [None, "实际数", "审定数", "增长率%", "预测数"],
+                ["资产总计", 100, 200, 1.0, 300],
+                ["负债合计", 40, 70, 0.75, 100],
+            ]
+        },
+    )
+
+    facts = extract_workbook_facts(path, "audited_financials")
+    rows = facts["fields"]["historical_balance_sheet_table"]["rows"]
+
+    assert rows[0] == ["项目\\报表日", "历史期1", "2023年度", "2024年度"]
+    assert rows[1] == ["总资产", "XXX", "100.00", "200.00"]
+    assert rows[3] == ["所有者权益", "XXX", "60.00", "130.00"]
+    assert facts["evidence"]["historical_balance_sheet_table"]["kind"] == (
+        "semantic_excel_derived"
+    )
+
+
+def test_numeric_amount_never_becomes_a_historical_period_header(tmp_path: Path):
+    path = _save_workbook(
+        tmp_path / "numeric-header-trap.xlsx",
+        {
+            "利润表": [
+                ["金额单位：人民币万元"],
+                ["项目", "2022年度", "2023年度", "2024年度"],
+                ["营业收入", 59_734.507071, 56_129.203566, 58_991.419895],
+                ["净利润", 100, 200, 300],
+            ]
+        },
+    )
+
+    rows = extract_workbook_facts(path, "audited_financials")["fields"][
+        "historical_income_statement_table"
+    ]["rows"]
+
+    assert rows[0] == ["项目\\报表年度", "2022年度", "2023年度", "2024年度"]
+
+
+def test_history_keeps_valuation_period_after_calendar_years(tmp_path: Path):
+    path = _save_workbook(
+        tmp_path / "valuation-period.xlsx",
+        {
+            "利润表": [
+                ["金额单位：人民币元"],
+                ["项目", "2023年", "2024年", "评估基准期"],
+                ["营业收入", 100, 200, 300],
+                ["净利润", 10, 20, 30],
+            ]
+        },
+    )
+
+    rows = extract_workbook_facts(path, "audited_financials")["fields"][
+        "historical_income_statement_table"
+    ]["rows"]
+
+    assert rows[0] == ["项目\\报表年度", "2023年", "2024年", "评估基准期"]
+    assert rows[1] == ["一、营业收入", "100.00", "200.00", "300.00"]

@@ -7,6 +7,12 @@ from typing import Any
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 
+from demo.domain.financial_table_semantics import (
+    CanonicalPeriod,
+    canonical_period,
+    choose_historical_columns,
+)
+
 
 def _text(value: Any) -> str:
     return re.sub(r"[\s：:()（）一二三四五六七八九十、．.]+", "", str(value or ""))
@@ -335,42 +341,54 @@ def _asset_tables(workbook) -> tuple[dict[str, Any], dict[str, dict[str, str]]]:
     return fields, evidence
 
 
-def _values_right_of(sheet, label_cell) -> tuple[list[float], list[int]]:
-    values: list[float] = []
-    columns: list[int] = []
+def _historical_header_parts(sheet, label_row: int) -> dict[int, list[Any]]:
+    top_rows = range(1, min(label_row, 21))
+    nearby_rows = range(max(1, label_row - 8), label_row)
+    row_numbers = sorted(set(top_rows) | set(nearby_rows))
+    headers: dict[int, list[Any]] = {}
+    for column in range(1, sheet.max_column + 1):
+        parts: list[Any] = []
+        for row in row_numbers:
+            value = sheet.cell(row, column).value
+            if value in (None, "") or isinstance(value, (int, float, bool)):
+                continue
+            parts.append(value)
+        headers[column] = parts
+    return headers
+
+
+def _period_columns_for_label(sheet, label_cell) -> list[tuple[int, CanonicalPeriod]]:
+    headers = _historical_header_parts(sheet, label_cell.row)
+    candidates: list[int] = []
+    started = False
     for column in range(label_cell.column + 1, sheet.max_column + 1):
-        raw = sheet.cell(label_cell.row, column).value
-        if isinstance(raw, str) and raw.strip() and values:
-            break
-        number = _number(raw)
-        if number is not None:
-            values.append(number)
-            columns.append(column)
-    kept = [
-        (value, column)
-        for value, column in zip(values, columns)
-        if not any(
-            "序号" in _text(sheet.cell(row, column).value)
-            for row in range(1, min(sheet.max_row, 12) + 1)
+        selected = choose_historical_columns(
+            {column: headers.get(column, [])},
+            candidate_columns=[column],
+            limit=1,
         )
-    ]
-    values = [value for value, _ in kept]
-    columns = [column for _, column in kept]
-    return values[-3:], columns[-3:]
-
-
-def _period_headers(sheet, columns: list[int]) -> list[str]:
-    headers: list[str] = []
-    for column in columns:
-        header = ""
-        for row in range(1, min(sheet.max_row, 12) + 1):
-            value = str(sheet.cell(row, column).value or "").strip()
-            if re.search(r"20\d{2}", value) or value in {"期初数", "期末数"}:
-                header = value
-        headers.append(header)
-    defaults = ["历史期1", "历史期2", "评估基准期"]
-    headers = [value or defaults[index] for index, value in enumerate(headers)]
-    return [*defaults[: 3 - len(headers)], *headers][-3:]
+        if selected:
+            candidates.append(column)
+            started = True
+        elif started:
+            break
+    chosen = choose_historical_columns(
+        headers,
+        candidate_columns=candidates,
+        limit=3,
+    )
+    result: list[tuple[int, CanonicalPeriod]] = []
+    for column in chosen:
+        periods = [
+            period
+            for value in headers.get(column, [])
+            if (period := canonical_period(value)) is not None
+        ]
+        if not periods:
+            continue
+        period = next((item for item in periods if item[0] is not None), periods[-1])
+        result.append((column, period))
+    return result
 
 
 def _balance_label(value: Any) -> str | None:
@@ -417,38 +435,104 @@ def _income_label(value: Any) -> str | None:
     return None
 
 
-def _historical_table(workbook, *, kind: str) -> tuple[dict[str, Any] | None, str]:
+def _historical_table(
+    workbook,
+    *,
+    kind: str,
+) -> tuple[dict[str, Any] | None, str, bool]:
     matcher = _balance_label if kind == "balance" else _income_label
     preferred = ("资产负债表", "历资表") if kind == "balance" else ("利润表", "历利表")
-    best: tuple[int, Any, dict[str, tuple[list[float], list[int], str]]] | None = None
+    best: tuple[
+        int,
+        dict[str, dict[CanonicalPeriod, float]],
+        list[CanonicalPeriod],
+        list[str],
+        bool,
+    ] | None = None
     for sheet in workbook.worksheets:
         if not any(name in sheet.title for name in preferred):
             continue
-        found: dict[str, tuple[list[float], list[int], str]] = {}
+        scale_to_yuan = _unit_scale_to_wan(sheet) * 10_000
+        found: dict[str, dict[CanonicalPeriod, float]] = {}
+        value_locators: dict[str, dict[CanonicalPeriod, str]] = {}
+        period_order: list[CanonicalPeriod] = []
+        locators: list[str] = []
         for row in sheet.iter_rows():
             for cell in row:
                 canonical = matcher(cell.value)
-                if not canonical or canonical in found:
+                if not canonical:
                     continue
-                values, columns = _values_right_of(sheet, cell)
-                if values:
-                    found[canonical] = (
-                        values,
-                        columns,
-                        f"{sheet.title}!{cell.coordinate}",
+                values: dict[CanonicalPeriod, float] = {}
+                cells: dict[CanonicalPeriod, str] = {}
+                for column, period in _period_columns_for_label(sheet, cell):
+                    amount = _number(sheet.cell(cell.row, column).value)
+                    if amount is None:
+                        continue
+                    values[period] = amount * scale_to_yuan
+                    cells[period] = (
+                        f"{sheet.title}!{get_column_letter(column)}{cell.row}"
                     )
-        score = len(found) + (10 if sheet.title in preferred else 0)
-        if found and (best is None or score > best[0]):
-            best = (score, sheet, found)
-    if best is None:
-        return None, ""
-    _, sheet, found = best
-    first_columns = next(iter(found.values()))[1]
-    headers = _period_headers(sheet, first_columns)
-    scale_to_yuan = _unit_scale_to_wan(sheet) * 10_000
+                    if period not in period_order:
+                        period_order.append(period)
+                if values and (
+                    canonical not in found or len(values) > len(found[canonical])
+                ):
+                    found[canonical] = values
+                    value_locators[canonical] = cells
+                    locators.append(f"{sheet.title}!{cell.coordinate}")
 
-    def formatted_row(label: str, values: list[float] | None) -> list[str]:
-        available = [] if values is None else [f"{value * scale_to_yuan:,.2f}" for value in values]
+        derived = False
+        if kind == "balance" and "总资产" in found and "负债" in found:
+            equity = dict(found.get("所有者权益", {}))
+            equity_locators = dict(value_locators.get("所有者权益", {}))
+            for period in set(found["总资产"]) & set(found["负债"]):
+                if period in equity:
+                    continue
+                equity[period] = found["总资产"][period] - found["负债"][period]
+                asset_cell = value_locators["总资产"][period]
+                liability_cell = value_locators["负债"][period]
+                equity_locators[period] = f"{asset_cell}－{liability_cell}"
+                locators.extend([asset_cell, liability_cell])
+                derived = True
+            if equity:
+                found["所有者权益"] = equity
+                value_locators["所有者权益"] = equity_locators
+
+        score = sum(len(values) for values in found.values())
+        if sheet.title in preferred:
+            score += 10
+        if found and (best is None or score > best[0]):
+            for cells in value_locators.values():
+                locators.extend(cells.values())
+            best = (
+                score,
+                found,
+                period_order,
+                list(dict.fromkeys(locators)),
+                derived,
+            )
+    if best is None:
+        return None, "", False
+    _, found, period_order, locators, derived = best
+    dated = sorted(
+        (period for period in period_order if period[0] is not None),
+        key=lambda period: (period[0] or 0, period[1] or 0, period[2] or 0),
+    )
+    relative = [period for period in period_order if period[0] is None]
+    periods = ([*dated, *relative] if dated else relative)[-3:]
+    defaults = ["历史期1", "历史期2", "评估基准期"]
+    headers = [period[3] for period in periods]
+    headers = [*defaults[: 3 - len(headers)], *headers]
+
+    def formatted_row(label: str, values: dict[CanonicalPeriod, float] | None) -> list[str]:
+        available = (
+            []
+            if values is None
+            else [
+                "XXX" if period not in values else f"{values[period]:,.2f}"
+                for period in periods
+            ]
+        )
         return [label, *(["XXX"] * (3 - len(available))), *available]
 
     if kind == "balance":
@@ -476,11 +560,10 @@ def _historical_table(workbook, *, kind: str) -> tuple[dict[str, Any] | None, st
         caption = "被评估单位近年经营状况见下表（利润表）："
     rows = [[title, *headers]]
     rows.extend(
-        formatted_row(label, found.get(label, (None, [], ""))[0])
+        formatted_row(label, found.get(label))
         for label in order
     )
-    locator = "；".join(record[2] for record in found.values())
-    return {"caption": caption, "rows": rows}, locator
+    return {"caption": caption, "rows": rows}, "；".join(locators), derived
 
 
 def _workbook_valuation_method(workbook) -> str:
@@ -548,11 +631,18 @@ def extract_workbook_facts(path: Path, role: str) -> dict[str, Any]:
                 ("balance", "historical_balance_sheet_table"),
                 ("income", "historical_income_statement_table"),
             ):
-                history, locator = _historical_table(workbook, kind=history_kind)
+                history, locator, derived = _historical_table(
+                    workbook,
+                    kind=history_kind,
+                )
                 if history:
                     fields[field_key] = history
                     evidence[field_key] = {
-                        "kind": "semantic_excel",
+                        "kind": (
+                            "semantic_excel_derived"
+                            if derived
+                            else "semantic_excel"
+                        ),
                         "file": path.name,
                         "locator": locator,
                     }
@@ -604,11 +694,18 @@ def extract_workbook_facts(path: Path, role: str) -> dict[str, Any]:
                 ("balance", "historical_balance_sheet_table"),
                 ("income", "historical_income_statement_table"),
             ):
-                history, locator = _historical_table(workbook, kind=history_kind)
+                history, locator, derived = _historical_table(
+                    workbook,
+                    kind=history_kind,
+                )
                 if history:
                     fields[field_key] = history
                     evidence[field_key] = {
-                        "kind": "semantic_excel",
+                        "kind": (
+                            "semantic_excel_derived"
+                            if derived
+                            else "semantic_excel"
+                        ),
                         "file": path.name,
                         "locator": locator,
                     }

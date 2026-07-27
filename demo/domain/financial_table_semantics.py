@@ -29,6 +29,10 @@ _RELATIVE_PERIODS = {
     "上期数",
     "本年累计",
     "上年同期",
+    "评估基准期",
+    "评估基准日",
+    "基准期",
+    "基准日",
 }
 
 
@@ -44,7 +48,9 @@ def canonical_period(value: object) -> CanonicalPeriod | None:
     text = re.sub(r"\s+", "", str(value).strip())
     if not text or any(token in text for token in _NON_HISTORICAL_TOKENS):
         return None
-    if text in _RELATIVE_PERIODS:
+    if text in _RELATIVE_PERIODS or any(
+        token in text for token in ("评估基准期", "评估基准日", "基准期", "基准日")
+    ):
         return None, None, None, text
 
     match = re.search(
@@ -99,5 +105,7 @@ def choose_historical_columns(
 
     if dated:
         ordered = [column for _, column in sorted(dated)]
+        if relative:
+            ordered = sorted(set(ordered) | set(relative))
         return ordered[-limit:]
     return sorted(relative)[-limit:]
