@@ -6,7 +6,7 @@ import re
 
 from .calculations import flexible_date_parts
 from .field_validation import normalize_report_serial
-from .registry import human_fill
+from .generation_issues import missing_marker
 
 
 PLACEHOLDER = re.compile(r"X{2,}", re.I)
@@ -70,7 +70,7 @@ def build_replacements(locations: list[dict[str, Any]], fields: dict[str, Any]) 
     for item in locations:
         value = fields.get(item["field_key"])
         if value in (None, "", []):
-            value = human_fill(item["field_name"])
+            value = missing_marker(item)
         if isinstance(value, dict) and "caption" in value:
             value = value["caption"]
         value = _display_value(item, value)

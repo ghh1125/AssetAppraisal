@@ -8,7 +8,10 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 
-def blank_configured_table(spec: dict[str, Any]) -> list[list[str]]:
+def blank_configured_table(
+    spec: dict[str, Any],
+    placeholder: str = "",
+) -> list[list[str]]:
     """Build a blank matrix from a configured financial table shape."""
     matrix: list[list[str]] = []
     header = [str(value) for value in spec.get("header", [])]
@@ -16,7 +19,9 @@ def blank_configured_table(spec: dict[str, Any]) -> list[list[str]]:
         matrix.append(header)
     for row in spec.get("rows", []):
         cells = row.get("cells", [])
-        matrix.append([str(row.get("label", "")), *([""] * len(cells))])
+        matrix.append(
+            [str(row.get("label", "")), *([placeholder] * len(cells))]
+        )
     return matrix
 
 

@@ -89,6 +89,16 @@ def test_blank_configured_table_preserves_structure_without_template_values():
     ]
 
 
+def test_blank_configured_table_uses_highlightable_placeholders():
+    assert blank_configured_table(
+        {
+            "header": ["项目", "2025年"],
+            "rows": [{"label": "资产总计", "cells": ["B2"]}],
+        },
+        placeholder="XXX",
+    ) == [["项目", "2025年"], ["资产总计", "XXX"]]
+
+
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
