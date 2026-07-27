@@ -49,7 +49,7 @@ def test_review_adapter_returns_structured_findings_and_uses_task_model():
         api_key="test-key",
         prompt="审核规则",
         task="data_validation",
-        model="qwen3.7-flash",
+        model="qwen3.7-max-2026-05-17",
     )
 
     result, issues = adapter.review({"report": "示例"})
@@ -58,7 +58,7 @@ def test_review_adapter_returns_structured_findings_and_uses_task_model():
     assert result["status"] == "completed"
     assert result["findings"][0]["severity"] == "high"
     request = client.request["kwargs"]
-    assert request["json"]["model"] == "qwen3.7-flash"
+    assert request["json"]["model"] == "qwen3.7-max-2026-05-17"
     assert request["json"]["response_format"]["type"] == "json_schema"
 
 

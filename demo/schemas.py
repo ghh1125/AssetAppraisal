@@ -255,7 +255,7 @@ class ReviewOutput(DemoModel):
     status: str = Field(description="审核状态", examples=["completed_with_issues"])
     summary: str = Field(description="审核摘要", examples=["发现一项问题"])
     findings: list[dict[str, Any]] = Field(description="审核发现的问题列表", examples=[[{"severity": "medium"}]])
-    model: str = Field(description="实际使用的模型", examples=["qwen3.7-flash"])
+    model: str = Field(description="实际使用的模型", examples=["qwen3.7-max-2026-05-17"])
     prompt_version: str = Field(description="审核 Prompt 版本", examples=["review_data.v1"])
 
 

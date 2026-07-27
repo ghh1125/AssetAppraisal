@@ -1,6 +1,12 @@
 from demo.domain.llm_config import resolve_llm_models
 
 
+def test_llm_models_use_current_project_default_when_no_override_exists():
+    models = resolve_llm_models({}, {})
+
+    assert set(models.values()) == {"qwen3.7-max-2026-05-17"}
+
+
 def test_llm_models_default_to_qwen_and_allow_task_override():
     models = resolve_llm_models(
         {"llm": {"default_model": "qwen3.7-flash", "tasks": {"semantic_review": "qwen-max"}}},

@@ -163,7 +163,7 @@ class FixtureTemplatePageReader:
 class FixtureReviewAdapter:
     def __init__(self, task):
         self.task = task
-        self.model = "qwen3.7-flash"
+        self.model = "qwen3.7-max-2026-05-17"
         self.prompt_version = f"{task}.v1"
 
     def review(self, evidence):

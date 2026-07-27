@@ -83,7 +83,7 @@ def test_glm_accepts_only_seven_fields_and_known_evidence_ids():
     assert any("book_net_assets" in issue for issue in issues)
     assert any("pdf:p99:b9" in issue for issue in issues)
     request = client.request["kwargs"]
-    assert request["json"]["model"] == "qwen3.7-flash"
+    assert request["json"]["model"] == "qwen3.7-max-2026-05-17"
     assert request["json"]["enable_thinking"] is False
     assert request["json"]["response_format"]["type"] == "json_object"
     assert request["headers"]["Authorization"] == "Bearer test-key"

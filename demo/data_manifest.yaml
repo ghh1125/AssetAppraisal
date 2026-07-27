@@ -38,7 +38,7 @@
     {
       "name": "bailian_glm",
       "kind": "llm",
-      "model": "qwen3.7-flash",
+      "model": "qwen3.7-max-2026-05-17",
       "base_url_env": "APPRAISAL_LLM_BASE_URL",
       "credential_env": ["DASHSCOPE_API_KEY"],
       "prompt_version": "yellow_narratives.v2",

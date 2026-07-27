@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from demo.domain.llm_config import DEFAULT_LLM_MODEL
+
 
 REVIEW_SCHEMA = json.loads(
     (Path(__file__).resolve().parents[1] / "prompts/review_output.v1.json").read_text(
@@ -23,7 +25,7 @@ class BailianReviewAdapter:
         *,
         task: str,
         base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        model: str = "qwen3.7-flash",
+        model: str = DEFAULT_LLM_MODEL,
         prompt_version: str = "review.v1",
     ):
         self.client = client

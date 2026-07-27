@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from demo.domain.llm_config import DEFAULT_LLM_MODEL
+
 
 ALLOWED_FIELDS = frozenset(
     {
@@ -53,7 +55,7 @@ class BailianYellowNarrativeAdapter:
         prompt: str,
         *,
         base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        model: str = "qwen3.7-flash",
+        model: str = DEFAULT_LLM_MODEL,
         prompt_version: str = "yellow_narratives.v2",
     ):
         self.client = client
@@ -81,7 +83,7 @@ class BailianYellowNarrativeAdapter:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": json.dumps(evidence, ensure_ascii=False)},
                 ],
-                # qwen3.7-flash currently accepts JSON Schema syntax but may
+                # Compatible-mode models may accept JSON Schema syntax but
                 # ignore nested ``required`` constraints.  Request JSON and
                 # enforce the seven-field/evidence contract locally.
                 "response_format": {"type": "json_object"},

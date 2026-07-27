@@ -46,11 +46,11 @@ QICHACHA_SECRET_KEY=你的SecretKey
 
 ### 百炼模型
 
-在[阿里云百炼控制台](https://bailian.console.aliyun.com/)开通兼容 OpenAI 接口并创建 API Key。默认配置为 `qwen3.7-flash`，模型和网关都可以自行修改：
+在[阿里云百炼控制台](https://bailian.console.aliyun.com/)开通兼容 OpenAI 接口并创建 API Key。默认配置为 `qwen3.7-max-2026-05-17`，模型和网关都可以自行修改：
 
 ```dotenv
 DASHSCOPE_API_KEY=你的百炼APIKey
-APPRAISAL_LLM_MODEL=qwen3.7-flash
+APPRAISAL_LLM_MODEL=qwen3.7-max-2026-05-17
 ```
 
 项目配置还支持为 `narrative`、`format_review`、`data_validation`、`semantic_review` 分别指定模型；未指定时统一使用 `default_model`，环境变量优先级更高。
