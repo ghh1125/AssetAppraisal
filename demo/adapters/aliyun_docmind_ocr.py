@@ -149,11 +149,14 @@ class AliyunDocMindOcrAdapter:
         self.clock = clock
         self.redact_values = tuple(value for value in redact_values if value)
 
-    def _safe_error(self, error: Exception) -> str:
-        message = str(error)
-        for value in self.redact_values:
-            message = message.replace(value, "***")
+    def _safe_text(self, value: object) -> str:
+        message = str(value)
+        for redact_value in self.redact_values:
+            message = message.replace(redact_value, "***")
         return message
+
+    def _safe_error(self, error: Exception) -> str:
+        return self._safe_text(error)
 
     def extract(self, pdf_path: Path) -> tuple[list[dict[str, Any]], list[str]]:
         try:
@@ -175,12 +178,12 @@ class AliyunDocMindOcrAdapter:
             if status == "success":
                 break
             if status in {"fail", "failed"}:
-                code = str(
+                code = self._safe_text(
                     status_payload.get("Code")
                     or status_payload.get("code")
                     or "unknown"
                 )
-                message = str(
+                message = self._safe_text(
                     status_payload.get("Message")
                     or status_payload.get("message")
                     or "任务处理失败"

@@ -178,6 +178,29 @@ def test_adapter_redacts_credentials_from_sdk_errors(tmp_path):
     assert "***" in issues[0]
 
 
+def test_adapter_redacts_credentials_from_failed_task_status(tmp_path):
+    client = FakeClient(
+        statuses=[
+            {
+                "Status": "Fail",
+                "Code": "InvalidRequest",
+                "Message": "request used secret-token",
+            }
+        ]
+    )
+    adapter = AliyunDocMindOcrAdapter(
+        client,
+        sleep=lambda _: None,
+        redact_values=("secret-token",),
+    )
+
+    pages, issues = adapter.extract(tmp_path / "audit.pdf")
+
+    assert pages == []
+    assert "secret-token" not in issues[0]
+    assert "***" in issues[0]
+
+
 def test_adapter_reports_successful_empty_result(tmp_path):
     pages, issues = AliyunDocMindOcrAdapter(FakeClient()).extract(
         tmp_path / "audit.pdf"
