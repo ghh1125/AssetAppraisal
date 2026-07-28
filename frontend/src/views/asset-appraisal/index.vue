@@ -5,6 +5,7 @@ import { useI18n } from 'vue-i18n'
 import { artifactUrl } from '../../api/request'
 import { checkAssetAppraisalOcrCache, createAssetAppraisalRun, getAssetAppraisalRun } from '../../api/asset-appraisal'
 import { canSubmitPartial } from '../../domain/submission'
+import { createUploadState, uploadFields } from '../../domain/upload-fields'
 
 const { t } = useI18n()
 
@@ -21,7 +22,7 @@ const form = reactive({
   target_company_short_name: '',
   narrative_modules: ['industry_overview', 'business_and_segments', 'main_products', 'customers_suppliers', 'profit_model_swot', 'comparable_list'],
 })
-const files = reactive({ pdf: null, referenceReport: null, auditedFinancials: null, incomeWorkbook: null, reportingWorkbook: null })
+const files = reactive(createUploadState())
 const useGlm = ref(true)
 const useQichacha = ref(true)
 const reuseOcr = ref(true)
@@ -80,10 +81,8 @@ async function submit() {
   try {
     const result = await createAssetAppraisalRun().mutationFn({
       pdf: files.pdf,
-      referenceReport: files.referenceReport,
-      auditedFinancials: files.auditedFinancials,
-      incomeWorkbook: files.incomeWorkbook,
       reportingWorkbook: files.reportingWorkbook,
+      incomeWorkbook: files.incomeWorkbook,
       inputs: { ...form },
       useGlm: useGlm.value,
       useQichacha: useQichacha.value,
@@ -116,30 +115,17 @@ onBeforeUnmount(clearPoll)
       <a-card class="panel" :title="t('asset.uploadTitle')" :bordered="false">
         <a-alert :message="t('asset.uploadInfo')" type="info" show-icon />
         <div class="upload-grid">
-          <a-upload-dragger :max-count="1" accept=".pdf" :before-upload="() => false" @change="setFile('pdf', $event)">
-            <p class="upload-icon">PDF</p>
-            <p class="upload-title">{{ t('asset.pdfTitle') }}</p>
-            <p class="upload-hint">{{ t('asset.uploadHint') }}</p>
-          </a-upload-dragger>
-          <a-upload-dragger :max-count="1" accept=".docx" :before-upload="() => false" @change="setFile('referenceReport', $event)">
-            <p class="upload-icon docx">DOCX</p>
-            <p class="upload-title">{{ t('asset.referenceReportTitle') }}</p>
-            <p class="upload-hint">{{ t('asset.referenceReportHint') }}</p>
-          </a-upload-dragger>
-          <a-upload-dragger :max-count="1" accept=".xlsx,.xlsm" :before-upload="() => false" @change="setFile('auditedFinancials', $event)">
-            <p class="upload-icon xlsx">XLSX</p>
-            <p class="upload-title">{{ t('asset.auditedFinancialsTitle') }}</p>
-            <p class="upload-hint">{{ t('asset.auditedFinancialsHint') }}</p>
-          </a-upload-dragger>
-          <a-upload-dragger :max-count="1" accept=".xlsx,.xlsm" :before-upload="() => false" @change="setFile('incomeWorkbook', $event)">
-            <p class="upload-icon xlsx">XLSX</p>
-            <p class="upload-title">{{ t('asset.incomeWorkbookTitle') }}</p>
-            <p class="upload-hint">{{ t('asset.incomeWorkbookHint') }}</p>
-          </a-upload-dragger>
-          <a-upload-dragger :max-count="1" accept=".xlsx,.xlsm" :before-upload="() => false" @change="setFile('reportingWorkbook', $event)">
-            <p class="upload-icon xlsx">XLSX</p>
-            <p class="upload-title">{{ t('asset.reportingWorkbookTitle') }}</p>
-            <p class="upload-hint">{{ t('asset.reportingWorkbookHint') }}</p>
+          <a-upload-dragger
+            v-for="field in uploadFields"
+            :key="field.key"
+            :max-count="1"
+            :accept="field.accept"
+            :before-upload="() => false"
+            @change="setFile(field.key, $event)"
+          >
+            <p :class="['upload-icon', field.icon.toLowerCase()]">{{ field.icon }}</p>
+            <p class="upload-title">{{ t(`asset.${field.titleKey}`) }}</p>
+            <p class="upload-hint">{{ t(`asset.${field.hintKey}`) }}</p>
           </a-upload-dragger>
         </div>
         <a-alert class="template-source" :message="t('asset.templateSource')" type="success" show-icon />
@@ -205,11 +191,10 @@ h1 { margin:8px 0 8px; font-size:34px; color:var(--c2m-text-primary); }
 .topbar p { margin:0; color:var(--c2m-text-secondary); }
 .workspace-grid { display:grid; grid-template-columns: .92fr 1.4fr; gap:20px; }
 .panel { border-radius:18px; box-shadow:0 8px 30px rgba(31,53,81,.07); }
-.upload-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-top:18px; }
+.upload-grid { display:grid; grid-template-columns:1fr; gap:14px; margin-top:18px; }
 .ocr-cache-status { margin-top:14px; }
 .template-source { margin-top:14px; }
 .upload-icon { margin:6px 0 12px; color:var(--c2m-color-primary); font-weight:800; letter-spacing:.1em; }
-.upload-icon.docx { color:#7b61ff; }
 .upload-title { font-weight:650; color:var(--c2m-text-primary); }
 .upload-hint { color:var(--c2m-text-secondary); font-size:13px; }
 .form-row { display:grid; grid-template-columns:1fr 1fr; gap:14px; }

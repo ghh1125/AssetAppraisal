@@ -1,4 +1,4 @@
-import { getJson, postForm } from './request'
+import { getJson, postForm } from './request.js'
 
 export function checkAssetAppraisalOcrCache(file) {
   const form = new FormData()
@@ -6,21 +6,31 @@ export function checkAssetAppraisalOcrCache(file) {
   return postForm('/asset-appraisal/ocr-cache/check', form)
 }
 
+export function buildAssetAppraisalForm({
+  pdf,
+  reportingWorkbook,
+  incomeWorkbook,
+  inputs,
+  useGlm,
+  useQichacha,
+  reuseOcr,
+}) {
+  const form = new FormData()
+  if (pdf) form.append('pdf', pdf)
+  if (reportingWorkbook) form.append('reporting_workbook', reportingWorkbook)
+  if (incomeWorkbook) form.append('income_workbook', incomeWorkbook)
+  form.append('inputs', JSON.stringify(inputs))
+  form.append('use_glm', String(useGlm))
+  form.append('use_qichacha', String(useQichacha))
+  form.append('reuse_ocr', String(reuseOcr ?? true))
+  return form
+}
+
 export function createAssetAppraisalRun() {
   return {
-    mutationFn: async ({ pdf, referenceReport, auditedFinancials, incomeWorkbook, reportingWorkbook, inputs, useGlm, useQichacha, reuseOcr }) => {
-      const form = new FormData()
-      if (pdf) form.append('pdf', pdf)
-      if (referenceReport) form.append('reference_report', referenceReport)
-      if (auditedFinancials) form.append('audited_financials', auditedFinancials)
-      if (incomeWorkbook) form.append('income_workbook', incomeWorkbook)
-      if (reportingWorkbook) form.append('reporting_workbook', reportingWorkbook)
-      form.append('inputs', JSON.stringify(inputs))
-      form.append('use_glm', String(useGlm))
-      form.append('use_qichacha', String(useQichacha))
-      form.append('reuse_ocr', String(reuseOcr ?? true))
-      return postForm('/asset-appraisal/runs', form)
-    },
+    mutationFn: async (payload) => (
+      postForm('/asset-appraisal/runs', buildAssetAppraisalForm(payload))
+    ),
   }
 }
 

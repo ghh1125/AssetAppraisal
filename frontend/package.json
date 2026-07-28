@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "test": "node --test src/domain/*.test.js src/api/*.test.js",
     "test:submission": "node --test src/domain/submission.test.js",
     "preview": "vite preview"
   },

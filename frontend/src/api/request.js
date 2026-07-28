@@ -1,5 +1,5 @@
-const API_BASE = import.meta.env.VITE_API_BASE_URL || ''
-const API_PATH = import.meta.env.VITE_API_PATH || '/api/v1'
+const API_BASE = import.meta.env?.VITE_API_BASE_URL || ''
+const API_PATH = import.meta.env?.VITE_API_PATH || '/api/v1'
 
 function apiUrl(path) {
   return `${API_BASE}${API_PATH}${path}`
