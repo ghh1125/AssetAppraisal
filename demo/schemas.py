@@ -162,6 +162,8 @@ class OcrBlock(DemoModel):
 class OcrCell(DemoModel):
     row: int = Field(description="表格单元格行号，从一开始", examples=[1])
     column: int = Field(description="表格单元格列号，从一开始", examples=[2])
+    row_span: int = Field(default=1, description="单元格跨越的行数", examples=[1])
+    column_span: int = Field(default=1, description="单元格跨越的列数", examples=[2])
     text: str = Field(description="单元格 OCR 识别文本", examples=["1,234.50"])
     confidence: float | None = Field(description="单元格 OCR 置信度，无法取得时为空", examples=[0.97])
     bbox: list[float] = Field(description="单元格坐标框，顺序为左上右下", examples=[[5, 6, 7, 8]])

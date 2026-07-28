@@ -34,7 +34,7 @@
         "fixed_assets": {"kind": "semantic", "page_markers": ["固定资产"], "row_aliases": ["账面价值"], "column_aliases": ["合计"], "format": "amount"},
         "machinery": {"kind": "semantic", "page_markers": ["固定资产"], "row_aliases": ["账面价值"], "column_aliases": ["机器设备", "设备"], "format": "amount"},
         "vehicles": {"kind": "semantic", "page_markers": ["固定资产"], "row_aliases": ["账面价值"], "column_aliases": ["运输设备", "车辆"], "format": "amount"},
-        "electronics": {"kind": "semantic", "page_markers": ["固定资产"], "row_aliases": ["账面价值"], "column_aliases": ["电子设备", "电力设备", "杂项设备"], "format": "amount"},
+        "electronics": {"kind": "semantic", "page_markers": ["固定资产"], "row_aliases": ["账面价值"], "column_aliases": ["电子设备"], "format": "amount"},
         "deferred_expenses": {"kind": "semantic", "table_markers": ["长期待摊费用"], "page_markers": ["长期待摊费用"], "row_aliases": ["长期待摊费用", "合计"], "column_aliases": ["2025年6月30日", "期末余额"], "prefer_first_numeric": true, "format": "amount"},
         "intangibles": {"kind": "semantic", "table_markers": ["专利费", "无形资产"], "page_markers": ["无形资产"], "row_aliases": ["合计"], "column_aliases": ["2025年6月30日", "期末余额"], "prefer_first_numeric": true, "format": "amount"}
       }
@@ -81,7 +81,7 @@
   "ocr_prefer_material_fields": [],
   "ocr_aux_fields": {
     "long_term_fixed_assets": {"kind": "semantic", "page_markers": ["固定资产"], "row_aliases": ["账面价值"], "column_aliases": ["合计"], "format": "amount"},
-    "long_term_electronics": {"kind": "semantic", "page_markers": ["固定资产"], "row_aliases": ["账面价值"], "column_aliases": ["电子设备", "电力设备", "杂项设备"], "format": "amount"},
+    "long_term_electronics": {"kind": "semantic", "page_markers": ["固定资产"], "row_aliases": ["账面价值"], "column_aliases": ["电子设备"], "format": "amount"},
     "long_term_intangibles": {"kind": "semantic", "table_markers": ["专利费", "无形资产"], "page_markers": ["无形资产"], "row_aliases": ["合计"], "column_aliases": ["2025年6月30日", "期末余额"], "prefer_first_numeric": true, "format": "amount"},
     "long_term_deferred_expenses": {"kind": "semantic", "table_markers": ["长期待摊费用"], "page_markers": ["长期待摊费用"], "row_aliases": ["长期待摊费用", "合计"], "column_aliases": ["2025年6月30日", "期末余额"], "prefer_first_numeric": true, "format": "amount"}
   },

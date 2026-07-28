@@ -25,6 +25,8 @@ def test_normalizes_text_and_table_cells_without_sdk_objects():
                         {
                             "row": 1,
                             "column": 2,
+                            "row_span": 2,
+                            "column_span": 3,
                             "text": "1,234.50",
                             "confidence": 0.97,
                             "bbox": [5, 6, 7, 8],
@@ -40,6 +42,8 @@ def test_normalizes_text_and_table_cells_without_sdk_objects():
     assert result["text_blocks"][0]["text"] == "资产 总计"
     assert result["text_blocks"][0]["evidence_id"] == "pdf:p3:b1"
     assert result["table_cells"][0]["text"] == "1,234.50"
+    assert result["table_cells"][0]["row_span"] == 2
+    assert result["table_cells"][0]["column_span"] == 3
     assert result["table_cells"][0]["evidence_id"] == "pdf:p3:t1:r1:c2"
     json.dumps(result, ensure_ascii=False)
 

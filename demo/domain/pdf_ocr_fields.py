@@ -45,6 +45,8 @@ def _find_semantic_table(
 ) -> list[dict[str, Any]]:
     table_markers = [normalize_label(value) for value in locator.get("table_markers", []) if value]
     page_markers = [normalize_label(value) for value in locator.get("page_markers", []) if value]
+    row_aliases = [normalize_label(value) for value in locator.get("row_aliases", []) if value]
+    column_aliases = [normalize_label(value) for value in locator.get("column_aliases", []) if value]
     context = _table_context(normalized)
     candidates = []
     for page, table_id, cells in _table_groups(normalized):
@@ -55,8 +57,25 @@ def _find_semantic_table(
                 continue
         table_text = normalize_label(" ".join(str(cell.get("text") or "") for cell in cells))
         page_text = normalize_label(context.get(page, ""))
-        score = sum(marker in table_text for marker in table_markers)
+        rows: dict[int, str] = {}
+        for cell in cells:
+            row_number = int(cell.get("row", 0))
+            rows[row_number] = rows.get(row_number, "") + str(cell.get("text") or "")
+        normalized_rows = [normalize_label(value) for value in rows.values()]
+        row_matches = not row_aliases or any(
+            alias in row_text for alias in row_aliases for row_text in normalized_rows
+        )
+        column_matches = not column_aliases or any(
+            alias in normalize_label(str(cell.get("text") or ""))
+            for alias in column_aliases
+            for cell in cells
+        )
+        if not row_matches or not column_matches:
+            continue
+        score = 4 * sum(marker in table_text for marker in table_markers)
         score += 2 * sum(marker in page_text for marker in page_markers)
+        score += 4 if row_aliases else 0
+        score += 3 if column_aliases else 0
         if score:
             candidates.append((score, page, table_id, cells))
     if not candidates:
@@ -103,20 +122,36 @@ def _semantic_value(normalized: dict[str, list[dict[str, Any]]], locator: dict[s
         return ""
     target = max(target_rows, key=lambda row: int(row[0].get("row", 0)))
     column_aliases = [normalize_label(value) for value in locator.get("column_aliases", []) if value]
-    target_column: int | None = None
+    target_columns: list[int] = []
     if column_aliases:
-        for row_number in sorted(rows)[:3]:
-            for cell in rows[row_number]:
-                if any(alias in normalize_label(str(cell.get("text") or "")) for alias in column_aliases):
-                    target_column = int(cell["column"])
-                    break
-            if target_column is not None:
-                break
+        header_cells = [
+            cell
+            for row_number in sorted(rows)[:3]
+            for cell in rows[row_number]
+        ]
+        for alias in column_aliases:
+            exact = [
+                int(cell["column"])
+                for cell in header_cells
+                if normalize_label(str(cell.get("text") or "")) == alias
+            ]
+            partial = [
+                int(cell["column"])
+                for cell in header_cells
+                if alias in normalize_label(str(cell.get("text") or ""))
+            ]
+            for column in [*exact, *partial]:
+                if column not in target_columns:
+                    target_columns.append(column)
     values = [cell for cell in target if parse_number(cell.get("text")) is not None]
-    if target_column is not None:
-        narrowed = [cell for cell in values if int(cell["column"]) == target_column]
-        if narrowed:
-            values = narrowed
+    if column_aliases:
+        for target_column in target_columns:
+            narrowed = [cell for cell in values if int(cell["column"]) == target_column]
+            if narrowed:
+                values = narrowed
+                break
+        else:
+            return ""
     if not values:
         return ""
     selected = values[0] if locator.get("prefer_first_numeric") else values[-1]

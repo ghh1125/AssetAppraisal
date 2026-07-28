@@ -26,6 +26,8 @@ def test_exports_four_auditable_sheets_without_mutating_input(tmp_path):
                 "table_id": "p2-t1",
                 "row": 3,
                 "column": 4,
+                "row_span": 2,
+                "column_span": 3,
                 "text": "1,234.50",
                 "confidence": 0.95,
                 "bbox": [5, 6, 7, 8],
@@ -54,6 +56,8 @@ def test_exports_four_auditable_sheets_without_mutating_input(tmp_path):
     assert reloaded["OCR_文本"][0]["证据编号"] == "pdf:p1:b1"
     assert reloaded["OCR_表格"][0]["页码"] == 2
     assert reloaded["OCR_表格"][0]["行"] == 3
+    assert reloaded["OCR_表格"][0]["跨行"] == 2
+    assert reloaded["OCR_表格"][0]["跨列"] == 3
     assert reloaded["标准财务数据"][0]["数值"] == 1234.5
 
     workbook = load_workbook(path)
@@ -71,7 +75,21 @@ def test_normalized_ocr_workbook_round_trip_restores_pipeline_contract(tmp_path)
         tmp_path / "OCR结构化结果.xlsx",
         {
             "text_blocks": [{"page_number": 1, "page_count": 1, "block_id": "p1-b1", "block_type": "text", "text": "审计报告", "confidence": 0.9, "bbox": [1, 2, 3, 4], "evidence_id": "pdf:p1:b1"}],
-            "table_cells": [],
+            "table_cells": [
+                {
+                    "page_number": 1,
+                    "page_count": 1,
+                    "table_id": "p1-t1",
+                    "row": 1,
+                    "column": 1,
+                    "row_span": 2,
+                    "column_span": 3,
+                    "text": "合并单元格",
+                    "confidence": 0.8,
+                    "bbox": [5, 6, 7, 8],
+                    "evidence_id": "pdf:p1:t1:r1:c1",
+                }
+            ],
             "financial_data": [],
             "issues": [],
         },
@@ -80,3 +98,5 @@ def test_normalized_ocr_workbook_round_trip_restores_pipeline_contract(tmp_path)
     assert normalized["text_blocks"][0]["text"] == "审计报告"
     assert normalized["text_blocks"][0]["bbox"] == [1, 2, 3, 4]
     assert normalized["text_blocks"][0]["evidence_id"] == "pdf:p1:b1"
+    assert normalized["table_cells"][0]["row_span"] == 2
+    assert normalized["table_cells"][0]["column_span"] == 3
