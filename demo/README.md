@@ -7,7 +7,7 @@
 ## 工作流节点
 
 1. `inventory`：识别 Word 中的稳定位置。
-2. `ocr_pdf`：有 PDF 时用 PP-StructureV3 识别页、文本块、表格和单元格；无 PDF 时标记为 `skipped`。
+2. `ocr_pdf`：有 PDF 时默认调用阿里云文档智能识别页、文本块、表格和单元格；无 PDF 时标记为 `skipped`。
 3. `export_ocr_workbook`：有 OCR 输入时生成独立的 `OCR结构化结果.xlsx`，否则跳过。
 4. `extract_sources`：读取 OCR Excel、其他结构化 Excel、节点参数和外部服务结果。
 5. `resolve_fields`：按字段语义、期间、单位和固定黄色来源路由选择字段值。
@@ -32,17 +32,25 @@ uv run python -m demo.run demo/projects/tongfu.yaml --offline
 
 在 c2m 或其他宿主中，可直接调用 `run_project(...)` / `run_pipeline(...)` 并通过 `ocr_adapter`、`company_api_adapter`、`llm_adapter` 和 `review_adapters` 参数注入已有服务。Demo 不在 `domain/` 内创建客户端或读取密钥；注入结果只接受映射表中已经登记的字段键。
 
-端到端 OCR 使用独立的 Python 3.11 环境（PaddleOCR 当前可选依赖限定 Python `<3.13`）。项目根目录的本地 `.env` 会在 Demo 入口自动加载；也可以由宿主进程自行注入同名环境变量，例如 `DASHSCOPE_API_KEY`、`QICHACHA_APP_KEY` 和 `QICHACHA_SECRET_KEY`：
+端到端 OCR 默认使用阿里云文档智能，安装 `services` 依赖即可，不在本地加载 PaddleOCR。项目根目录的本地 `.env` 会在 Demo 入口自动加载；生产环境也可由宿主进程注入同名环境变量。阿里云 RAM 用户需授予 `AliyunDocmindFullAccess`：
 
-命令中的 `--pdf` 可省略；省略后不会加载 PaddleOCR，工作流从其他可用材料和人工输入继续。
+```dotenv
+APPRAISAL_OCR_PROVIDER=aliyun
+ALIBABA_CLOUD_ACCESS_KEY_ID=你的RAM AccessKey ID
+ALIBABA_CLOUD_ACCESS_KEY_SECRET=你的RAM AccessKey Secret
+APPRAISAL_OCR_VLM=false
+APPRAISAL_OCR_TIMEOUT_SECONDS=900
+```
+
+命令中的 `--pdf` 可省略；省略后跳过 OCR，工作流从其他可用材料和人工输入继续。同一 PDF 命中 SHA-256 缓存时不会再次消耗云端页数。云端失败时不自动回退本地模型，相关字段保留黄色占位符并进入问题清单。
 
 ```bash
 uv python install 3.11
-uv sync --python 3.11 --extra dev --extra ocr --extra services
+uv sync --python 3.11 --extra dev --extra services
 uv run --python 3.11 python -m demo.run demo/projects/tongfu.yaml \
   --pdf '资产评估工作流/通富2025.6.30合并及母公司审计报告.pdf' \
   --template 'templates/评估报告版式-沟通标注版.docx' \
-  --output-dir runs/tongfu-ocr --ocr-engine paddle --use-glm --use-qichacha \
+  --output-dir runs/tongfu-ocr --ocr-provider aliyun --use-glm --use-qichacha \
   --commissioning-party-name '委托方全称' \
   --commissioning-party-short-name '委托方简称' \
   --report-serial '报告流水号' \
@@ -53,6 +61,8 @@ uv run --python 3.11 python -m demo.run demo/projects/tongfu.yaml \
   --final-valuation-method '收益法' \
   --target-company-short-name '通富昆山'
 ```
+
+仅在需要显式启用本地高内存模式时执行 `uv sync --extra ocr` 并设置 `APPRAISAL_OCR_PROVIDER=paddle` 或命令行参数 `--ocr-provider paddle`。`APPRAISAL_OCR_PROVIDER=none` 会完全跳过 PDF OCR。
 
 如需调用已购买的企查查接口 735（工商详情）、231（商标）、514（专利）和 233（著作权软著），设置 `QICHACHA_APP_KEY`、`QICHACHA_SECRET_KEY` 并增加 `--use-qichacha`。默认使用企查查官方签名方式；如平台给 514 或 233 分配了不同的路径，可用 `QICHACHA_ENDPOINT_514`、`QICHACHA_ENDPOINT_233` 覆盖，基地址可用 `QICHACHA_API_BASE_URL` 覆盖。两个节点输入可放入 JSON 文件并用 `--node-inputs-json` 传入。凭证只在 `run.py` 这一组合入口读取，不会进入 `domain/`、运行清单、审计文件或 Word。
 
@@ -93,7 +103,7 @@ uv run --python 3.11 python -m demo.run demo/projects/tongfu.yaml \
 Web 任务输出目录按“`YYYYMMDDHHMM-PDF文件名`”命名，例如 `runs/web/202607231144-通富2025.6.30合并及母公司审计报告/`；同一分钟重复提交会自动追加序号，不覆盖已有任务。
 
 ```bash
-uv sync --extra services --extra ocr --extra web --python 3.11
+uv sync --extra services --extra web --python 3.11
 uv run --python 3.11 uvicorn demo.api_server:app --host 127.0.0.1 --port 8000
 
 cd frontend
@@ -127,7 +137,7 @@ npm run dev
 - 新 PDF：端到端入口支持替换 PDF，但“任意 PDF 直接盲填”不是可靠承诺。OCR、Excel 导出和 Word 复制是通用步骤；字段含义、审计表行列、黄色字段来源和目标 Word 位置仍由项目 YAML/映射配置声明。新 PDF 与现有审计版式一致时可直接复用；版式或报告模板变化时先更新对应配置并做一次人工验收。
 - 新财务表：通用科目先由 `workbook_semantics.v3` 自动识别，并根据工作簿内的收益法/市场法语义归类估值结果；语义结果是主路径，`financial_tables` 和固定坐标只在语义结果缺失时回退或补空。疑似尚未完成评估的全零评估列不会作为有效结果。
 - 新财务指标：通用估值结果优先按标签和表头定位；项目特有指标在 `financial_fields` 中声明来源单元格和换算比例，并用 `final_value_field` 配置最终采用的评估结果字段。
-- PDF OCR：PP-StructureV3 先输出统一页/块/表格契约，再生成独立 OCR Excel；通用财务字段可按别名、期间和单位匹配，版式敏感的附注字段在项目配置中声明页码、表格、行列定位。
+- PDF OCR：阿里云文档智能默认输出统一页/块/表格契约，再生成独立 OCR Excel；本地 PP-StructureV3 仅作为显式可选提供方。通用财务字段可按别名、期间和单位匹配，版式敏感的附注字段在项目配置中声明页码、表格、行列定位。
 - 新材料叙述：参考 Word 会按主题自动提取带编号证据；项目特有的确定性内容仍可在 `material_fields` 中组合 Excel 单元格、Excel 范围或参考 Word 段落/表格，并用 `paragraph_replacements` 替换模板中没有占位符的静态旧项目文字。
 - 新模板：新增映射文件并运行模板回归测试。
 - 新服务商：在 `adapters/` 实现相同输入输出契约，通过 `run.py` 注入。

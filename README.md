@@ -70,7 +70,18 @@ APPRAISAL_LLM_MODEL=qwen3.7-max-2026-05-17
 
 ### OCR
 
-PDF OCR 使用 PaddleOCR/PP-StructureV3。若同一 PDF 的 SHA-256 已命中 OCR 缓存，流程直接复用 `OCR结构化结果.xlsx`；未上传 PDF 时整个 OCR 节点明确跳过。缓存和运行目录均被 Git 忽略。
+PDF OCR 默认使用阿里云文档智能“文档解析（大模型版）”，本机不会加载 PaddleOCR。先在阿里云文档智能控制台开通“文档理解 → 文档解析（大模型版）”，再为专用 RAM 用户授予 `AliyunDocmindFullAccess`，并配置：
+
+```dotenv
+APPRAISAL_OCR_PROVIDER=aliyun
+ALIBABA_CLOUD_ACCESS_KEY_ID=你的RAM AccessKey ID
+ALIBABA_CLOUD_ACCESS_KEY_SECRET=你的RAM AccessKey Secret
+APPRAISAL_OCR_VLM=false
+```
+
+基础链路适用于普通审计报告；复杂扫描件可将 `APPRAISAL_OCR_VLM` 改为 `true`，但费用和处理时间会增加。若同一 PDF 的 SHA-256 已命中 OCR 缓存，流程直接复用 `OCR结构化结果.xlsx`，不会再次调用云端 API；未上传 PDF 时整个 OCR 节点明确跳过。
+
+需要显式使用原本地模式时设置 `APPRAISAL_OCR_PROVIDER=paddle` 并安装 `--extra ocr`。云端凭证缺失、超时、额度不足或解析失败时不会自动回退本地 PaddleOCR，报告仍继续生成，缺失内容保留黄色占位符并进入问题清单。
 
 ## 本地运行示例
 
