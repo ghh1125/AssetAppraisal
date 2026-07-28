@@ -178,6 +178,57 @@ def issues_from_word_findings(
     return issues
 
 
+def issues_from_special_evidence(
+    locations: list[dict[str, Any]],
+    evidence: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Expose rejected source values even when Word removed their paragraph."""
+    issues: list[dict[str, Any]] = []
+    for location in locations:
+        field_key = str(location.get("field_key", ""))
+        source = evidence.get(field_key, {})
+        if source.get("kind") != "unfinished_appraisal":
+            continue
+        location_id = str(location.get("location_id", ""))
+        digest = hashlib.sha1(
+            f"{location_id}:{field_key}:unfinished".encode("utf-8")
+        ).hexdigest()[:10]
+        issues.append(
+            {
+                "issue_id": f"GEN-{digest}",
+                "priority": "高",
+                "category": "unfinished_appraisal",
+                "page_number": "",
+                "page_basis": "unavailable",
+                "location_id": location_id,
+                "location_type": str(
+                    location.get("record_type", "段落")
+                ),
+                "location_description": str(
+                    location.get("context", "")
+                    or location.get("field_name", field_key)
+                ),
+                "field_key": field_key,
+                "field_name": str(
+                    location.get("field_name", field_key)
+                ),
+                "current_text": missing_marker(location),
+                "problem": "疑似尚未完成评估，评估列为空或全零",
+                "expected_source": str(
+                    location.get("source_kind", "Excel")
+                ),
+                "source_file": str(source.get("file", "")),
+                "source_locator": str(source.get("locator", "")),
+                "suggestion": (
+                    "确认评估工作簿是否已完成；完成后重新上传，"
+                    "未完成则保持黄色 XXX"
+                ),
+                "status": "待人工处理",
+            }
+        )
+    return issues
+
+
 def organize_generation_issues(
     issues: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -192,10 +243,26 @@ def organize_generation_issues(
             or item.get("field_name", "")
             or item.get("location_id", "")
         )
-        item["review_location"] = (
-            f"第{page}页｜{description}"
+        location_type = str(item.get("location_type", "")).strip()
+        type_prefix = (
+            f"{location_type}｜"
+            if location_type and location_type != "段落"
+            else ""
+        )
+        page_prefix = (
+            f"第{page}页｜"
             if page not in (None, "")
-            else f"页码待确认｜{description}"
+            else "页码待确认｜"
+        )
+        prefix = f"{page_prefix}{type_prefix}"
+        description_limit = max(1, 80 - len(prefix))
+        if len(description) > description_limit:
+            description = (
+                description[: max(1, description_limit - 1)].rstrip()
+                + "…"
+            )
+        item["review_location"] = (
+            f"{prefix}{description}"
         )
         item["review_action"] = str(
             item.get("suggestion", "") or "人工核对并更新"

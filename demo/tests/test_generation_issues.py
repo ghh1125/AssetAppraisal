@@ -119,6 +119,28 @@ def test_generation_issues_are_sorted_for_page_by_page_review():
     assert organized[1]["review_action"] == "补利润表"
 
 
+def test_review_location_includes_type_and_compacts_long_context():
+    context = "特别长的段落说明" * 20
+
+    organized = organize_generation_issues(
+        [
+            {
+                "page_number": 8,
+                "priority": "高",
+                "location_id": "DOCUMENT-P0200-X01",
+                "location_type": "表格单元格",
+                "location_description": context,
+            }
+        ]
+    )
+
+    assert organized[0]["review_location"].startswith(
+        "第8页｜表格单元格｜特别长的段落说明"
+    )
+    assert organized[0]["review_location"].endswith("…")
+    assert len(organized[0]["review_location"]) <= 80
+
+
 def test_word_finding_keeps_mapped_field_source():
     issues = issues_from_word_findings(
         [

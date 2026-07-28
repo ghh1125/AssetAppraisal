@@ -45,6 +45,7 @@ from .domain.historical_table_merge import merge_historical_tables
 from .domain.source_precedence import prefer_semantic_result
 from .domain.generation_issues import (
     apply_page_locations,
+    issues_from_special_evidence,
     issues_from_word_findings,
     organize_generation_issues,
 )
@@ -521,6 +522,23 @@ def run_project(
             }:
                 semantic_history_roles[field_key] = source_name
 
+    unfinished_asset_source = evidence.get("asset_approach_value", {})
+    result_section_source = evidence.get(
+        "asset_approach_result_section",
+        {},
+    )
+    if (
+        unfinished_asset_source.get("kind") == "unfinished_appraisal"
+        and (
+            fields.get("asset_approach_result_section")
+            in (None, "", [], {})
+            or result_section_source.get("kind") == "missing"
+        )
+    ):
+        evidence["asset_approach_result_section"] = dict(
+            unfinished_asset_source
+        )
+
     book_value = fields.get("book_net_assets")
     appraised_value = fields.get("asset_approach_value")
     result_section_is_missing = (
@@ -609,7 +627,12 @@ def run_project(
     for key, record in records_by_key.items():
         if fields.get(key) in (None, "", []):
             fields[key] = ""
-            evidence[key] = {"kind": "missing", "file": "", "locator": ""}
+            if evidence.get(key, {}).get("kind") != "unfinished_appraisal":
+                evidence[key] = {
+                    "kind": "missing",
+                    "file": "",
+                    "locator": "",
+                }
             if key not in required_financial_fields:
                 issues.append(f"{key}：无可用值，已按规则留空")
     replacements = build_replacements(locations, fields)
@@ -647,13 +670,27 @@ def run_project(
     )
     replace_report_number_year(report, fields.get("report_number_year"))
     unresolved_findings = highlight_unresolved_placeholders(report)
-    generation_issues = apply_page_locations(
-        issues_from_word_findings(
-            unresolved_findings,
+    word_issues = issues_from_word_findings(
+        unresolved_findings,
+        [*locations, *static_locations],
+        fields,
+        evidence,
+    )
+    existing_issue_keys = {
+        (item.get("location_id"), item.get("category"))
+        for item in word_issues
+    }
+    word_issues.extend(
+        item
+        for item in issues_from_special_evidence(
             [*locations, *static_locations],
-            fields,
             evidence,
-        ),
+        )
+        if (item.get("location_id"), item.get("category"))
+        not in existing_issue_keys
+    )
+    generation_issues = apply_page_locations(
+        word_issues,
         {},
         {},
     )

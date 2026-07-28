@@ -339,6 +339,43 @@ def test_semantic_scope_table_replaces_readable_legacy_coordinates(tmp_path: Pat
     assert "汇总表!B3" in evidence["asset_scope_summary_table"]["locator"]
 
 
+def test_unfinished_appraisal_evidence_reaches_result_section(tmp_path: Path):
+    reporting = tmp_path / "尚未完成评估.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "汇总表"
+    sheet.append(["金额单位：人民币万元"])
+    sheet.append(["项目", "账面价值", "评估价值"])
+    sheet.append(["资产总计", 100, 0])
+    sheet.append(["负债合计", 40, 0])
+    sheet.append(["净资产", 60, 0])
+    workbook.save(reporting)
+
+    output = tmp_path / "run"
+    run_project(
+        Path("demo/projects/tongfu.yaml"),
+        output_dir=output,
+        offline=True,
+        manual_inputs_override={"target_company_name": "示例公司"},
+        source_overrides={
+            "audit_pdf": None,
+            "reference_report": None,
+            "audited_financials": None,
+            "reporting_workbook": reporting,
+            "income_workbook": None,
+        },
+    )
+
+    evidence = json.loads(
+        (output / "normalized_evidence.json").read_text(encoding="utf-8")
+    )
+    assert evidence["asset_approach_result_section"] == {
+        "kind": "unfinished_appraisal",
+        "file": reporting.name,
+        "locator": "汇总表!C5",
+    }
+
+
 def test_run_project_uses_selected_market_result_as_final_value(tmp_path: Path):
     market = tmp_path / "任意名称.xlsx"
     workbook = Workbook()

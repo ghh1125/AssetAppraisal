@@ -1,132 +1,163 @@
-# 通用语义优先与问题清单可读性 Implementation Plan
+# Excel Semantic Priority and Issue Audit Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 阻止未完成评估的全零列进入报告，保证语义 Excel 证据完整，并生成按 Word 页码可直接复核的问题清单。
+**Goal:** Make semantic Excel extraction the primary path, reject incomplete all-zero appraisal columns, preserve complete evidence, and produce a business-readable issue workbook.
 
-**Architecture:** 在 Excel 适配器中增加纯判定函数和拒绝原因；业务内核持久化完整字段证据，生产流水线直接复用；问题清单适配器只负责排序、汇总和 Excel 展示，不改变问题领域模型。
+**Architecture:** Keep semantic matching pure and deterministic in `demo/adapters/semantic_excel.py`; centralize source precedence and evidence serialization in `demo/run.py` and `demo/pipeline.py`; keep presentation-only workbook formatting in `demo/adapters/generation_issues.py`. Fixed project coordinates remain a fallback and never overwrite an available semantic result.
 
-**Tech Stack:** Python 3.11、openpyxl、Pydantic、pytest、python-docx/Word OOXML。
+**Tech Stack:** Python 3.11, Pydantic, openpyxl, pytest, python-docx/OOXML pipeline.
 
 ---
 
-### Task 1: 拒绝未完成评估的全零列
+### Task 1: Reject incomplete all-zero appraisal columns
 
 **Files:**
 - Modify: `demo/adapters/semantic_excel.py`
 - Test: `demo/tests/test_semantic_excel.py`
 
-- [ ] **Step 1: 写失败测试**
+- [ ] **Step 1: Write failing tests**
 
-创建账面净资产为正、评估列全零的工作簿，断言没有 `asset_approach_value`，并包含 `incomplete_appraisal_column` 问题；再创建评估列存在其他非零值的工作簿，断言净资产零值被保留。
+Create one workbook whose net-asset row has nonzero book value and zero appraisal value while the full appraisal column is blank/zero. Assert `asset_approach_value` is absent and issues contain `[incomplete_appraisal_column]`. Create a second workbook with zero net assets but another nonzero appraisal amount in the same column and assert zero remains a valid extracted result.
 
-- [ ] **Step 2: 验证测试按预期失败**
+- [ ] **Step 2: Run tests and verify RED**
 
-Run: `PYTHONPATH=. /Users/ghh/Documents/Code/mcpify/AssetAppraisal/.venv/bin/pytest demo/tests/test_semantic_excel.py -k "incomplete_appraisal or supported_zero" -q`
+Run:
 
-Expected: 第一项错误地得到 `0.0`，测试失败。
+```bash
+PYTHONPATH=. /Users/ghh/Documents/Code/mcpify/AssetAppraisal/.venv/bin/pytest demo/tests/test_semantic_excel.py -q
+```
 
-- [ ] **Step 3: 实现最小判定**
+Expected: the incomplete-column test fails because the current extractor returns `0.0`.
 
-在 `_net_asset_candidate` 中检查评估列是否存在非零金额，将结果写入候选的 `appraised_incomplete`；`extract_workbook_facts` 对无效零值跳过字段并记录带来源位置的问题。
+- [ ] **Step 3: Implement the minimum rule**
 
-- [ ] **Step 4: 验证通过**
+Add a pure helper that returns true only when the candidate appraisal value is zero, book value is nonzero, and the selected appraisal column contains no other nonzero numeric value. Skip `asset_approach_value` and append an `[incomplete_appraisal_column]` issue when true.
 
-Run: `PYTHONPATH=. /Users/ghh/Documents/Code/mcpify/AssetAppraisal/.venv/bin/pytest demo/tests/test_semantic_excel.py -q`
+- [ ] **Step 4: Run tests and verify GREEN**
 
-Expected: 全部通过。
+Run the focused command from Step 2. Expected: all semantic Excel tests pass.
 
-- [ ] **Step 5: 提交**
+- [ ] **Step 5: Commit**
 
-Commit: `fix: reject incomplete zero appraisal columns`
+```bash
+git add demo/adapters/semantic_excel.py demo/tests/test_semantic_excel.py
+git commit -m "fix: reject incomplete appraisal columns"
+```
 
-### Task 2: 语义结果优先并完整持久化证据
+### Task 2: Make semantic extraction primary and preserve evidence
 
 **Files:**
 - Modify: `demo/run.py`
 - Modify: `demo/pipeline.py`
+- Modify: `demo/adapters/audit.py`
 - Test: `demo/tests/test_demo_run.py`
 - Test: `demo/tests/test_pipeline.py`
 
-- [ ] **Step 1: 写失败测试**
+- [ ] **Step 1: Write failing precedence and evidence tests**
 
-构造固定坐标有错误值、语义表头有正确值的工作簿，断言采用语义值；运行管线后断言历史表、资产范围表和长期资产表的来源文件及单元格不为空。
+Create a workbook where a configured legacy coordinate contains a different valid number while the semantic net-assets row contains the intended number. Assert the normalized field uses semantic evidence. Run a pipeline fixture containing a semantic table and assert `normalized_evidence.json`, workflow trace, and field audit preserve the source filename and cell locator.
 
-- [ ] **Step 2: 验证测试按预期失败**
+- [ ] **Step 2: Run tests and verify RED**
 
-Run: `PYTHONPATH=. /Users/ghh/Documents/Code/mcpify/AssetAppraisal/.venv/bin/pytest demo/tests/test_demo_run.py demo/tests/test_pipeline.py -k "semantic_primary or table_evidence" -q`
+Run:
 
-Expected: 固定表覆盖语义表，或证据显示 `unknown/missing`。
+```bash
+PYTHONPATH=. /Users/ghh/Documents/Code/mcpify/AssetAppraisal/.venv/bin/pytest demo/tests/test_demo_run.py demo/tests/test_pipeline.py -q
+```
 
-- [ ] **Step 3: 实现证据文件和优先规则**
+Expected: evidence-file assertions fail and at least one fixed-coordinate precedence assertion fails.
 
-`run_project` 输出 `normalized_evidence.json`；语义解析字段覆盖固定坐标字段，历史表继续使用兼容合并；`run_pipeline` 读取证据文件，并且只有语义表不存在时才读取固定资产范围表。
+- [ ] **Step 3: Implement semantic-first merging**
 
-- [ ] **Step 4: 验证通过**
+For semantic fields, assign semantic values before accepting fixed fallback values. Historical tables use `merge_historical_tables`; scalar and structured tables use semantic values whenever present. Write `normalized_evidence.json` beside `normalized_fields.json`.
 
-Run: `PYTHONPATH=. /Users/ghh/Documents/Code/mcpify/AssetAppraisal/.venv/bin/pytest demo/tests/test_demo_run.py demo/tests/test_pipeline.py -k "semantic_primary or table_evidence" -q`
+- [ ] **Step 4: Read evidence directly in the pipeline**
 
-Expected: 全部通过。
+Load `normalized_evidence.json` from the temporary base run. Preserve evidence kinds beginning with `semantic_excel` and remove scope-table logic that overwrites semantic evidence with missing/fixed metadata.
 
-- [ ] **Step 5: 提交**
+- [ ] **Step 5: Run focused tests and verify GREEN**
 
-Commit: `feat: make semantic excel evidence primary`
+Run the command from Step 2. Expected: all selected tests pass.
 
-### Task 3: 重做问题清单
+- [ ] **Step 6: Commit**
+
+```bash
+git add demo/run.py demo/pipeline.py demo/adapters/audit.py demo/tests/test_demo_run.py demo/tests/test_pipeline.py
+git commit -m "feat: prioritize semantic excel evidence"
+```
+
+### Task 3: Redesign the generated issue workbook
 
 **Files:**
 - Modify: `demo/domain/generation_issues.py`
 - Modify: `demo/adapters/generation_issues.py`
 - Test: `demo/tests/test_generation_issues.py`
 
-- [ ] **Step 1: 写失败测试**
+- [ ] **Step 1: Write failing workbook-layout tests**
 
-断言问题按实际页码排序，无页码排最后；每项产生“第N页｜位置类型｜位置描述”；工作簿包含“检查总览”和“问题明细”，总览显示计数，明细前12列为业务检查列。
+Export unsorted issues with pages `10`, `2`, and blank. Assert the workbook contains `检查总览` and `问题明细`; assert detail rows are ordered page 2, page 10, blank; assert the first columns are `优先级、处理状态、Word页码、检查位置`; assert totals and priority counts are present in the overview.
 
-- [ ] **Step 2: 验证测试按预期失败**
+- [ ] **Step 2: Run tests and verify RED**
 
-Run: `PYTHONPATH=. /Users/ghh/Documents/Code/mcpify/AssetAppraisal/.venv/bin/pytest demo/tests/test_generation_issues.py -q`
+Run:
 
-Expected: 缺少新工作表和检查位置，测试失败。
+```bash
+PYTHONPATH=. /Users/ghh/Documents/Code/mcpify/AssetAppraisal/.venv/bin/pytest demo/tests/test_generation_issues.py -q
+```
 
-- [ ] **Step 3: 实现排序和展示**
+Expected: the overview sheet is missing and the existing column order does not match.
 
-领域函数增加稳定排序、检查顺序和检查位置；Excel 适配器生成总览、明细，设置冻结窗格、筛选、列宽、边框、交替底色和优先级颜色。
+- [ ] **Step 3: Add business display fields and stable sorting**
 
-- [ ] **Step 4: 验证通过并目视检查**
+Create `inspection_location` as `第N页｜位置类型｜位置描述`, or `页码待定位｜...` when unavailable. Sort by numeric page, priority rank, and location ID without mutating the input list.
 
-Run: `PYTHONPATH=. /Users/ghh/Documents/Code/mcpify/AssetAppraisal/.venv/bin/pytest demo/tests/test_generation_issues.py -q`
+- [ ] **Step 4: Implement the two-sheet workbook**
 
-Expected: 全部通过。随后打开真实生成的问题清单，检查总览和明细可读性。
+Build `检查总览` with counts and instructions. Build `问题明细` with business columns first, technical columns last, filters, frozen panes, print setup, row heights, alternating fills, and priority colors.
 
-- [ ] **Step 5: 提交**
+- [ ] **Step 5: Run tests and verify GREEN**
 
-Commit: `feat: make generation issues reviewer friendly`
+Run the command from Step 2. Expected: all issue-workbook tests pass.
 
-### Task 4: 真实资料回归和交付
+- [ ] **Step 6: Commit**
+
+```bash
+git add demo/domain/generation_issues.py demo/adapters/generation_issues.py demo/tests/test_generation_issues.py
+git commit -m "feat: make issue checklist reviewer friendly"
+```
+
+### Task 4: Cross-project regression and documentation
 
 **Files:**
 - Modify: `demo/CHANGELOG.md`
 - Test: `demo/tests/`
 
-- [ ] **Step 1: 全量回归**
+- [ ] **Step 1: Run the full backend suite**
 
-Run: `PYTHONPATH=. /Users/ghh/Documents/Code/mcpify/AssetAppraisal/.venv/bin/pytest demo/tests -q`
+```bash
+PYTHONPATH=. /Users/ghh/Documents/Code/mcpify/AssetAppraisal/.venv/bin/pytest demo/tests -q
+```
 
-Expected: 100% 通过。
+Expected: 100% pass with no failures.
 
-- [ ] **Step 2: 四组资料重新生成**
+- [ ] **Step 2: Re-run the four latest-data projects without OCR**
 
-使用亦盛、夏弗纳、铁投能源、浙江晶引现有 Excel 和 OCR 缓存运行，不重新执行 OCR。断言浙江晶引资产基础法零值保留 `XXX`，其余已验证核心金额不变。
+Use the existing cached/local Excel materials for 亦盛、夏弗纳、铁投能源、浙江晶引. Assert all four create a Word report, field audit, two-sheet issue workbook, JSON issue list, normalized fields, and normalized evidence.
 
-- [ ] **Step 3: 检查 Word 和问题清单**
+- [ ] **Step 3: Verify content and formatting**
 
-渲染四份 Word，重点检查评估结论、历史表和长期资产页；打开四份问题清单，确认按页码排序、总览计数正确、来源证据可读。
+Confirm Zhejiang no longer contains the invalid asset-approach zero conclusion. Compare filled core values and historical-table cells to evidence locators. Render all changed Word pages and inspect for overflow, clipping, table-width changes, or pagination regressions.
 
-- [ ] **Step 4: 更新变更记录**
+- [ ] **Step 4: Update change log**
 
-在 `demo/CHANGELOG.md` 记录零值门禁、语义优先、证据持久化和问题清单新版。
+Document semantic-first precedence, incomplete appraisal-column handling, complete evidence propagation, and the two-sheet reviewer checklist.
 
-- [ ] **Step 5: 提交并推送**
+- [ ] **Step 5: Run final verification and commit**
 
-Commit: `feat: harden semantic excel review workflow`
+```bash
+git diff --check
+PYTHONPATH=. /Users/ghh/Documents/Code/mcpify/AssetAppraisal/.venv/bin/pytest demo/tests -q
+git add demo/CHANGELOG.md
+git commit -m "docs: record semantic audit improvements"
+```

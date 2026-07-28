@@ -41,6 +41,7 @@ from demo.adapters.word import (
 )
 from demo.domain.generation_issues import (
     apply_page_locations,
+    issues_from_special_evidence,
     issues_from_word_findings,
     organize_generation_issues,
 )
@@ -1110,6 +1111,14 @@ def run_pipeline(
         value = provider_values.get(route.field_key, "")
         fields[route.field_key] = value
         prior_source = evidence.get(route.field_key, {})
+        if (
+            value in (None, "", [])
+            and prior_source.get("kind") == "unfinished_appraisal"
+        ):
+            issues.append(
+                f"{route.field_key}：评估工作簿尚未完成，已留空"
+            )
+            continue
         preserve_material_locator = route.route_kind == RouteKind.PDF_OCR_XLSX and value
         evidence_fallback = source_kind == "bailian_glm_evidence_fallback" and value
         pdf_name = pdf.name if pdf is not None else ""
@@ -1382,6 +1391,19 @@ def run_pipeline(
         [*locations, *static_locations],
         fields,
         evidence,
+    )
+    existing_issue_keys = {
+        (item.get("location_id"), item.get("category"))
+        for item in generation_issues
+    }
+    generation_issues.extend(
+        item
+        for item in issues_from_special_evidence(
+            [*locations, *static_locations],
+            evidence,
+        )
+        if (item.get("location_id"), item.get("category"))
+        not in existing_issue_keys
     )
     if _sha256(template) != template_hash:
         raise RuntimeError("模板被意外修改")

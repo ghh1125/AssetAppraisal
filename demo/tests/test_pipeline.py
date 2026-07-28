@@ -501,6 +501,47 @@ def test_pipeline_preserves_semantic_excel_file_and_cell_evidence(tmp_path):
     }
 
 
+def test_pipeline_keeps_unfinished_appraisal_reason_in_issue_list(tmp_path):
+    reporting = tmp_path / "尚未完成评估.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "汇总表"
+    sheet.append(["金额单位：人民币万元"])
+    sheet.append(["项目", "账面价值", "评估价值"])
+    sheet.append(["资产总计", 100, 0])
+    sheet.append(["负债合计", 40, 0])
+    sheet.append(["净资产", 60, 0])
+    workbook.save(reporting)
+
+    output = tmp_path / "run"
+    run_pipeline(
+        project_config=Path("demo/projects/tongfu.yaml"),
+        pdf_path=None,
+        output_dir=output,
+        ocr_adapter=None,
+        source_overrides={
+            "audit_pdf": None,
+            "reference_report": None,
+            "audited_financials": None,
+            "income_workbook": None,
+            "reporting_workbook": reporting,
+        },
+        manual_inputs_override={"target_company_name": "示例有限公司"},
+    )
+
+    issues = json.loads(
+        (output / "生成问题清单.json").read_text(encoding="utf-8")
+    )
+    unfinished = [
+        item
+        for item in issues
+        if item["category"] == "unfinished_appraisal"
+    ]
+    assert unfinished
+    assert unfinished[0]["source_file"] == reporting.name
+    assert unfinished[0]["source_locator"] == "汇总表!C5"
+
+
 def test_pipeline_without_pdf_passes_material_fields_to_llm(tmp_path):
     output = tmp_path / "run"
     run_pipeline(
