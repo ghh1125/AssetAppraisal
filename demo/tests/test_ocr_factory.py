@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from demo.adapters.aliyun_docmind_ocr import AliyunDocMindOcrAdapter
-from demo.adapters.ocr_factory import create_ocr_adapter
+from demo.adapters.ocr_factory import create_ocr_adapter, response_data
 
 
 class FakeAliyunClient:
@@ -79,3 +79,29 @@ def test_unknown_provider_returns_review_issue():
 
     assert pages == []
     assert issues == ["未知 OCR 提供方：unexpected"]
+
+
+def test_response_data_surfaces_aliyun_error_code():
+    with pytest.raises(
+        RuntimeError,
+        match="NoPermission: You are not authorized",
+    ):
+        response_data(
+            {
+                "body": {
+                    "Code": "NoPermission",
+                    "Message": "You are not authorized",
+                }
+            }
+        )
+
+
+def test_response_data_parses_string_json_payload():
+    assert response_data(
+        {
+            "body": {
+                "Code": "200",
+                "Data": '{"Id":"docmind-task-1"}',
+            }
+        }
+    ) == {"Id": "docmind-task-1"}

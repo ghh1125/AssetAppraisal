@@ -743,6 +743,26 @@ def test_pipeline_rejects_invalid_workflow_before_ocr(tmp_path):
         )
 
 
+def test_pipeline_keeps_review_report_when_cloud_ocr_fails(tmp_path):
+    class FailingCloudOcr:
+        def extract(self, _pdf_path):
+            return [], ["阿里云 OCR 提交失败：NoPermission"]
+
+    result = run_pipeline(
+        project_config=Path("demo/projects/tongfu.yaml"),
+        pdf_path=Path(
+            "资产评估工作流/通富2025.6.30合并及母公司审计报告.pdf"
+        ),
+        output_dir=tmp_path,
+        ocr_adapter=FailingCloudOcr(),
+        template_page_reader=FixtureTemplatePageReader(),
+    )
+
+    assert result.report_path.exists()
+    assert "阿里云 OCR 提交失败：NoPermission" in result.issues
+    assert (tmp_path / "生成问题清单.xlsx").exists()
+
+
 def test_pipeline_only_fills_selected_narrative_modules(tmp_path):
     result = run_pipeline(
         project_config=Path("demo/projects/tongfu.yaml"),

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -9,17 +10,30 @@ from .aliyun_docmind_ocr import AliyunDocMindOcrAdapter, _plain
 DEFAULT_DOCMIND_ENDPOINT = "docmind-api.cn-hangzhou.aliyuncs.com"
 
 
-def _body_data(value: Any) -> dict[str, Any]:
+def response_data(value: Any) -> dict[str, Any]:
     plain = _plain(value)
     for body_name in ("body", "Body"):
         body = plain.get(body_name) if isinstance(plain, dict) else None
         if isinstance(body, dict):
             plain = body
             break
+    code = plain.get("Code") or plain.get("code") if isinstance(plain, dict) else None
+    if code not in (None, "", 200, "200"):
+        message = str(
+            plain.get("Message") or plain.get("message") or "阿里云请求失败"
+        )
+        raise RuntimeError(f"{code}: {message}")
     for data_name in ("data", "Data"):
         data = plain.get(data_name) if isinstance(plain, dict) else None
         if isinstance(data, dict):
             return data
+        if isinstance(data, str):
+            try:
+                parsed = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(parsed, dict):
+                return parsed
     return plain if isinstance(plain, dict) else {}
 
 
@@ -59,7 +73,7 @@ class AliyunDocMindSdkClient:
                 request,
                 self.runtime,
             )
-        data = _body_data(response)
+        data = response_data(response)
         task_id = data.get("id") or data.get("Id")
         if not task_id:
             raise RuntimeError("阿里云文档解析提交成功但未返回任务 ID")
@@ -68,7 +82,7 @@ class AliyunDocMindSdkClient:
     def status(self, task_id: str) -> dict[str, Any]:
         request = self.models.QueryDocParserStatusRequest(id=task_id)
         response = self.client.query_doc_parser_status(request)
-        return _body_data(response)
+        return response_data(response)
 
     def result(
         self,
@@ -83,7 +97,7 @@ class AliyunDocMindSdkClient:
             layout_step_size=layout_step_size,
         )
         response = self.client.get_doc_parser_result(request)
-        return _body_data(response)
+        return response_data(response)
 
 
 class UnavailableOcrAdapter:
