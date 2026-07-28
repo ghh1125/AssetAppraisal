@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from .adapters.audit import export_audit, write_json
 from .adapters.generation_issues import export_generation_issues
@@ -21,6 +21,7 @@ from .adapters.excel import (
     try_read_configured_table,
 )
 from .adapters.materials import resolve_material_field
+from .adapters.ocr_factory import create_ocr_adapter
 from .adapters.semantic_excel import extract_workbook_facts
 from .adapters.word import (
     fill_template,
@@ -92,6 +93,16 @@ def _load_local_env() -> None:
         if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
             value = value[1:-1]
         os.environ.setdefault(key, value)
+
+
+def _select_cli_ocr_adapter(
+    provider: str | None,
+    env: Mapping[str, str],
+) -> Any:
+    configured = dict(env)
+    if provider:
+        configured["APPRAISAL_OCR_PROVIDER"] = provider
+    return create_ocr_adapter(configured)
 
 
 def _path(base: Path, value: str) -> Path:
@@ -751,7 +762,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--offline", action="store_true")
     parser.add_argument("--pdf", type=Path, help="启用端到端 OCR 流程时指定的 PDF")
     parser.add_argument("--template", type=Path, help="可选 Word 模板；始终只读")
-    parser.add_argument("--ocr-engine", choices=["paddle"], default="paddle")
+    parser.add_argument(
+        "--ocr-provider",
+        choices=["aliyun", "paddle", "none"],
+        help="OCR 提供方；默认读取 APPRAISAL_OCR_PROVIDER，未配置时使用 aliyun",
+    )
+    parser.add_argument(
+        "--ocr-engine",
+        dest="ocr_provider",
+        choices=["aliyun", "paddle", "none"],
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument("--use-glm", action="store_true", help="使用百炼模型生成叙述字段并执行三类审核")
     parser.add_argument("--use-qichacha", action="store_true", help="使用配置的企查查兼容 API")
     parser.add_argument("--node-inputs-json", type=Path, help="两个节点输入字段的 JSON 文件")
@@ -797,14 +818,7 @@ def main(argv: list[str] | None = None) -> int:
 
         ocr_adapter = None
         if args.pdf is not None:
-            from .adapters.paddle_ocr import (
-                PaddleStructureOcrAdapter,
-                create_local_pipeline,
-            )
-
-            ocr_adapter = PaddleStructureOcrAdapter(
-                create_local_pipeline()
-            )
+            ocr_adapter = _select_cli_ocr_adapter(args.ocr_provider, os.environ)
         llm_adapter = None
         review_adapters = None
         qichacha_adapter = None

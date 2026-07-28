@@ -9,18 +9,20 @@ from __future__ import annotations
 
 import json
 import hashlib
+import os
 import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
-from typing import Any
+from typing import Any, Mapping
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
 from .run import _load_local_env
+from .adapters.ocr_factory import create_ocr_adapter
 from .domain.field_validation import (
     normalize_narrative_modules,
     normalize_valuation_methods,
@@ -128,6 +130,16 @@ def _find_ocr_cache(pdf_path: Path) -> Path | None:
     return None
 
 
+def _select_ocr_adapter(
+    pdf_path: Path | None,
+    ocr_cache: Path | None,
+    env: Mapping[str, str],
+) -> Any:
+    if pdf_path is None or ocr_cache is not None:
+        return None
+    return create_ocr_adapter(env)
+
+
 def _execute_run(
     run_id: str,
     pdf_path: Path | None,
@@ -150,11 +162,7 @@ def _execute_run(
             if reuse_ocr and pdf_path is not None
             else None
         )
-        ocr_adapter = None
-        if pdf_path is not None and ocr_cache is None:
-            from .adapters.paddle_ocr import PaddleStructureOcrAdapter, create_local_pipeline
-
-            ocr_adapter = PaddleStructureOcrAdapter(create_local_pipeline())
+        ocr_adapter = _select_ocr_adapter(pdf_path, ocr_cache, os.environ)
         llm_adapter = None
         review_adapters = None
         qichacha_adapter = None
