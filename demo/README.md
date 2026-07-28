@@ -32,7 +32,7 @@ uv run python -m demo.run demo/projects/tongfu.yaml --offline
 
 在 c2m 或其他宿主中，可直接调用 `run_project(...)` / `run_pipeline(...)` 并通过 `ocr_adapter`、`company_api_adapter`、`llm_adapter` 和 `review_adapters` 参数注入已有服务。Demo 不在 `domain/` 内创建客户端或读取密钥；注入结果只接受映射表中已经登记的字段键。
 
-端到端 OCR 默认使用阿里云文档智能，安装 `services` 依赖即可，不在本地加载 PaddleOCR。项目根目录的本地 `.env` 会在 Demo 入口自动加载；生产环境也可由宿主进程注入同名环境变量。阿里云 RAM 用户需授予 `AliyunDocmindFullAccess`：
+项目继续使用 Python 3.11。端到端 OCR 默认使用阿里云文档智能，安装 `services` 依赖即可，不在本地加载 PaddleOCR。项目根目录的本地 `.env` 会在 Demo 入口自动加载；生产环境也可由宿主进程注入同名环境变量。阿里云 RAM 用户需授予 `AliyunDocmindFullAccess`：
 
 ```dotenv
 APPRAISAL_OCR_PROVIDER=aliyun
@@ -41,6 +41,8 @@ ALIBABA_CLOUD_ACCESS_KEY_SECRET=你的RAM AccessKey Secret
 APPRAISAL_OCR_VLM=false
 APPRAISAL_OCR_TIMEOUT_SECONDS=900
 ```
+
+百炼和企查查仍分别使用 `DASHSCOPE_API_KEY`、`QICHACHA_APP_KEY` 与 `QICHACHA_SECRET_KEY`，三类服务凭证互不替代。
 
 命令中的 `--pdf` 可省略；省略后跳过 OCR，工作流从其他可用材料和人工输入继续。同一 PDF 命中 SHA-256 缓存时不会再次消耗云端页数。云端失败时不自动回退本地模型，相关字段保留黄色占位符并进入问题清单。
 
