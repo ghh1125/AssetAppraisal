@@ -70,18 +70,144 @@ APPRAISAL_LLM_MODEL=qwen3.7-max-2026-05-17
 
 ### OCR
 
-PDF OCR 默认使用阿里云文档智能“文档解析（大模型版）”，本机不会加载 PaddleOCR。先在阿里云文档智能控制台开通“文档理解 → 文档解析（大模型版）”，再为专用 RAM 用户授予 `AliyunDocmindFullAccess`，并配置：
+OCR 在本工作流中只负责把审计报告 PDF 转换为可以检索、匹配和追溯的结构化证据。它不会直接决定 Word 应填什么，也不会替代资产基础法/资产清查 Excel、收益法或市场法 Excel、企查查、百炼及黄色字段来源规则。
+
+完整链路如下：
+
+```mermaid
+flowchart TD
+    A["前端上传审计报告 PDF"] --> B["计算 PDF SHA-256"]
+    B --> C{"命中 OCR 缓存？"}
+    C -->|是| D["复用 OCR结构化结果.xlsx"]
+    C -->|否| E["调用阿里云文档智能"]
+    E --> F["异步提交、状态轮询、分页获取结果"]
+    F --> G["归一化页、文本块、表格、单元格和坐标"]
+    G --> H["导出 OCR结构化结果.xlsx"]
+    D --> I["按科目、期间、表头和单位进行语义匹配"]
+    H --> I
+    I --> J["只进入 PDF OCR/XLSX 允许的字段"]
+    J --> K["与人工输入、业务 Excel、企查查和百炼结果合并"]
+    K --> L["复制模板并填充 Word"]
+    L --> M["缺失保留黄色 XXX，输出审计与问题清单"]
+```
+
+#### 1. 开通与配置
+
+PDF OCR 默认使用阿里云文档智能“文档解析（大模型版）”，本机不会加载 PaddleOCR。先在[文档智能控制台](https://docmind.console.aliyun.com/)开通“文档理解 → 文档解析（大模型版）”，再给持有 AccessKey 的专用 RAM 用户授权。
+
+阿里云官方文档中的系统策略名称为 `AliyunDocmindFullAccess`。若当前 RAM 控制台没有显示该系统策略，可创建只覆盖文档智能产品的自定义策略并授予同一个 RAM 用户：
+
+```json
+{
+  "Version": "1",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": ["docmind:*"],
+      "Resource": "*"
+    }
+  ]
+}
+```
+
+授权和自定义策略可分别参考[文档智能服务鉴权指南](https://help.aliyun.com/zh/document-mind/getting-started/service-authentication-guide)与[文档智能自定义权限策略参考](https://help.aliyun.com/zh/document-mind/security-and-compliance/document-smart-custom-permission-policy-reference)。
+
+本地 `.env` 配置为：
 
 ```dotenv
 APPRAISAL_OCR_PROVIDER=aliyun
 ALIBABA_CLOUD_ACCESS_KEY_ID=你的RAM AccessKey ID
 ALIBABA_CLOUD_ACCESS_KEY_SECRET=你的RAM AccessKey Secret
 APPRAISAL_OCR_VLM=false
+APPRAISAL_OCR_TIMEOUT_SECONDS=900
 ```
 
-基础链路适用于普通审计报告；复杂扫描件可将 `APPRAISAL_OCR_VLM` 改为 `true`，但费用和处理时间会增加。若同一 PDF 的 SHA-256 已命中 OCR 缓存，流程直接复用 `OCR结构化结果.xlsx`，不会再次调用云端 API；未上传 PDF 时整个 OCR 节点明确跳过。
+基础链路适用于普通审计报告；复杂扫描件可将 `APPRAISAL_OCR_VLM` 改为 `true`，但费用和处理时间会增加。AccessKey 只从 `.env` 或生产宿主环境注入，不进入业务代码、Word、审计清单、运行清单或 Git。
 
-需要显式使用原本地模式时设置 `APPRAISAL_OCR_PROVIDER=paddle` 并安装 `--extra ocr`。云端凭证缺失、超时、额度不足或解析失败时不会自动回退本地 PaddleOCR，报告仍继续生成，缺失内容保留黄色占位符并进入问题清单。
+#### 2. 缓存与 OCR 提供方选择
+
+上传 PDF 后，前端会立即查询 OCR 缓存。缓存使用 PDF 内容的 SHA-256，而不是文件名判断：
+
+1. 命中时直接读取已有 `OCR结构化结果.xlsx`，不会再次消耗云端页数；
+2. 未命中时调用当前配置的 OCR 提供方；
+3. 缓存文件损坏且仍有原 PDF 时，记录缓存问题并尝试调用当前提供方；
+4. 未上传 PDF 时，`ocr_pdf` 和 `export_ocr_workbook` 节点标记为 `skipped`，其余材料仍继续处理。
+
+提供方配置：
+
+- `APPRAISAL_OCR_PROVIDER=aliyun`：默认模式，调用阿里云文档智能，本机不加载 PaddleOCR；
+- `APPRAISAL_OCR_PROVIDER=paddle`：显式启用原本地高内存模式，需要安装 `--extra ocr`；
+- `APPRAISAL_OCR_PROVIDER=none`：完全跳过 PDF OCR。
+
+云端失败时不会自动回退本地 PaddleOCR，避免突然占用大量本机内存。
+
+#### 3. 阿里云解析和统一结构
+
+缓存未命中时，适配器按阿里云异步接口执行：
+
+1. 使用 `SubmitDocParserJobAdvance` 上传本地 PDF；
+2. 轮询 `QueryDocParserStatus`，直到成功、失败或超时；
+3. 使用 `GetDocParserResult` 分页获取全部版面块；
+4. 把阿里云返回转换为本项目统一的页、文本块、表格和单元格结构；
+5. 在服务实际返回的范围内保留页码、块/表格编号、行列、跨行跨列、坐标、置信度和证据位置。
+
+统一后会生成独立的 `OCR结构化结果.xlsx`，固定包含：
+
+- `OCR_文本`：逐页文本块及位置；
+- `OCR_表格`：逐单元格明细及页码、行列和证据编号；
+- `标准财务数据`：经过财务别名、期间和单位规则归一化的候选值；
+- `识别问题`：OCR、结构转换和字段解析中需要人工复核的事项；
+- 表格索引及按页恢复的矩阵表：保留原表格行列形状，便于人工查看和继续匹配。
+
+#### 4. OCR Excel 与两类业务 Excel
+
+前端涉及的三类工作簿不是同一个文件，也不能相互替代：
+
+| 工作簿 | 来源 | 是否由用户上传 | 主要用途 |
+| --- | --- | --- | --- |
+| `OCR结构化结果.xlsx` | 审计报告 PDF 的 OCR 结果 | 否，系统自动生成或复用 | 审计报告文本、表格、标准财务候选值和 OCR 问题 |
+| 资产基础法/资产清查 Excel | 项目业务材料 | 可选 | 资产基础法、资产清查、长期资产和相关上报数据 |
+| 收益法或市场法 Excel | 项目业务材料 | 可选 | 收益法或市场法测算过程及评估结论 |
+
+用户上传的工作簿文件名可以不同；前端按材料角色传递，后端再根据工作表内容判断具体版式。`OCR结构化结果.xlsx` 是运行中间件，不需要也不应由用户重复上传。
+
+#### 5. 从 OCR/Excel 到 Word
+
+OCR 或业务 Excel 中的非空数字不会直接写入 Word。系统先根据以下信息定位候选值：
+
+- 工作表内容和表格标题；
+- 科目名称及别名；
+- 历史年度、评估基准日和预测期间；
+- 账面价值、账面净值、评估价值等列类型；
+- 元、千元、万元等金额单位；
+- 资产基础法、收益法和市场法特征。
+
+通用语义识别是主要路径；已验证项目的固定工作表和单元格只作为兼容回退。出现多个同等合理的候选值、疑似尚未完成的全零评估列或证据冲突时，系统不根据相邻非零数字猜测，相关字段保持未解决。
+
+每个接受的值会把“来源文件 + 工作表/单元格”或“PDF/OCR 页码 + 表格/单元格证据”传入 `字段审计清单.xlsx`。黄色字段还要经过来源白名单：PDF OCR/XLSX 字段只能接收这一来源允许的数据，不得由企查查、百炼或其他材料跨来源冒填。
+
+#### 6. 缺失、失败与最终输出
+
+以下情况都不会阻止生成 `资产评估报告_待复核.docx`：
+
+- 没有上传 PDF；
+- 阿里云凭证缺失、无权限、超时、额度不足或解析失败；
+- OCR/Excel 没有找到字段；
+- 同一字段存在无法自动裁决的冲突。
+
+缺失位置保留或写入黄色 `XXX`；冲突候选不自动选择。系统继续输出 `字段审计清单.xlsx`、`生成问题清单.xlsx` 和 `生成问题清单.json`，并尽量标明 Word 实际页码、检查位置、应取来源和处理建议。只有财务字段完整、没有未解决黄色占位符且审核条件满足时，才额外生成 `资产评估报告_最终候选.docx`。
+
+OCR 所处的完整资产评估工作流为：
+
+```text
+人工输入 + 审计 PDF/OCR + 两类业务 Excel + 企查查 + 百炼
+→ 字段来源白名单与语义映射
+→ 固定 Word 模板填充
+→ 格式审核、数据校验、语义审核
+→ 待复核报告、字段审计清单、带页码问题清单
+```
+
+这就是本仓库最初定义的可复用资产评估报告业务内核。用户、权限、任务队列、持久化、并发、监控和发布仍由 c2m 或其他生产外壳实现，不属于 Demo 业务内核。
 
 ## 本地运行示例
 

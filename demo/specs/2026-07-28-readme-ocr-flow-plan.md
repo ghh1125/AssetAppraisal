@@ -19,11 +19,11 @@
 - Reference: `demo/api_server.py`
 - Reference: `frontend/src/domain/upload-fields.js`
 
-- [ ] **Step 1: Replace the short OCR introduction with the exact workflow boundary**
+- [x] **Step 1: Replace the short OCR introduction with the exact workflow boundary**
 
 State that OCR converts only the audit-report PDF into structured evidence. It does not replace the two business Excel workbooks, Qichacha, Bailian, field-source routing, or Word formatting.
 
-- [ ] **Step 2: Add the end-to-end Mermaid flow**
+- [x] **Step 2: Add the end-to-end Mermaid flow**
 
 Use these nodes and branches:
 
@@ -44,7 +44,7 @@ flowchart TD
     L --> M["缺失保留黄色 XXX，输出审计与问题清单"]
 ```
 
-- [ ] **Step 3: Document provider selection and cache behavior**
+- [x] **Step 3: Document provider selection and cache behavior**
 
 Explain:
 
@@ -55,7 +55,7 @@ Explain:
 - `APPRAISAL_OCR_PROVIDER=none` skips OCR;
 - a failed cache read may call the configured provider when the PDF is available.
 
-- [ ] **Step 4: Document the Alibaba Cloud request lifecycle**
+- [x] **Step 4: Document the Alibaba Cloud request lifecycle**
 
 List the actual lifecycle:
 
@@ -65,7 +65,7 @@ List the actual lifecycle:
 4. normalize provider-specific output;
 5. retain page number, block/table identity, row, column, span, coordinates, confidence, and evidence location where available.
 
-- [ ] **Step 5: Explain the three workbook roles**
+- [x] **Step 5: Explain the three workbook roles**
 
 Add a compact table:
 
@@ -77,15 +77,15 @@ Add a compact table:
 
 State that filenames may vary and that the workbooks are not interchangeable.
 
-- [ ] **Step 6: Explain semantic matching, routing, and evidence**
+- [x] **Step 6: Explain semantic matching, routing, and evidence**
 
 Describe matching by worksheet content, table title, subject label, period, column meaning, and monetary unit. State that configured verified coordinates are compatibility fallbacks, ambiguous candidates remain unresolved, and every accepted value carries its source file plus worksheet/cell or OCR evidence into the field audit list.
 
-- [ ] **Step 7: Explain failure and output behavior**
+- [x] **Step 7: Explain failure and output behavior**
 
 State that missing credentials, timeout, quota exhaustion, provider failure, missing values, or ambiguous values do not block `资产评估报告_待复核.docx`. Missing values remain yellow `XXX`; conflicts are not guessed; issues are exported with Word page/location. Only a complete, unresolved-placeholder-free and reviewed run can create `资产评估报告_最终候选.docx`.
 
-- [ ] **Step 8: Update RAM authorization guidance**
+- [x] **Step 8: Update RAM authorization guidance**
 
 Keep the official `AliyunDocmindFullAccess` guidance and add a current-console fallback:
 
@@ -104,7 +104,7 @@ Keep the official `AliyunDocmindFullAccess` guidance and add a current-console f
 
 Explain that this custom policy is used only when the system policy is not visible and must be granted to the RAM user that owns the AccessKey.
 
-- [ ] **Step 9: Add the complete workflow summary**
+- [x] **Step 9: Add the complete workflow summary**
 
 Close the OCR section with:
 
@@ -124,7 +124,7 @@ Clarify that this is the reusable appraisal-report business core; production ide
 - Verify: `README.md`
 - Verify: `demo/specs/2026-07-28-readme-ocr-flow-design.md`
 
-- [ ] **Step 1: Scan for contradictions and forbidden secrets**
+- [x] **Step 1: Scan for contradictions and forbidden secrets**
 
 Run:
 
@@ -135,7 +135,7 @@ git grep -n -E "LTAI|AccessKey Secret=[^你]" -- README.md
 
 Expected: every required concept is present and no real credential is found.
 
-- [ ] **Step 2: Check Markdown whitespace and repository state**
+- [x] **Step 2: Check Markdown whitespace and repository state**
 
 Run:
 
@@ -146,7 +146,7 @@ git status --short
 
 Expected: no whitespace error; only the planned README/plan changes and the user's existing untracked `docs/plans/` remain.
 
-- [ ] **Step 3: Commit the README and plan**
+- [x] **Step 3: Commit the README and plan**
 
 Run:
 
@@ -157,7 +157,7 @@ git commit -m "docs: explain end-to-end ocr workflow"
 
 Expected: one documentation commit containing no customer material or credentials.
 
-- [ ] **Step 4: Push the current main branch**
+- [x] **Step 4: Push the current main branch**
 
 Run:
 
