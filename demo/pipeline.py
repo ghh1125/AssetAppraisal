@@ -1641,7 +1641,14 @@ def run_pipeline(
         final_report = output_dir / "资产评估报告_最终候选.docx"
         shutil.copy2(report, final_report)
         review_output_paths.append(str(final_report))
-    write_json(output_dir / "normalized_fields.json", fields)
+    normalized_fields_path = write_json(
+        output_dir / "normalized_fields.json",
+        fields,
+    )
+    normalized_evidence_path = write_json(
+        output_dir / "normalized_evidence.json",
+        evidence,
+    )
     write_json(output_dir / "issues.json", issues)
     planned_manifest_path = output_dir / "run_manifest.json"
     record_node(
@@ -1694,6 +1701,8 @@ def run_pipeline(
             str(audit),
             str(issue_workbook),
             str(issue_json),
+            str(normalized_fields_path),
+            str(normalized_evidence_path),
             str(trace_path),
             *review_output_paths,
         ],

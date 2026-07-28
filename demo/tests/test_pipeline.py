@@ -499,6 +499,18 @@ def test_pipeline_preserves_semantic_excel_file_and_cell_evidence(tmp_path):
         "source_file": reporting.name,
         "source_locator": "汇总表!B3；汇总表!B4；汇总表!B5",
     }
+    normalized_evidence = json.loads(
+        (output / "normalized_evidence.json").read_text(encoding="utf-8")
+    )
+    assert normalized_evidence["asset_scope_summary_table"] == {
+        "kind": "semantic_excel",
+        "file": reporting.name,
+        "locator": "汇总表!B3；汇总表!B4；汇总表!B5",
+    }
+    manifest = json.loads(
+        (output / "run_manifest.json").read_text(encoding="utf-8")
+    )
+    assert str(output / "normalized_evidence.json") in manifest["outputs"]
 
 
 def test_pipeline_keeps_unfinished_appraisal_reason_in_issue_list(
