@@ -1457,20 +1457,12 @@ def run_pipeline(
                 template_page_texts,
                 document_paragraph_texts(template),
             )
-            template_issue_pages = map_location_pages(
-                unresolved_findings,
-                template_page_texts,
-                document_paragraph_texts(template),
-            )
         except Exception as exc:
             issues.append(f"模板页码解析失败：{exc}")
-            template_issue_pages = {}
-    else:
-        template_issue_pages = {}
     generation_issues = apply_page_locations(
         generation_issues,
         generated_pages,
-        template_issue_pages,
+        template_pages,
     )
     generation_issues = organize_generation_issues(
         generation_issues

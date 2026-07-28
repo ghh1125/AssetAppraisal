@@ -501,7 +501,10 @@ def test_pipeline_preserves_semantic_excel_file_and_cell_evidence(tmp_path):
     }
 
 
-def test_pipeline_keeps_unfinished_appraisal_reason_in_issue_list(tmp_path):
+def test_pipeline_keeps_unfinished_appraisal_reason_in_issue_list(
+    tmp_path,
+    monkeypatch,
+):
     reporting = tmp_path / "尚未完成评估.xlsx"
     workbook = Workbook()
     sheet = workbook.active
@@ -513,6 +516,23 @@ def test_pipeline_keeps_unfinished_appraisal_reason_in_issue_list(tmp_path):
     sheet.append(["净资产", 60, 0])
     workbook.save(reporting)
 
+    def page_mapping(records, page_texts, paragraph_texts):
+        location_ids = {
+            str(item.get("location_id", ""))
+            for item in records
+            if isinstance(item, dict)
+        }
+        return (
+            {"DOCUMENT-P0558-H01": 16}
+            if "DOCUMENT-P0558-H01" in location_ids
+            else {}
+        )
+
+    monkeypatch.setattr(
+        pipeline_module,
+        "map_location_pages",
+        page_mapping,
+    )
     output = tmp_path / "run"
     run_pipeline(
         project_config=Path("demo/projects/tongfu.yaml"),
@@ -527,6 +547,7 @@ def test_pipeline_keeps_unfinished_appraisal_reason_in_issue_list(tmp_path):
             "reporting_workbook": reporting,
         },
         manual_inputs_override={"target_company_name": "示例有限公司"},
+        template_page_reader=FixtureTemplatePageReader(),
     )
 
     issues = json.loads(
@@ -540,6 +561,8 @@ def test_pipeline_keeps_unfinished_appraisal_reason_in_issue_list(tmp_path):
     assert unfinished
     assert unfinished[0]["source_file"] == reporting.name
     assert unfinished[0]["source_locator"] == "汇总表!C5"
+    assert unfinished[0]["page_number"] == 16
+    assert unfinished[0]["page_basis"] == "template"
 
 
 def test_pipeline_without_pdf_passes_material_fields_to_llm(tmp_path):
