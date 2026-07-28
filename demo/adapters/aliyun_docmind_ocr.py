@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import re
-from typing import Any
+import time
+from pathlib import Path
+from typing import Any, Callable
 
 
 def _plain(value: Any) -> Any:
@@ -113,3 +115,110 @@ def layouts_to_pages(layouts: list[dict[str, Any]]) -> list[dict[str, Any]]:
             }
         )
     return list(pages.values())
+
+
+def _mapping(value: Any) -> dict[str, Any]:
+    plain = _plain(value)
+    if not isinstance(plain, dict):
+        return {}
+    data = plain.get("Data") or plain.get("data")
+    if isinstance(data, dict):
+        return data
+    return plain
+
+
+class AliyunDocMindOcrAdapter:
+    def __init__(
+        self,
+        client: Any,
+        *,
+        vlm: bool = False,
+        poll_interval_seconds: float = 5,
+        timeout_seconds: float = 900,
+        layout_step_size: int = 3000,
+        sleep: Callable[[float], None] = time.sleep,
+        clock: Callable[[], float] = time.monotonic,
+        redact_values: tuple[str, ...] = (),
+    ):
+        self.client = client
+        self.vlm = vlm
+        self.poll_interval_seconds = poll_interval_seconds
+        self.timeout_seconds = timeout_seconds
+        self.layout_step_size = layout_step_size
+        self.sleep = sleep
+        self.clock = clock
+        self.redact_values = tuple(value for value in redact_values if value)
+
+    def _safe_error(self, error: Exception) -> str:
+        message = str(error)
+        for value in self.redact_values:
+            message = message.replace(value, "***")
+        return message
+
+    def extract(self, pdf_path: Path) -> tuple[list[dict[str, Any]], list[str]]:
+        try:
+            task_id = self.client.submit(pdf_path, vlm=self.vlm)
+        except Exception as exc:
+            return [], [f"阿里云 OCR 提交失败：{self._safe_error(exc)}"]
+
+        started_at = self.clock()
+        while True:
+            try:
+                status_payload = _mapping(self.client.status(task_id))
+            except Exception as exc:
+                return [], [
+                    f"阿里云 OCR 状态查询失败（{task_id}）：{self._safe_error(exc)}"
+                ]
+            status = str(
+                status_payload.get("Status") or status_payload.get("status") or ""
+            ).lower()
+            if status == "success":
+                break
+            if status in {"fail", "failed"}:
+                code = str(
+                    status_payload.get("Code")
+                    or status_payload.get("code")
+                    or "unknown"
+                )
+                message = str(
+                    status_payload.get("Message")
+                    or status_payload.get("message")
+                    or "任务处理失败"
+                )
+                return [], [
+                    f"阿里云 OCR 任务失败（{task_id}，{code}）：{message}"
+                ]
+            if self.clock() - started_at >= self.timeout_seconds:
+                return [], [
+                    f"阿里云 OCR 轮询超时（{task_id}，{self.timeout_seconds:g} 秒）"
+                ]
+            self.sleep(self.poll_interval_seconds)
+
+        layouts: list[dict[str, Any]] = []
+        layout_num = 0
+        while True:
+            try:
+                result_payload = _mapping(
+                    self.client.result(
+                        task_id,
+                        layout_num=layout_num,
+                        layout_step_size=self.layout_step_size,
+                    )
+                )
+            except Exception as exc:
+                return [], [
+                    f"阿里云 OCR 结果获取失败（{task_id}，起始块 {layout_num}）："
+                    f"{self._safe_error(exc)}"
+                ]
+            batch = result_payload.get("layouts") or []
+            if not isinstance(batch, list):
+                return [], [f"阿里云 OCR 返回结构异常（{task_id}）：layouts 不是列表"]
+            layouts.extend(item for item in batch if isinstance(item, dict))
+            if len(batch) < self.layout_step_size:
+                break
+            layout_num += len(batch)
+
+        pages = layouts_to_pages(layouts)
+        if not pages:
+            return [], ["阿里云 OCR 返回成功但没有可用文本或表格"]
+        return pages, []
