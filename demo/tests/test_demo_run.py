@@ -5,7 +5,7 @@ import zipfile
 from pathlib import Path
 
 from docx import Document
-from openpyxl import Workbook, load_workbook
+from openpyxl import Workbook
 
 from demo.run import run_project
 
@@ -16,16 +16,18 @@ class FakeLlm:
         return {"company_profile_section": "由注入服务生成的公司简介"}, []
 
 
-def test_offline_real_template_run_creates_new_report_and_audit(tmp_path: Path):
+def test_offline_real_template_run_creates_new_report_only(tmp_path: Path):
     config = Path("demo/projects/tongfu.yaml")
     template = Path("资产评估工作流/评估报告版式-沟通标注版.docx")
     before = hashlib.sha256(template.read_bytes()).hexdigest()
     result = run_project(config, output_dir=tmp_path, offline=True)
     assert hashlib.sha256(template.read_bytes()).hexdigest() == before
     assert result.report_path.exists() and result.report_path.resolve() != template.resolve()
-    assert result.audit_path.exists()
     assert (tmp_path / "run_manifest.json").exists()
-    assert (tmp_path / "issues.json").exists()
+    assert not (tmp_path / "字段审计清单.xlsx").exists()
+    assert not (tmp_path / "生成问题清单.xlsx").exists()
+    assert not (tmp_path / "生成问题清单.json").exists()
+    assert not (tmp_path / "issues.json").exists()
     with zipfile.ZipFile(result.report_path) as zf:
         xml = "".join(zf.read(name).decode("utf-8") for name in zf.namelist() if re.fullmatch(r"word/(document|header\d+|footer\d+)\.xml", name))
     assert "XXX" in xml
@@ -88,13 +90,6 @@ def test_offline_run_fills_every_configured_financial_material_field(tmp_path: P
     report_text = "\n".join(paragraph.text for paragraph in Document(result.report_path).paragraphs)
     assert "、共同出资设立" not in report_text
     assert "有限公司、有限公司共同出资" not in report_text
-
-    audit = load_workbook(result.audit_path, read_only=True, data_only=True)
-    rows = list(audit["填充结果"].iter_rows(min_row=2, values_only=True))
-    year_row = next(row for row in rows if row[4] == "balance_history_year_1")
-    assert year_row[7] == "ocr_xlsx"
-    assert "通富审核后财报-单体1月5日.xlsx" in year_row[8]
-    assert "通富2025.6.30合并及母公司审计报告.pdf" in year_row[8]
 
 
 def test_non_offline_run_uses_injected_provider_without_domain_dependency(tmp_path: Path):
@@ -163,8 +158,8 @@ def test_run_project_generates_with_only_one_manual_field(tmp_path: Path):
     )
 
     assert result.report_path.exists()
-    assert (tmp_path / "生成问题清单.xlsx").exists()
-    assert (tmp_path / "生成问题清单.json").exists()
+    assert not (tmp_path / "生成问题清单.xlsx").exists()
+    assert not (tmp_path / "生成问题清单.json").exists()
     document = Document(result.report_path)
     text = "\n".join(paragraph.text for paragraph in document.paragraphs)
     text += "\n" + "\n".join(

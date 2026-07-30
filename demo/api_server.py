@@ -102,7 +102,7 @@ def _run_id_for_pdf(filename: str) -> str:
 
 
 def _artifact_list(run_dir: Path) -> list[dict[str, str]]:
-    # Intermediate OCR, candidate and audit files remain inside the run
+    # Intermediate OCR, candidate and trace files remain inside the run
     # directory for the workflow itself, but the public UI exposes only the
     # requested deliverable.  This also prevents users from mistaking an
     # internal trace or comparison sheet for the appraisal report.
@@ -263,14 +263,14 @@ def _execute_run(
         if not use_glm:
             _set_node(run_id, "ocr_llm_candidates", "completed", "材料解析完成，未启用 LLM")
             _set_node(run_id, "fill_word", "completed", "Word 已填充")
-            _set_node(run_id, "output", "completed", "Word 和问题清单已输出")
+            _set_node(run_id, "output", "completed", "评估报告 Word 已输出")
             _set_job(
                 run_id,
                 status="completed",
                 progress=100,
-                message=f"生成完成，问题清单 {len(result.issues)} 条",
+                message="评估报告 Word 已生成",
                 artifacts=_artifact_list(run_dir),
-                issues=result.issues,
+                issues=[],
                 completed_at=datetime.now(timezone.utc).isoformat(),
             )
             return
@@ -356,15 +356,15 @@ def _execute_fill(run_id: str, selected_fields: dict[str, Any]) -> None:
         )
         _set_node(run_id, "fill_word", "completed", "Word 填充完成")
         current_node = "output"
-        _set_node(run_id, "output", "running", "正在生成审计清单和问题清单")
+        _set_node(run_id, "output", "running", "正在生成评估报告 Word")
         _set_node(run_id, "output", "completed", "全部输出已生成")
         _set_job(
             run_id,
             status="completed",
             progress=100,
-            message=f"生成完成，问题清单 {len(result.issues)} 条",
+            message="评估报告 Word 已生成",
             artifacts=_artifact_list(run_dir),
-            issues=result.issues,
+            issues=[],
             completed_at=datetime.now(timezone.utc).isoformat(),
         )
     except Exception as exc:
@@ -376,8 +376,6 @@ def _execute_fill(run_id: str, selected_fields: dict[str, Any]) -> None:
 async def create_run(
     background_tasks: BackgroundTasks,
     pdf: UploadFile | None = File(None),
-    reference_report: UploadFile | None = File(None),
-    audited_financials: UploadFile | None = File(None),
     income_workbook: UploadFile | None = File(None),
     reporting_workbook: UploadFile | None = File(None),
     inputs: str = Form("{}"),
@@ -387,16 +385,6 @@ async def create_run(
 ):
     uploads = {
         "pdf": (pdf, (".pdf",), "审计报告 PDF"),
-        "reference_report": (
-            reference_report,
-            (".docx",),
-            "参考评估报告 DOCX",
-        ),
-        "audited_financials": (
-            audited_financials,
-            (".xlsx", ".xlsm"),
-            "审计财务工作簿",
-        ),
         "income_workbook": (
             income_workbook,
             (".xlsx", ".xlsm"),
@@ -487,8 +475,6 @@ async def create_run(
     pdf_path = stored_files.get("pdf")
     source_overrides = {
         "audit_pdf": pdf_path,
-        "reference_report": stored_files.get("reference_report"),
-        "audited_financials": stored_files.get("audited_financials"),
         "income_workbook": stored_files.get("income_workbook"),
         "reporting_workbook": stored_files.get("reporting_workbook"),
     }

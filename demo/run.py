@@ -13,8 +13,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Mapping
 
-from .adapters.audit import export_audit, write_json
-from .adapters.generation_issues import export_generation_issues
+from .adapters.json_io import write_json
 from .adapters.excel import (
     read_cells,
     try_read_cells,
@@ -55,7 +54,6 @@ from .domain.generation_issues import (
 @dataclass
 class RunResult:
     report_path: Path
-    audit_path: Path
     manifest_path: Path
     issues: list[str]
 
@@ -666,7 +664,6 @@ def run_project(
     run_dir = output_dir.resolve() if output_dir else (base / "../../runs" / config["project_id"] / datetime.now().strftime("%Y%m%d_%H%M%S")).resolve()
     run_dir.mkdir(parents=True, exist_ok=True)
     report = run_dir / "资产评估报告_待复核.docx"
-    audit = run_dir / "字段审计清单.xlsx"
     before_hash = hashlib.sha256(template.read_bytes()).hexdigest()
     fill_template(
         template,
@@ -708,14 +705,6 @@ def run_project(
     generation_issues = organize_generation_issues(
         generation_issues
     )
-    issue_workbook = export_generation_issues(
-        run_dir / "生成问题清单.xlsx",
-        generation_issues,
-    )
-    issue_json = write_json(
-        run_dir / "生成问题清单.json",
-        generation_issues,
-    )
     for issue in generation_issues:
         issues.append(
             f"Word页码不可用 {issue.get('location_description', '')}："
@@ -723,7 +712,6 @@ def run_project(
         )
     if hashlib.sha256(template.read_bytes()).hexdigest() != before_hash:
         raise RuntimeError("模板被意外修改")
-    export_audit(audit, [*locations, *static_locations], fields, evidence)
     normalized_evidence = write_json(
         run_dir / "normalized_evidence.json",
         evidence,
@@ -742,16 +730,12 @@ def run_project(
         },
         "outputs": [
             str(report),
-            str(audit),
-            str(issue_workbook),
-            str(issue_json),
             str(normalized_evidence),
         ],
     }
     manifest_path = write_json(run_dir / "run_manifest.json", manifest)
-    write_json(run_dir / "issues.json", issues)
     write_json(run_dir / "normalized_fields.json", fields)
-    return RunResult(report, audit, manifest_path, issues)
+    return RunResult(report, manifest_path, issues)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -773,7 +757,7 @@ def main(argv: list[str] | None = None) -> int:
         choices=["aliyun", "paddle", "none"],
         help=argparse.SUPPRESS,
     )
-    parser.add_argument("--use-glm", action="store_true", help="使用百炼模型生成叙述字段并执行三类审核")
+    parser.add_argument("--use-glm", action="store_true", help="使用百炼模型生成Word固定位置的候选叙述")
     parser.add_argument("--use-qichacha", action="store_true", help="使用配置的企查查兼容 API")
     parser.add_argument("--node-inputs-json", type=Path, help="两个节点输入字段的 JSON 文件")
     parser.add_argument("--commissioning-party-name", help="用户输入：委托方全称")
@@ -913,13 +897,9 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print("OCR Excel：未提供 PDF，已跳过")
         print(f"报告：{result.report_path}")
-        print(f"审计：{result.audit_path}")
-        print(f"留空或复核事项：{len(result.issues)}")
         return 0
     result = run_project(Path(args.project), args.output_dir, args.offline)
     print(f"报告：{result.report_path}")
-    print(f"审计：{result.audit_path}")
-    print(f"留空字段：{len(result.issues)}")
     return 0
 
 

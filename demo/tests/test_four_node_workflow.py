@@ -28,6 +28,16 @@ def test_workflow_is_split_into_four_explicit_nodes() -> None:
     assert payload["nodes"][1]["human_checkpoint"]
 
 
+def test_output_node_contract_contains_only_the_word_report() -> None:
+    payload = json.loads((ROOT / "workflow.yaml").read_text(encoding="utf-8"))
+    output_node = payload["nodes"][-1]
+
+    assert "审计清单" not in output_node["description"]
+    assert "问题清单" not in output_node["description"]
+    assert set(schemas.OutputInput.model_fields) == {"report_path"}
+    assert set(schemas.OutputOutput.model_fields) == {"report_path"}
+
+
 def test_select_llm_candidates_only_keeps_allowed_template_slots() -> None:
     candidates = {
         "company_profile_section": "公司概况候选",

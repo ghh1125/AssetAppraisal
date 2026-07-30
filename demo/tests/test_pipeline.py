@@ -168,7 +168,7 @@ def fixture_ocr_fields(normalized, config):
     }, []
 
 
-def test_pipeline_creates_ocr_xlsx_word_and_audit_without_cross_route_fallback(tmp_path):
+def test_pipeline_creates_ocr_xlsx_and_word_without_cross_route_fallback(tmp_path):
     config = Path("demo/projects/tongfu.yaml")
     template = Path("资产评估工作流/评估报告版式-沟通标注版.docx")
     pdf = Path("资产评估工作流/通富2025.6.30合并及母公司审计报告.pdf")
@@ -192,7 +192,7 @@ def test_pipeline_creates_ocr_xlsx_word_and_audit_without_cross_route_fallback(t
 
     assert result.ocr_workbook_path.exists()
     assert result.report_path.exists()
-    assert result.audit_path.exists()
+    assert not (tmp_path / "字段审计清单.xlsx").exists()
     assert hashlib.sha256(template.read_bytes()).hexdigest() == template_hash
     fields = json.loads((tmp_path / "normalized_fields.json").read_text(encoding="utf-8"))
     assert fields["company_profile_section"] == "基于 OCR 证据生成的公司概述。"
@@ -231,30 +231,6 @@ def test_pipeline_creates_ocr_xlsx_word_and_audit_without_cross_route_fallback(t
     assert "富士和机械工业（昆山）有限公司" not in ownership_text
     assert "上海上大热处理有限公司" not in ownership_text
 
-
-    from openpyxl import load_workbook
-
-    audit_sheet = load_workbook(result.audit_path, read_only=True, data_only=True)["填充结果"]
-    assert [cell.value for cell in audit_sheet[1]][:3] == ["位置编号", "原模板页码", "类型"]
-    assert audit_sheet[2][1].value == 1
-    target_company_row = next(
-        row for row in audit_sheet.iter_rows(min_row=2, values_only=True) if row[4] == "target_company_name"
-    )
-    assert target_company_row[7] == "income_workbook"
-    ownership_row = next(
-        row for row in audit_sheet.iter_rows(min_row=2, values_only=True)
-        if row[4] == "ownership_history"
-    )
-    assert ownership_row[7] == "qichacha_api"
-    assert "企查查 API" in ownership_row[8]
-    balance_table_row = next(
-        row
-        for row in audit_sheet.iter_rows(min_row=2, values_only=True)
-        if row[4] == "historical_balance_sheet_table"
-    )
-    assert "通富审核后财报-单体1月5日.xlsx" in balance_table_row[8]
-    assert "06N_资产负债表" in balance_table_row[9]
-
     with zipfile.ZipFile(result.report_path) as archive:
         xml = "".join(
             archive.read(name).decode("utf-8")
@@ -264,7 +240,8 @@ def test_pipeline_creates_ocr_xlsx_word_and_audit_without_cross_route_fallback(t
     assert 'w:val="yellow"' in xml
     assert "待人工补充" not in xml
     assert "不应采用" not in xml
-    assert (tmp_path / "生成问题清单.xlsx").exists()
+    assert not (tmp_path / "生成问题清单.xlsx").exists()
+    assert not (tmp_path / "生成问题清单.json").exists()
 
     manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
     assert manifest["yellow_route_version"] == "yellow_routes.v1"
@@ -351,22 +328,6 @@ def test_pipeline_generates_review_report_when_monetary_fields_are_missing(
         for cell in row.cells[1:]
     )
 
-    audit_sheet = load_workbook(
-        result.audit_path,
-        read_only=True,
-        data_only=True,
-    )["填充结果"]
-    audit_headers = {
-        cell.value: index for index, cell in enumerate(audit_sheet[1])
-    }
-    book_net_assets_row = next(
-        row
-        for row in audit_sheet.iter_rows(min_row=2, values_only=True)
-        if row[audit_headers["标准字段"]] == "book_net_assets"
-    )
-    assert book_net_assets_row[audit_headers["最终填充值"]] in ("", None)
-    assert book_net_assets_row[audit_headers["来源类别"]] == "missing"
-
     manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
     assert manifest["financial_validation"]["valid"] is False
     assert set(manifest["financial_validation"]["missing_fields"]) == {
@@ -382,7 +343,7 @@ def test_pipeline_generates_review_report_when_monetary_fields_are_missing(
     assert fill_word_node["status"] == "completed_with_issues"
 
 
-def test_pipeline_without_pdf_exports_report_and_issue_list(tmp_path):
+def test_pipeline_without_pdf_exports_report_only(tmp_path):
     result = run_pipeline(
         project_config=Path("demo/projects/tongfu.yaml"),
         pdf_path=None,
@@ -400,12 +361,8 @@ def test_pipeline_without_pdf_exports_report_and_issue_list(tmp_path):
 
     assert result.report_path.exists()
     assert result.ocr_workbook_path is None
-    assert (tmp_path / "生成问题清单.xlsx").exists()
-    issues = json.loads(
-        (tmp_path / "生成问题清单.json").read_text(encoding="utf-8")
-    )
-    assert issues
-    assert all("page_basis" in item for item in issues)
+    assert not (tmp_path / "生成问题清单.xlsx").exists()
+    assert not (tmp_path / "生成问题清单.json").exists()
     manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
     assert manifest["financial_validation"]["valid"] is False
     assert manifest["generation_validation"]["valid"] is False
@@ -424,7 +381,7 @@ def test_pipeline_preserves_semantic_excel_file_and_cell_evidence(tmp_path):
     workbook.save(reporting)
 
     output = tmp_path / "run"
-    run_pipeline(
+    result = run_pipeline(
         project_config=Path("demo/projects/tongfu.yaml"),
         pdf_path=None,
         output_dir=output,
@@ -492,7 +449,7 @@ def test_pipeline_keeps_unfinished_appraisal_reason_in_issue_list(
         page_mapping,
     )
     output = tmp_path / "run"
-    run_pipeline(
+    result = run_pipeline(
         project_config=Path("demo/projects/tongfu.yaml"),
         pdf_path=None,
         output_dir=output,
@@ -508,19 +465,7 @@ def test_pipeline_keeps_unfinished_appraisal_reason_in_issue_list(
         template_page_reader=FixtureTemplatePageReader(),
     )
 
-    issues = json.loads(
-        (output / "生成问题清单.json").read_text(encoding="utf-8")
-    )
-    unfinished = [
-        item
-        for item in issues
-        if item["category"] == "unfinished_appraisal"
-    ]
-    assert unfinished
-    assert unfinished[0]["source_file"] == reporting.name
-    assert unfinished[0]["source_locator"] == "汇总表!C5"
-    assert unfinished[0]["page_number"] == 16
-    assert unfinished[0]["page_basis"] == "template"
+    assert any("尚未完成评估" in issue for issue in result.issues)
 
 
 def test_pipeline_without_pdf_passes_material_fields_to_llm(tmp_path):
@@ -706,7 +651,7 @@ def test_pipeline_keeps_review_report_when_cloud_ocr_fails(tmp_path):
 
     assert result.report_path.exists()
     assert "阿里云 OCR 提交失败：NoPermission" in result.issues
-    assert (tmp_path / "生成问题清单.xlsx").exists()
+    assert not (tmp_path / "生成问题清单.xlsx").exists()
 
 
 def test_pipeline_only_fills_selected_narrative_modules(tmp_path):

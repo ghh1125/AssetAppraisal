@@ -28,11 +28,11 @@
     },
     {
       "name": "output",
-      "description": "输出Word、字段审计清单和带实际页码的问题清单；找不到的内容保留并高亮XXX。",
+      "description": "输出独立的评估报告 Word；找不到的内容保留并高亮XXX。",
       "input_model": "OutputInput",
       "output_model": "OutputOutput",
       "depends_on": ["fill_word"],
-      "human_checkpoint": "人工下载并复核Word和问题清单"
+      "human_checkpoint": "人工下载并复核Word"
     }
   ]
 }

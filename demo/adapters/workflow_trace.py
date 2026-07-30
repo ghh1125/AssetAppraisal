@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from demo.adapters.audit import write_json
+from demo.adapters.json_io import write_json
 from demo.schemas import DemoModel, NodeTrace, WorkflowTrace
 
 

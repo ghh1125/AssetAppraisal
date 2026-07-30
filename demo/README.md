@@ -9,7 +9,7 @@
 1. `start_input`（开始/输入）：接收用户填写的委托方、被评估单位、评估目的和方法等字段，以及可选的审计 PDF、资产基础法/资产清查 Excel、收益法或市场法 Excel。Word 模板始终由后端提供，不接受用户覆盖。
 2. `ocr_llm_candidates`（材料解析与候选生成）：有 PDF 才执行 OCR（命中 SHA-256 缓存则复用）；解析 OCR/XLSX/API 的确定性字段；百炼模型一次为模板中七个固定 LLM 位置生成候选文本，并将候选内容和对应 Word 位置返回。该节点暂停，等待用户逐项选择。
 3. `fill_word`（Word 填充）：只把用户选择的 LLM 候选，加上人工、OCR/XLSX 和企查查字段，按黄色路由和表格语义映射写入复制后的 Word。原模板不改；未命中内容不编造。
-4. `output`（结果输出）：输出待复核 Word、字段审计清单和带实际 Word 页码的问题清单。找不到的内容保留并高亮 `XXX`，同时写入缺失字段、来源和检查建议。
+4. `output`（结果输出）：只输出独立的待复核 Word。找不到的内容保留并高亮 `XXX`，供人工在 Word 中复核。
 
 运行前会校验 `workflow.yaml` 中四个节点引用的 Pydantic 输入输出模型、依赖关系、描述和字段业务说明。工作流只保留上述四类节点，不再执行格式审核、数据校验、语义审核或审核汇总。
 
@@ -20,7 +20,7 @@ uv sync --extra dev
 uv run python -m demo.run demo/projects/tongfu.yaml --offline
 ```
 
-`--offline` 不调用企业 API 和 LLM。所有业务材料均可缺省；找不到的字段在 Word 保留原 `XX/XXX/20XX`（没有原标记时使用 `XXX`），只标黄占位符本身，并记录到生成问题清单。可用 `--output-dir` 指定独立输出目录。原 Word 永远作为只读模板，不会被覆盖。
+`--offline` 不调用企业 API 和 LLM。所有业务材料均可缺省；找不到的字段在 Word 保留原 `XX/XXX/20XX`（没有原标记时使用 `XXX`），只标黄占位符本身。可用 `--output-dir` 指定独立输出目录。原 Word 永远作为只读模板，不会被覆盖。
 
 在 c2m 或其他宿主中，可直接调用 `run_project(...)` / `run_pipeline(...)` 并通过 `ocr_adapter`、`company_api_adapter` 和 `llm_adapter` 参数注入已有服务。Demo 不在 `domain/` 内创建客户端或读取密钥；注入结果只接受映射表中已经登记的字段键。
 
@@ -36,7 +36,7 @@ APPRAISAL_OCR_TIMEOUT_SECONDS=900
 
 百炼和企查查仍分别使用 `DASHSCOPE_API_KEY`、`QICHACHA_APP_KEY` 与 `QICHACHA_SECRET_KEY`，三类服务凭证互不替代。
 
-命令中的 `--pdf` 可省略；省略后跳过 OCR，工作流从其他可用材料和人工输入继续。同一 PDF 命中 SHA-256 缓存时不会再次消耗云端页数。云端失败时不自动回退本地模型，相关字段保留黄色占位符并进入问题清单。
+命令中的 `--pdf` 可省略；省略后跳过 OCR，工作流从其他可用材料和人工输入继续。同一 PDF 命中 SHA-256 缓存时不会再次消耗云端页数。云端失败时不自动回退本地模型，相关字段保留黄色占位符。
 
 ```bash
 uv python install 3.11
@@ -58,7 +58,7 @@ uv run --python 3.11 python -m demo.run demo/projects/tongfu.yaml \
 
 仅在需要显式启用本地高内存模式时执行 `uv sync --extra ocr` 并设置 `APPRAISAL_OCR_PROVIDER=paddle` 或命令行参数 `--ocr-provider paddle`。`APPRAISAL_OCR_PROVIDER=none` 会完全跳过 PDF OCR。
 
-如需调用已购买的企查查接口 735（工商详情）、231（商标）、514（专利）和 233（著作权软著），设置 `QICHACHA_APP_KEY`、`QICHACHA_SECRET_KEY` 并增加 `--use-qichacha`。默认使用企查查官方签名方式；如平台给 514 或 233 分配了不同的路径，可用 `QICHACHA_ENDPOINT_514`、`QICHACHA_ENDPOINT_233` 覆盖，基地址可用 `QICHACHA_API_BASE_URL` 覆盖。两个节点输入可放入 JSON 文件并用 `--node-inputs-json` 传入。凭证只在 `run.py` 这一组合入口读取，不会进入 `domain/`、运行清单、审计文件或 Word。
+如需调用已购买的企查查接口 735（工商详情）、231（商标）、514（专利）和 233（著作权软著），设置 `QICHACHA_APP_KEY`、`QICHACHA_SECRET_KEY` 并增加 `--use-qichacha`。默认使用企查查官方签名方式；如平台给 514 或 233 分配了不同的路径，可用 `QICHACHA_ENDPOINT_514`、`QICHACHA_ENDPOINT_233` 覆盖，基地址可用 `QICHACHA_API_BASE_URL` 覆盖。两个节点输入可放入 JSON 文件并用 `--node-inputs-json` 传入。凭证只在 `run.py` 这一组合入口读取，不会进入 `domain/`、内部运行状态或 Word。
 
 ## 黄色字段硬路由
 
@@ -74,17 +74,9 @@ uv run --python 3.11 python -m demo.run demo/projects/tongfu.yaml \
 
 ## 输出
 
-- `OCR结构化结果.xlsx`
-  - `OCR_表格`：逐单元格审计明细；`OCR_表格索引` 及 `表_<页码>_<表格编号>`：按 OCR 行列恢复的矩阵表，便于人工查看和后续映射。
-- `资产评估报告_待复核.docx`
-- `llm候选内容.json`（第二节点暂停时的候选内容和 Word 位置）
-- `字段审计清单.xlsx`
-- `生成问题清单.xlsx`、`生成问题清单.json`
-- `normalized_fields.json`
-- `issues.json`
-- `run_manifest.json`
-- `workflow_trace.json`
-  - 按 `workflow.yaml` 顺序记录四个节点的执行/跳过状态、输入输出模型、结构化摘要、人工检查点、来源证据、问题以及规则/Prompt/模型/数据版本。
+- `资产评估报告_待复核.docx`：唯一面向用户的输出。模板始终复制后填充，不覆盖原模板；找不到的值保留黄色 `XXX`。
+
+OCR 缓存、LLM 候选和运行轨迹属于流程内部状态，不作为用户下载项。
 
 ## Vue 前端工作台
 
@@ -92,7 +84,7 @@ uv run --python 3.11 python -m demo.run demo/projects/tongfu.yaml \
 
 任务结果区会实时显示四个节点的时间线和状态。节点 2 完成后状态为“等待人工选择”，用户确认候选后才继续节点 3 和节点 4；节点状态同时写入 API 返回的 `nodes` 和 `workflow_trace.json`。
 
-上传框按材料角色接收文件，原文件名不需要与配置一致。程序先使用已验证项目的精确坐标；坐标不存在、为空或与新版式明显冲突时，再按工作表特征、科目行、列标题和金额单位做语义定位。当前通用规则覆盖资产基础法/市场法的账面净资产和评估价值、收益法股东全部权益价值、资产负债汇总、历史资产负债表、历史利润表、主要长期资产、主要产品及增值税率。无法唯一匹配时保留黄色 `XXX` 并进入问题清单，不用相邻非零单元格猜值。
+上传框按材料角色接收文件，原文件名不需要与配置一致。程序先使用已验证项目的精确坐标；坐标不存在、为空或与新版式明显冲突时，再按工作表特征、科目行、列标题和金额单位做语义定位。当前通用规则覆盖资产基础法/市场法的账面净资产和评估价值、收益法股东全部权益价值、资产负债汇总、历史资产负债表、历史利润表、主要长期资产、主要产品及增值税率。无法唯一匹配时保留黄色 `XXX`，不用相邻非零单元格猜值。
 
 Web 任务输出目录按“`YYYYMMDDHHMM-PDF文件名`”命名，例如 `runs/web/202607231144-通富2025.6.30合并及母公司审计报告/`；同一分钟重复提交会自动追加序号，不覆盖已有任务。
 
@@ -107,37 +99,35 @@ npm run dev
 
 页面提交的字段与命令行参数一一对应：委托方全称/简称、评估主体全称/简称、报告编号流水号、评估目的、评估方法（资产基础法/收益法/市场法多选）、评估对象（四选一）、委托类型（转让/收购/增资/减资）和评估结论采用方法（单选）。任务创建后，第二节点展示七个固定 Word 位置的 LLM 候选，用户勾选后再提交填充。企查查、百炼和 PDF OCR/XLSX 不要求用户在页面重复填写。
 
-字段审计清单逐行记录原模板页码、稳定位置编号、原文上下文、程序填入内容、来源类别、来源文件和来源位置。原模板页码由 LibreOffice 只读渲染模板后按段落顺序匹配得到；页脚标记为“多页页脚”。`workflow_trace.json` 记录节点级契约执行情况，不复制 OCR 全文，也不记录 API 密钥。OCR、API、LLM、财务数据及评估结论的正确性由业务人员人工审核。
-
-`OCR结构化结果.xlsx` 固定包含 `OCR_文本`、`OCR_表格`、`标准财务数据`、`识别问题` 四个工作表，保存页码、行列、坐标、置信度和证据编号。`run_manifest.json` 保存模板/PDF 哈希、黄色路由版本、财务规则版本、Prompt 版本和全部输出路径。原 Word 仅作模板，输出路径与模板相同时程序拒绝运行。
+运行轨迹和标准化字段只用于流程内部，不向用户提供下载链接。原 Word 仅作模板，输出路径与模板相同时程序拒绝运行。
 
 ## 失败与人工审核策略
 
 - 未上传 PDF：OCR 和 OCR Excel 导出节点标记为 `skipped`，其余节点继续。
-- OCR 失败或某个指定来源无结果：Word 保留黄色占位符，并写入 `issues.json` 和生成问题清单。
+- OCR 失败或某个指定来源无结果：Word 保留黄色占位符，流程继续生成报告。
 - `workflow.yaml` 节点、模型、字段说明或依赖不符合契约：在任何外部调用前停止运行。
-- 本机无 LibreOffice 或 PyMuPDF：Word 仍可生成，字段审计表的原模板页码留空并记录问题。
-- 金额及财务结果字段缺失：对应段落或表格单元格写黄色 `XXX`，仍生成待复核 Word，并在问题清单、字段审计、运行清单和工作流轨迹中标为高优先级。
+- 本机无 LibreOffice 或 PyMuPDF：Word 仍可生成，缺失内容保留黄色占位符。
+- 金额及财务结果字段缺失：对应段落或表格单元格写黄色 `XXX`，仍生成待复核 Word。
 - 同字段同期间出现冲突候选：不自动选择，保留待复核 Word 和冲突记录，由 c2m 或评估师处理。
-- 百炼叙述返回越权字段、无证据字段或未知证据编号：丢弃该字段并记录问题。
+- 百炼叙述返回越权字段、无证据字段或未知证据编号：丢弃该字段并保留黄色占位符。
 - LLM 候选生成失败：对应固定位置保留黄色 `XXX`，继续生成 Word；不会执行额外的格式、数据或语义审核。
-- 企查查 API 未配置或企业身份核验不一致：对应 API 字段保留黄色占位符并记录复核事项。
+- 企查查 API 未配置或企业身份核验不一致：对应 API 字段保留黄色占位符，继续生成报告供人工复核。
 - 已有同一 PDF 的 OCR 结果：默认复用缓存，不重复执行 OCR；取消“复用已有 OCR 结果”后才会强制重新 OCR。
-- 生成完成：评估师先查看生成问题清单的“检查总览”，再按“问题明细”的 Word 页码、检查位置、来源文件和处理建议逐项审核，同时核对字段审计清单和 OCR Excel；Demo 验收不代表生产上线。
+- 生成完成：评估师直接打开评估报告 Word，按黄色 `XXX` 逐项人工复核；Demo 验收不代表生产上线。
 
 ## 扩展方式
 
 - 新项目：新增 `projects/<project>.yaml` 和人工参数文件。
-- 新 PDF：端到端入口支持替换 PDF，但“任意 PDF 直接盲填”不是可靠承诺。OCR、Excel 导出和 Word 复制是通用步骤；字段含义、审计表行列、黄色字段来源和目标 Word 位置仍由项目 YAML/映射配置声明。新 PDF 与现有审计版式一致时可直接复用；版式或报告模板变化时先更新对应配置并做一次人工验收。
+- 新 PDF：端到端入口支持替换 PDF，但“任意 PDF 直接盲填”不是可靠承诺。OCR、Excel 导出和 Word 复制是通用步骤；字段含义、黄色字段来源和目标 Word 位置仍由项目 YAML/映射配置声明。新 PDF 与现有审计版式一致时可直接复用；版式或报告模板变化时先更新对应配置并做一次人工验收。
 - 新财务表：通用科目先由 `workbook_semantics.v3` 自动识别，并根据工作簿内的收益法/市场法语义归类估值结果；语义结果是主路径，`financial_tables` 和固定坐标只在语义结果缺失时回退或补空。疑似尚未完成评估的全零评估列不会作为有效结果。
 - 新财务指标：通用估值结果优先按标签和表头定位；项目特有指标在 `financial_fields` 中声明来源单元格和换算比例，并用 `final_value_field` 配置最终采用的评估结果字段。
 - PDF OCR：阿里云文档智能默认输出统一页/块/表格契约，再生成独立 OCR Excel；本地 PP-StructureV3 仅作为显式可选提供方。通用财务字段可按别名、期间和单位匹配，版式敏感的附注字段在项目配置中声明页码、表格、行列定位。
 - 新材料叙述：参考 Word 会按主题自动提取带编号证据；项目特有的确定性内容仍可在 `material_fields` 中组合 Excel 单元格、Excel 范围或参考 Word 段落/表格，并用 `paragraph_replacements` 替换模板中没有占位符的静态旧项目文字。
 - 新模板：新增映射文件并运行模板回归测试。
 - 新服务商：在 `adapters/` 实现相同输入输出契约，通过 `run.py` 注入。
-- 新规则：修改 `domain/` 纯函数，同时更新 fixture、expected、测试和 `CHANGELOG.md`。未解决的 `XX/XXX/20XX` 必须标黄并逐项进入生成问题清单。
+- 新规则：修改 `domain/` 纯函数，同时更新 fixture、expected、测试和 `CHANGELOG.md`。未解决的 `XX/XXX/20XX` 必须标黄。
 - 新 Prompt：新增带版本号的 Prompt 和输出结构，不覆盖旧版本。
 
 ## c2m 接入资产
 
-生产接入优先复用：`schemas.py`、`domain/`、`prompts/`、`mappings/`、`fixtures/`、`expected/`、`tests/`、`workflow.yaml` 和 `data_manifest.yaml`。c2m 可以消费 `workflow_trace.json` 和字段审计清单完成任务状态及审计接入；`run.py`、`pipeline.py`、`api_server.py` 与 `adapters/` 仍是 Demo 外壳，可由 c2m 的用户权限、后台任务、持久化、对象存储、超时重试、监控和发布体系替换。
+生产接入优先复用：`schemas.py`、`domain/`、`prompts/`、`mappings/`、`fixtures/`、`expected/`、`tests/`、`workflow.yaml` 和 `data_manifest.yaml`。`run.py`、`pipeline.py`、`api_server.py` 与 `adapters/` 仍是 Demo 外壳，可由 c2m 的用户权限、后台任务、持久化、对象存储、超时重试、监控和发布体系替换。

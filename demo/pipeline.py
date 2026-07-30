@@ -13,14 +13,13 @@ from typing import Any, Callable
 from openpyxl import load_workbook
 
 from demo import schemas
-from demo.adapters.audit import export_audit, write_json
+from demo.adapters.json_io import write_json
 from demo.adapters.document import read_narrative_evidence, read_table_matrix
 from demo.adapters.excel import (
     read_cells,
     try_read_cells,
     try_read_configured_table,
 )
-from demo.adapters.generation_issues import export_generation_issues
 from demo.adapters.ocr_workbook import export_ocr_workbook, normalized_from_ocr_workbook
 from demo.adapters.workflow_trace import (
     WorkflowTraceRecorder,
@@ -70,7 +69,6 @@ from demo.run import run_project
 @dataclass(frozen=True)
 class PipelineResult:
     report_path: Path
-    audit_path: Path
     ocr_workbook_path: Path | None
     manifest_path: Path
     issues: list[str]
@@ -657,7 +655,7 @@ def run_pipeline(
         evidence = (
             json.loads(normalized_evidence.read_text(encoding="utf-8"))
             if normalized_evidence.exists()
-            else _legacy_evidence(legacy.audit_path)
+            else {}
         )
 
     # The valuation object is a controlled user input even though the current
@@ -1314,7 +1312,6 @@ def run_pipeline(
             ],
         }
         candidate_path = write_json(output_dir / "llm候选内容.json", candidate_payload)
-        write_json(output_dir / "issues.json", issues)
         record_stage(
             "start_input",
             {
@@ -1374,8 +1371,8 @@ def run_pipeline(
         )
         record_stage(
             "output",
-            {"report_path": "", "issue_paths": [str(output_dir / "issues.json")]},
-            {"artifacts": [str(candidate_path)], "highlighted_placeholder_count": 0, "missing_count": len(issues)},
+            {"report_path": ""},
+            {"report_path": ""},
             status="skipped",
         )
         trace_path = recorder.export(output_dir / "workflow_trace.json")
@@ -1395,13 +1392,11 @@ def run_pipeline(
                     *([str(ocr_workbook)] if ocr_workbook else []),
                     str(candidate_path),
                     str(trace_path),
-                    str(output_dir / "issues.json"),
                 ],
             },
         )
         return PipelineResult(
             output_dir / "资产评估报告_待复核.docx",
-            output_dir / "字段审计清单.xlsx",
             ocr_workbook,
             manifest_path,
             issues,
@@ -1534,7 +1529,6 @@ def run_pipeline(
         ]
 
     report = output_dir / "资产评估报告_待复核.docx"
-    audit = output_dir / "字段审计清单.xlsx"
     fill_template(
         template,
         report,
@@ -1628,27 +1622,12 @@ def run_pipeline(
     generation_issues = organize_generation_issues(
         generation_issues
     )
-    issue_workbook = export_generation_issues(
-        output_dir / "生成问题清单.xlsx",
-        generation_issues,
-    )
-    issue_json = write_json(
-        output_dir / "生成问题清单.json",
-        generation_issues,
-    )
     for issue in generation_issues:
         page = issue.get("page_number") or "页码不可用"
         issues.append(
             f"Word第{page}页 {issue.get('location_description', '')}："
             f"{issue.get('problem', '')}"
         )
-    export_audit(
-        audit,
-        [*locations, *static_locations],
-        fields,
-        evidence,
-        template_pages=template_pages,
-    )
     normalized_fields_path = write_json(
         output_dir / "normalized_fields.json",
         fields,
@@ -1657,7 +1636,6 @@ def run_pipeline(
         output_dir / "normalized_evidence.json",
         evidence,
     )
-    write_json(output_dir / "issues.json", issues)
     planned_manifest_path = output_dir / "run_manifest.json"
     candidate_locations: dict[str, list[str]] = defaultdict(list)
     for location in template_inventory:
@@ -1735,21 +1713,10 @@ def run_pipeline(
         status="completed_with_issues" if financial_validation["valid"] is False or generation_issues else "completed",
         node_issues=financial_issues,
     )
-    output_artifacts = [
-        *([str(ocr_workbook)] if ocr_workbook else []),
-        str(report),
-        str(audit),
-        str(issue_workbook),
-        str(issue_json),
-    ]
     record_stage(
         "output",
-        {"report_path": str(report), "issue_paths": [str(issue_workbook), str(issue_json)]},
-        {
-            "artifacts": output_artifacts,
-            "highlighted_placeholder_count": len(generation_issues),
-            "missing_count": len(generation_issues),
-        },
+        {"report_path": str(report)},
+        {"report_path": str(report)},
         status="completed_with_issues" if generation_issues else "completed",
         node_issues=list(issues),
     )
@@ -1780,13 +1747,10 @@ def run_pipeline(
         "outputs": [
             *([str(ocr_workbook)] if ocr_workbook else []),
             str(report),
-            str(audit),
-            str(issue_workbook),
-            str(issue_json),
             str(normalized_fields_path),
             str(normalized_evidence_path),
             str(trace_path),
         ],
     }
     manifest_path = write_json(planned_manifest_path, manifest)
-    return PipelineResult(report, audit, ocr_workbook, manifest_path, issues)
+    return PipelineResult(report, ocr_workbook, manifest_path, issues)

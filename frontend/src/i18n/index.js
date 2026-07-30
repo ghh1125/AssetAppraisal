@@ -93,11 +93,6 @@ const messages = {
       selectFailed: '提交候选内容选择失败',
       artifacts: {
         report: '评估报告 Word',
-        ocr: 'OCR 结构化 Excel',
-        audit: '字段审计清单',
-        manifest: '运行清单',
-        issues: '复核事项',
-        fields: '标准字段结果',
       },
       qcc: '收购',
       methodOptions: {
@@ -182,11 +177,6 @@ const messages = {
       selectFailed: 'Unable to submit candidate selection',
       artifacts: {
         report: 'Word report',
-        ocr: 'OCR Excel',
-        audit: 'Audit checklist',
-        manifest: 'Run manifest',
-        issues: 'Review items',
-        fields: 'Normalized fields',
       },
       qcc: 'Acquisition',
       methodOptions: {

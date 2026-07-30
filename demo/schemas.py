@@ -36,7 +36,7 @@ class WorkflowNodeDefinition(DemoModel):
     human_checkpoint: str | None = Field(
         default=None,
         description="节点完成后的人工确认要求",
-        examples=["评估师审核问题清单"],
+        examples=["人工下载并复核Word"],
     )
 
 
@@ -86,7 +86,7 @@ class NodeTrace(DemoModel):
     human_checkpoint: str | None = Field(
         default=None,
         description="节点人工确认要求",
-        examples=["评估师审核问题清单"],
+        examples=["用户逐项选择LLM候选内容"],
     )
 
 
@@ -223,23 +223,6 @@ class ResolveFieldsOutput(DemoModel):
     fields: list[ResolvedField] = Field(description="解析后的标准字段", examples=[[]])
 
 
-class SelectNarrativeModulesInput(DemoModel):
-    selected_modules: list[str] = Field(description="用户勾选的主体概况模块键", examples=[["main_products"]])
-
-
-class SelectNarrativeModulesOutput(DemoModel):
-    selected_modules: list[str] = Field(description="通过校验的主体概况模块键", examples=[["main_products"]])
-
-
-class GenerateNarrativeInput(DemoModel):
-    fields: list[ResolvedField] = Field(description="作为生成证据的标准字段", examples=[[]])
-
-
-class GenerateNarrativeOutput(DemoModel):
-    fields: list[ResolvedField] = Field(description="生成的叙述性标准字段", examples=[[]])
-    prompt_version: str = Field(description="所用 Prompt 版本", examples=["yellow_narratives.v1"])
-
-
 class FillWordInput(DemoModel):
     template_path: str = Field(description="只读 Word 模板路径", examples=["template.docx"])
     output_path: str = Field(description="新 Word 输出路径", examples=["report.docx"])
@@ -249,16 +232,6 @@ class FillWordInput(DemoModel):
 class FillWordOutput(DemoModel):
     report_path: str = Field(description="生成的新 Word 路径", examples=["report.docx"])
     replacement_count: int = Field(description="已替换位置数量", examples=[147])
-
-
-class ExportAuditInput(DemoModel):
-    report_path: str = Field(description="待审核 Word 路径", examples=["report.docx"])
-    fields: list[ResolvedField] = Field(description="需导出的标准字段", examples=[[]])
-
-
-class ExportAuditOutput(DemoModel):
-    audit_path: str = Field(description="字段审计清单路径", examples=["audit.xlsx"])
-    manifest_path: str = Field(description="运行记录路径", examples=["run_manifest.json"])
 
 
 class StartInput(DemoModel):
@@ -320,13 +293,10 @@ class WordFillOutput(DemoModel):
 
 class OutputInput(DemoModel):
     report_path: str = Field(description="待交付的Word路径", examples=["资产评估报告_待复核.docx"])
-    issue_paths: list[str] = Field(description="问题清单文件路径", examples=[["生成问题清单.xlsx"]])
 
 
 class OutputOutput(DemoModel):
-    artifacts: list[str] = Field(description="可供下载的最终产物路径", examples=[["资产评估报告_待复核.docx", "生成问题清单.xlsx"]])
-    highlighted_placeholder_count: int = Field(description="输出Word中高亮XXX数量", examples=[3])
-    missing_count: int = Field(description="问题清单中的缺失项数量", examples=[3])
+    report_path: str = Field(description="唯一可供下载的评估报告Word路径", examples=["资产评估报告_待复核.docx"])
 
 
 class WorkflowInput(DemoModel):
@@ -335,5 +305,3 @@ class WorkflowInput(DemoModel):
 
 class WorkflowOutput(DemoModel):
     report_path: str = Field(description="生成的新 Word 路径", examples=["report.docx"])
-    audit_path: str = Field(description="字段审计清单路径", examples=["audit.xlsx"])
-    issues: list[str] = Field(description="人工审核问题", examples=[[]])
