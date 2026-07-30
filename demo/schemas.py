@@ -25,6 +25,11 @@ class DemoModel(BaseModel):
 
 class WorkflowNodeDefinition(DemoModel):
     name: str = Field(description="工作流节点名称", examples=["ocr_pdf"])
+    description: str = Field(
+        default="",
+        description="节点职责和边界说明",
+        examples=["读取输入材料并校验文件角色"],
+    )
     input_model: str = Field(description="节点输入模型名称", examples=["OcrPdfInput"])
     output_model: str = Field(description="节点输出模型名称", examples=["OcrPdfOutput"])
     depends_on: list[str] = Field(description="前置节点名称", examples=[["inventory"]])
@@ -246,34 +251,6 @@ class FillWordOutput(DemoModel):
     replacement_count: int = Field(description="已替换位置数量", examples=[147])
 
 
-class ReviewInput(DemoModel):
-    review_type: str = Field(description="审核类型", examples=["data_validation"])
-    report_path: str = Field(description="待审核 Word 路径", examples=["report.docx"])
-    evidence: dict[str, Any] = Field(description="供模型审核的结构化证据", examples=[{"fields": {}}])
-
-
-class ReviewOutput(DemoModel):
-    review_type: str = Field(description="审核类型", examples=["semantic_review"])
-    status: str = Field(description="审核状态", examples=["completed_with_issues"])
-    summary: str = Field(description="审核摘要", examples=["发现一项问题"])
-    findings: list[dict[str, Any]] = Field(description="审核发现的问题列表", examples=[[{"severity": "medium"}]])
-    model: str = Field(description="实际使用的模型", examples=["qwen3.7-max-2026-05-17"])
-    prompt_version: str = Field(description="审核 Prompt 版本", examples=["review_data.v1"])
-
-
-class ReviewAggregateInput(DemoModel):
-    reviews: dict[str, ReviewOutput] = Field(description="三个审核节点的结果", examples=[{}])
-
-
-class ReviewAggregateOutput(DemoModel):
-    status: str = Field(description="汇总审核状态", examples=["completed_with_issues"])
-    review_count: int = Field(description="已执行审核数量", examples=[3])
-    finding_count: int = Field(description="问题总数", examples=[2])
-    severity_counts: dict[str, int] = Field(description="按严重级别统计的问题数量", examples=[{"high": 1, "medium": 1, "low": 0}])
-    failed_reviews: list[str] = Field(description="执行失败的审核节点", examples=[[]])
-    findings: list[dict[str, Any]] = Field(description="汇总后的问题列表", examples=[[{"severity": "high"}]])
-
-
 class ExportAuditInput(DemoModel):
     report_path: str = Field(description="待审核 Word 路径", examples=["report.docx"])
     fields: list[ResolvedField] = Field(description="需导出的标准字段", examples=[[]])
@@ -282,6 +259,74 @@ class ExportAuditInput(DemoModel):
 class ExportAuditOutput(DemoModel):
     audit_path: str = Field(description="字段审计清单路径", examples=["audit.xlsx"])
     manifest_path: str = Field(description="运行记录路径", examples=["run_manifest.json"])
+
+
+class StartInput(DemoModel):
+    manual_inputs: dict[str, Any] = Field(
+        default_factory=dict,
+        description="用户填写的委托方、被评估单位和评估方法等基础信息",
+        examples=[{"target_company_name": "示例有限公司"}],
+    )
+    materials: dict[str, str] = Field(
+        default_factory=dict,
+        description="上传材料角色与保存路径，PDF和Excel均为可选",
+        examples=[{"pdf": "审计报告.pdf", "reporting_workbook": "资产清查.xlsx"}],
+    )
+    template_path: str = Field(
+        description="后台提供的只读 Word 模板路径",
+        examples=["评估报告版式-沟通标注版.docx"],
+    )
+
+
+class StartOutput(DemoModel):
+    accepted: bool = Field(description="输入材料和人工信息是否通过基本校验", examples=[True])
+    material_roles: list[str] = Field(description="已接收的材料角色", examples=[["pdf", "reporting_workbook"]])
+    template_path: str = Field(description="实际使用的后台模板路径", examples=["template.docx"])
+    issues: list[str] = Field(default_factory=list, description="输入节点问题列表", examples=[[]])
+
+
+class NarrativeCandidate(DemoModel):
+    field_key: str = Field(description="Word固定LLM位置对应的字段键", examples=["industry_overview"])
+    field_name: str = Field(description="Word固定LLM位置的中文名称", examples=["行业情况"])
+    value: str = Field(description="LLM生成的候选文本", examples=["行业候选内容"])
+    location_ids: list[str] = Field(description="该候选文本对应的Word位置编号", examples=[["DOCUMENT-P0003-X01"]])
+    selected: bool = Field(description="用户是否选择写入Word", examples=[False])
+
+
+class CandidateGenerationInput(DemoModel):
+    materials: dict[str, str] = Field(description="供OCR和LLM读取的材料角色与路径", examples=[{"pdf": "审计报告.pdf"}])
+    pdf_present: bool = Field(description="是否存在待OCR的PDF", examples=[True])
+    llm_enabled: bool = Field(description="是否调用百炼模型生成候选文本", examples=[True])
+
+
+class CandidateGenerationOutput(DemoModel):
+    ocr_performed: bool = Field(description="本次是否执行PDF OCR", examples=[False])
+    ocr_workbook_path: str | None = Field(default=None, description="OCR结构化结果Excel路径", examples=["OCR结构化结果.xlsx"])
+    candidates: list[NarrativeCandidate] = Field(description="全部Word固定LLM位置的候选内容", examples=[[]])
+    selection_required: bool = Field(description="是否暂停等待用户选择候选内容", examples=[True])
+
+
+class WordFillInput(DemoModel):
+    template_path: str = Field(description="只读Word模板路径", examples=["template.docx"])
+    selected_llm_fields: dict[str, str] = Field(description="用户选择写入的LLM候选字段和值", examples=[{"industry_overview": "行业候选内容"}])
+    deterministic_sources: dict[str, str] = Field(description="PDF OCR、Excel、企查查和人工字段来源摘要", examples=[{"asset_total": "审计报告.pdf"}])
+
+
+class WordFillOutput(DemoModel):
+    report_path: str = Field(description="生成的新Word路径", examples=["资产评估报告_待复核.docx"])
+    replacement_count: int = Field(description="已替换的位置和表格数量", examples=[147])
+    unresolved_count: int = Field(description="仍保留并高亮XXX的位置数量", examples=[3])
+
+
+class OutputInput(DemoModel):
+    report_path: str = Field(description="待交付的Word路径", examples=["资产评估报告_待复核.docx"])
+    issue_paths: list[str] = Field(description="问题清单文件路径", examples=[["生成问题清单.xlsx"]])
+
+
+class OutputOutput(DemoModel):
+    artifacts: list[str] = Field(description="可供下载的最终产物路径", examples=[["资产评估报告_待复核.docx", "生成问题清单.xlsx"]])
+    highlighted_placeholder_count: int = Field(description="输出Word中高亮XXX数量", examples=[3])
+    missing_count: int = Field(description="问题清单中的缺失项数量", examples=[3])
 
 
 class WorkflowInput(DemoModel):

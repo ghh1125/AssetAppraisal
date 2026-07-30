@@ -1,6 +1,5 @@
 from demo.domain.narrative_policy import (
     select_narrative_fields,
-    should_create_candidate_report,
 )
 
 
@@ -20,26 +19,3 @@ def test_unrouted_selected_module_is_not_added():
     )
 
     assert allowed == {"company_profile_section"}
-
-
-def test_candidate_report_requires_at_least_one_completed_review():
-    assert should_create_candidate_report({}) is False
-    assert should_create_candidate_report(
-        {"format": {"status": "failed", "findings": []}}
-    ) is False
-    assert should_create_candidate_report(
-        {"format": {"status": "completed", "findings": []}}
-    ) is True
-    assert should_create_candidate_report(
-        {"data": {"status": "completed_with_issues", "findings": [{}]}}
-    ) is True
-
-
-def test_candidate_report_is_withheld_when_financial_fields_are_incomplete():
-    assert (
-        should_create_candidate_report(
-            {"format": {"status": "completed", "findings": []}},
-            financial_fields_complete=False,
-        )
-        is False
-    )

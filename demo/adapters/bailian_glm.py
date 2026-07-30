@@ -27,6 +27,14 @@ FIELD_ORDER = (
     "profit_model_swot",
     "comparable_list",
 )
+# These snapshots are thinking-only models.  DashScope rejects an explicit
+# ``enable_thinking=false`` for them; omitting the parameter is required.
+THINKING_ONLY_MODELS = frozenset(
+    {
+        "qwen3.7-max-preview",
+        "qwen3.7-max-2026-05-17",
+    }
+)
 FIELD_KEYWORDS = {
     "company_profile_section": ("公司", "企业", "成立", "注册资本", "工商", "经营范围", "集团"),
     "industry_overview": ("行业", "市场", "应用领域", "机械", "建筑", "能源", "汽车", "医疗", "通信"),
@@ -73,21 +81,23 @@ class BailianYellowNarrativeAdapter:
                 f"返回扁平 JSON 对象，只包含键 {requested_field}，"
                 "其值必须是包含 value 和 evidence_ids 的对象。"
             )
+        request_payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": json.dumps(evidence, ensure_ascii=False)},
+            ],
+            # Compatible-mode models may accept JSON Schema syntax but
+            # ignore nested ``required`` constraints.  Request JSON and
+            # enforce the seven-field/evidence contract locally.
+            "response_format": {"type": "json_object"},
+        }
+        if self.model not in THINKING_ONLY_MODELS:
+            request_payload["enable_thinking"] = False
         response = self.client.post(
             f"{self.base_url}/chat/completions",
             headers={"Authorization": f"Bearer {self.api_key}"},
-            json={
-                "model": self.model,
-                "enable_thinking": False,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": json.dumps(evidence, ensure_ascii=False)},
-                ],
-                # Compatible-mode models may accept JSON Schema syntax but
-                # ignore nested ``required`` constraints.  Request JSON and
-                # enforce the seven-field/evidence contract locally.
-                "response_format": {"type": "json_object"},
-            },
+            json=request_payload,
         )
         response.raise_for_status()
         content = response.json()["choices"][0]["message"]["content"]

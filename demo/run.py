@@ -820,7 +820,6 @@ def main(argv: list[str] | None = None) -> int:
         if args.pdf is not None:
             ocr_adapter = _select_cli_ocr_adapter(args.ocr_provider, os.environ)
         llm_adapter = None
-        review_adapters = None
         qichacha_adapter = None
         http_client = None
         if args.use_glm or args.use_qichacha:
@@ -848,7 +847,6 @@ def main(argv: list[str] | None = None) -> int:
                 ),
             )
             llm_adapter = adapters["narrative"]
-            review_adapters = adapters["reviews"]
         if args.use_qichacha:
             from .adapters.company_api import QichachaApiAdapter
 
@@ -908,7 +906,7 @@ def main(argv: list[str] | None = None) -> int:
             template_path=args.template,
             template_page_reader=LibreOfficeTemplatePageReader(),
             report_date=args.report_date,
-            review_adapters=review_adapters,
+            generate_all_narratives=True,
         )
         if result.ocr_workbook_path is not None:
             print(f"OCR Excel：{result.ocr_workbook_path}")

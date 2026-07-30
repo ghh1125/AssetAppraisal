@@ -160,31 +160,6 @@ class FixtureTemplatePageReader:
         return ["XXX有限责任公司拟收购", "纳入评估范围的全部资产和负债。"], []
 
 
-class FixtureReviewAdapter:
-    def __init__(self, task):
-        self.task = task
-        self.model = "qwen3.7-max-2026-05-17"
-        self.prompt_version = f"{task}.v1"
-
-    def review(self, evidence):
-        assert evidence
-        return {
-            "review_type": self.task,
-            "status": "completed_with_issues",
-            "summary": "发现一项问题",
-            "findings": [{
-                "location": "第1页",
-                "severity": "medium",
-                "category": "test",
-                "problem": "测试问题",
-                "evidence": "test:evidence",
-                "suggestion": "人工复核",
-            }],
-            "model": self.model,
-            "prompt_version": self.prompt_version,
-        }, []
-
-
 def fixture_ocr_fields(normalized, config):
     assert normalized["text_blocks"]
     return {
@@ -296,7 +271,7 @@ def test_pipeline_creates_ocr_xlsx_word_and_audit_without_cross_route_fallback(t
     assert manifest["prompt_version"] == "yellow_narratives.test"
 
 
-def test_pipeline_runs_three_reviews_and_exports_review_artifacts(tmp_path):
+def test_pipeline_does_not_run_llm_reviews_and_exports_four_node_trace(tmp_path):
     result = run_pipeline(
         project_config=Path("demo/projects/tongfu.yaml"),
         pdf_path=Path("资产评估工作流/通富2025.6.30合并及母公司审计报告.pdf"),
@@ -306,40 +281,23 @@ def test_pipeline_runs_three_reviews_and_exports_review_artifacts(tmp_path):
         qichacha_adapter=FixtureQichachaAdapter(),
         ocr_field_resolver=fixture_ocr_fields,
         template_page_reader=FixtureTemplatePageReader(),
-        review_adapters={
-            "format": FixtureReviewAdapter("format_review"),
-            "data": FixtureReviewAdapter("data_validation"),
-            "semantic": FixtureReviewAdapter("semantic_review"),
-        },
     )
 
-    assert (tmp_path / "格式审核.json").exists()
-    assert (tmp_path / "数据校验.json").exists()
-    assert (tmp_path / "语义审核.json").exists()
-    assert not (tmp_path / "资产评估报告_最终候选.docx").exists()
-    summary = json.loads((tmp_path / "审核汇总.json").read_text(encoding="utf-8"))
-    assert summary["finding_count"] == 3
-    assert any("测试问题" in item for item in json.loads((tmp_path / "issues.json").read_text(encoding="utf-8")));
+    assert not (tmp_path / "格式审核.json").exists()
+    assert not (tmp_path / "数据校验.json").exists()
+    assert not (tmp_path / "语义审核.json").exists()
+    assert not (tmp_path / "审核汇总.json").exists()
     manifest = json.loads((tmp_path / "run_manifest.json").read_text(encoding="utf-8"))
-    assert set(manifest["reviews"]) == {"format", "data", "semantic"}
+    assert "reviews" not in manifest
     trace_path = tmp_path / "workflow_trace.json"
     assert trace_path.exists()
     trace = json.loads(trace_path.read_text(encoding="utf-8"))
-    assert trace["contract_version"] == "workflow_contract.v1"
+    assert trace["contract_version"] == "workflow_contract.v2"
     assert [node["node_name"] for node in trace["nodes"]] == [
-        "inventory",
-        "ocr_pdf",
-        "export_ocr_workbook",
-        "extract_sources",
-        "resolve_fields",
-        "select_narrative_modules",
-        "generate_narrative",
+        "start_input",
+        "ocr_llm_candidates",
         "fill_word",
-        "llm_format_review",
-        "llm_data_validation",
-        "llm_semantic_review",
-        "review_aggregate",
-        "export_audit",
+        "output",
     ]
     assert str(trace_path) in manifest["outputs"]
 
@@ -377,9 +335,6 @@ def test_pipeline_generates_review_report_when_monetary_fields_are_missing(
         qichacha_adapter=FixtureQichachaAdapter(),
         ocr_field_resolver=fixture_ocr_fields,
         template_page_reader=FixtureTemplatePageReader(),
-        review_adapters={
-            "format": FixtureReviewAdapter("format_review"),
-        },
     )
 
     assert result.report_path.exists()
@@ -487,18 +442,9 @@ def test_pipeline_preserves_semantic_excel_file_and_cell_evidence(tmp_path):
     trace = json.loads(
         (output / "workflow_trace.json").read_text(encoding="utf-8")
     )
-    resolve = next(
-        node for node in trace["nodes"] if node["node_name"] == "resolve_fields"
-    )
-    by_key = {
-        item["field_key"]: item
-        for item in resolve["input_data"]["candidates"]
-    }
-    assert by_key["asset_scope_summary_table"]["evidence"] == {
-        "source_kind": "semantic_excel",
-        "source_file": reporting.name,
-        "source_locator": "汇总表!B3；汇总表!B4；汇总表!B5",
-    }
+    assert [node["node_name"] for node in trace["nodes"]] == [
+        "start_input", "ocr_llm_candidates", "fill_word", "output"
+    ]
     normalized_evidence = json.loads(
         (output / "normalized_evidence.json").read_text(encoding="utf-8")
     )

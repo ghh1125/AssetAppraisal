@@ -84,7 +84,9 @@ def test_glm_accepts_only_seven_fields_and_known_evidence_ids():
     assert any("pdf:p99:b9" in issue for issue in issues)
     request = client.request["kwargs"]
     assert request["json"]["model"] == "qwen3.7-max-2026-05-17"
-    assert request["json"]["enable_thinking"] is False
+    # qwen3.7-max-2026-05-17 is a thinking-only snapshot; DashScope rejects
+    # an explicit ``enable_thinking=false`` for this model.
+    assert "enable_thinking" not in request["json"]
     assert request["json"]["response_format"]["type"] == "json_object"
     assert request["headers"]["Authorization"] == "Bearer test-key"
 
@@ -124,6 +126,30 @@ def test_glm_accepts_flat_json_object_used_by_qwen_flash():
 
     assert values["main_products"] == "主营工业滤波器。"
     assert issues == []
+
+
+def test_hybrid_model_explicitly_disables_thinking_for_short_narrative_calls():
+    client = FakeClient(
+        json.dumps(
+            {
+                "company_profile_section": {
+                    "value": "示例概述",
+                    "evidence_ids": ["pdf:p1:b1"],
+                }
+            },
+            ensure_ascii=False,
+        )
+    )
+    adapter = BailianYellowNarrativeAdapter(
+        client=client,
+        api_key="test-key",
+        prompt="规则",
+        model="qwen3.7-max-2026-05-20",
+    )
+
+    adapter.generate({"evidence": [{"evidence_id": "pdf:p1:b1", "text": "示例材料"}]})
+
+    assert client.request["kwargs"]["json"]["enable_thinking"] is False
 
 
 def test_glm_generates_selected_modules_field_by_field():

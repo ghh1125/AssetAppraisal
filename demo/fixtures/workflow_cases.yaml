@@ -42,56 +42,6 @@
     "selected": ["main_products"]
   },
   {
-    "id": "candidate_without_reviews",
-    "op": "candidate",
-    "reviews": {}
-  },
-  {
-    "id": "candidate_with_completed_review",
-    "op": "candidate",
-    "reviews": {
-      "format": {
-        "status": "completed_with_issues",
-        "findings": [{"severity": "medium"}]
-      }
-    }
-  },
-  {
-    "id": "candidate_with_missing_financial_fields",
-    "op": "candidate",
-    "financial_fields_complete": false,
-    "reviews": {
-      "format": {
-        "status": "completed",
-        "findings": []
-      }
-    }
-  },
-  {
-    "id": "aggregate_without_reviews",
-    "op": "review_aggregate",
-    "reviews": {}
-  },
-  {
-    "id": "aggregate_failed_and_high_finding",
-    "op": "review_aggregate",
-    "reviews": {
-      "format": {
-        "status": "failed",
-        "findings": []
-      },
-      "data": {
-        "status": "completed_with_issues",
-        "findings": [
-          {
-            "severity": "high",
-            "problem": "金额与来源不一致"
-          }
-        ]
-      }
-    }
-  },
-  {
     "id": "missing_marker_preserves_20xx",
     "op": "missing_marker",
     "location": {

@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 
-TASKS = ("narrative", "format_review", "data_validation", "semantic_review")
+TASKS = ("narrative",)
 DEFAULT_LLM_MODEL = "qwen3.7-max-2026-05-17"
 
 

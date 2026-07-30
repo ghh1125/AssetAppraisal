@@ -6,10 +6,7 @@
   "llm": {
     "default_model": "qwen3.7-max-2026-05-17",
     "tasks": {
-      "narrative": "qwen3.7-max-2026-05-17",
-      "format_review": "qwen3.7-max-2026-05-17",
-      "data_validation": "qwen3.7-max-2026-05-17",
-      "semantic_review": "qwen3.7-max-2026-05-17"
+      "narrative": "qwen3.7-max-2026-05-17"
     }
   },
   "sources": {

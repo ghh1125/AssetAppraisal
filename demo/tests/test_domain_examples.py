@@ -6,11 +6,7 @@ from demo.domain.field_validation import (
     normalize_narrative_modules,
     normalize_valuation_methods,
 )
-from demo.domain.narrative_policy import (
-    select_narrative_fields,
-    should_create_candidate_report,
-)
-from demo.domain.review import aggregate_reviews
+from demo.domain.narrative_policy import select_narrative_fields
 from demo.domain.generation_issues import missing_marker
 
 
@@ -60,16 +56,6 @@ def test_workflow_policy_examples():
             actual[case["id"]] = sorted(
                 select_narrative_fields(set(case["routed"]), case["selected"])
             )
-        elif case["op"] == "candidate":
-            actual[case["id"]] = should_create_candidate_report(
-                case["reviews"],
-                financial_fields_complete=case.get(
-                    "financial_fields_complete",
-                    True,
-                ),
-            )
-        elif case["op"] == "review_aggregate":
-            actual[case["id"]] = aggregate_reviews(case["reviews"])
         elif case["op"] == "missing_marker":
             actual[case["id"]] = missing_marker(case["location"])
         else:

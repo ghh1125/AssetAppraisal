@@ -3,10 +3,9 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import shutil
 import tempfile
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -23,7 +22,6 @@ from demo.adapters.excel import (
 )
 from demo.adapters.generation_issues import export_generation_issues
 from demo.adapters.ocr_workbook import export_ocr_workbook, normalized_from_ocr_workbook
-from demo.adapters.review_inputs import build_data_review_evidence, build_format_review_evidence, build_semantic_review_evidence
 from demo.adapters.workflow_trace import (
     WorkflowTraceRecorder,
     trace_candidates,
@@ -45,7 +43,6 @@ from demo.domain.generation_issues import (
     issues_from_word_findings,
     organize_generation_issues,
 )
-from demo.domain.review import aggregate_reviews
 from demo.domain.field_validation import (
     apply_missing_field_policy,
     normalize_narrative_modules,
@@ -55,10 +52,7 @@ from demo.domain.field_validation import (
 from demo.domain.field_validation import validate_valuation_subject_type
 from demo.domain.financial_matching import blank_configured_table
 from demo.domain.mapping import validate_mapping
-from demo.domain.narrative_policy import (
-    select_narrative_fields,
-    should_create_candidate_report,
-)
+from demo.domain.narrative_policy import select_narrative_fields, select_llm_candidates
 from demo.domain.ocr_normalization import normalize_ocr_pages
 from demo.domain.pdf_ocr_fields import find_ocr_table, resolve_configured_ocr_fields, resolve_ocr_aux_fields
 from demo.domain.replacement import build_replacements
@@ -80,6 +74,8 @@ class PipelineResult:
     ocr_workbook_path: Path | None
     manifest_path: Path
     issues: list[str]
+    candidate_path: Path | None = None
+    candidate_fields: dict[str, Any] = field(default_factory=dict)
 
 
 OcrFieldResolver = Callable[
@@ -521,8 +517,10 @@ def run_pipeline(
     manual_inputs_override: dict[str, Any] | None = None,
     ocr_workbook_path: Path | None = None,
     source_overrides: dict[str, Path | None] | None = None,
-    review_adapters: dict[str, Any] | None = None,
     workflow_path: Path | None = None,
+    prepare_only: bool = False,
+    generate_all_narratives: bool = False,
+    llm_values_override: dict[str, Any] | None = None,
 ) -> PipelineResult:
     config_path = project_config.resolve()
     config = json.loads(config_path.read_text(encoding="utf-8"))
@@ -561,6 +559,11 @@ def run_pipeline(
         node_evidence: list[dict[str, Any]] | None = None,
         node_issues: list[str] | None = None,
     ) -> None:
+        # The implementation still has a few legacy internal checkpoints for
+        # diagnostics, but the public contract is now the four-node workflow.
+        # Ignore those legacy names instead of making them executable nodes.
+        if name not in workflow_nodes:
+            return
         definition = workflow_nodes[name]
         recorder.record(
             node_name=name,
@@ -572,6 +575,25 @@ def run_pipeline(
             evidence=node_evidence or [],
             issues=node_issues or [],
             human_checkpoint=definition.human_checkpoint,
+        )
+
+    def record_stage(
+        name: str,
+        input_payload: dict[str, Any],
+        output_payload: dict[str, Any],
+        *,
+        status: str = "completed",
+        node_evidence: list[dict[str, Any]] | None = None,
+        node_issues: list[str] | None = None,
+    ) -> None:
+        """Record one of the four public nodes with its typed contract."""
+        record_node(
+            name,
+            input_payload,
+            output_payload,
+            status=status,
+            node_evidence=node_evidence,
+            node_issues=node_issues,
         )
 
     base = config_path.parent
@@ -1011,14 +1033,30 @@ def run_pipeline(
             "locator": "软件著作权查询（有效请求但无结果）",
         }
 
-    llm_allowed = fields_for_route(routes, RouteKind.BAILIAN_GLM)
+    all_llm_allowed = fields_for_route(routes, RouteKind.BAILIAN_GLM)
     selected_modules = normalize_narrative_modules(fields.get("narrative_modules"))
-    # The company profile is always generated; the six report modules follow
-    # the user's checkbox selection from the front end.
-    llm_allowed = select_narrative_fields(llm_allowed, selected_modules)
+    # Candidate generation always covers every fixed LLM slot.  The old
+    # pre-generation checkbox is retained only for direct CLI compatibility;
+    # the web workflow passes ``generate_all_narratives=True`` and applies the
+    # user's selection in the later fill invocation.
+    llm_allowed = (
+        all_llm_allowed
+        if generate_all_narratives
+        else select_narrative_fields(all_llm_allowed, selected_modules)
+    )
     llm_values: dict[str, Any] = {}
-    llm_source_kind = "bailian_glm"
-    if llm_adapter is not None:
+    llm_source_kind = "user_selected_llm" if llm_values_override is not None else "bailian_glm"
+    if llm_values_override is not None:
+        # Selection is a closed-world operation: only keys represented by a
+        # yellow LLM slot may be written back to the template.
+        llm_values = select_llm_candidates(
+            llm_values_override,
+            list(llm_values_override.keys()),
+        )
+        llm_values = {
+            key: value for key, value in llm_values.items() if key in all_llm_allowed
+        }
+    elif llm_adapter is not None:
         structured_evidence = []
         for field_key, value in fields.items():
             source = evidence.get(field_key, {})
@@ -1248,6 +1286,129 @@ def run_pipeline(
         ],
     )
 
+    if prepare_only:
+        candidate_locations: dict[str, list[str]] = defaultdict(list)
+        for location in template_inventory:
+            field_key = str(location.get("field_key") or "")
+            if field_key in all_llm_allowed:
+                candidate_locations[field_key].append(str(location["location_id"]))
+        candidate_fields = {
+            key: value
+            for key, value in llm_values.items()
+            if key in all_llm_allowed and value not in (None, "", [], {})
+        }
+        candidate_payload = {
+            "workflow_stage": "ocr_llm_candidates",
+            "selection_required": True,
+            "prompt_version": str(narrative_prompt_version),
+            "model": str(getattr(llm_adapter, "model", "")),
+            "candidates": [
+                {
+                    "field_key": key,
+                    "field_name": field_names.get(key, key),
+                    "value": str(value),
+                    "location_ids": candidate_locations.get(key, []),
+                    "selected": False,
+                }
+                for key, value in candidate_fields.items()
+            ],
+        }
+        candidate_path = write_json(output_dir / "llm候选内容.json", candidate_payload)
+        write_json(output_dir / "issues.json", issues)
+        record_stage(
+            "start_input",
+            {
+                "manual_inputs": manual_inputs_override or {},
+                "materials": {
+                    key: str(value)
+                    for key, value in (source_overrides or {}).items()
+                    if value is not None
+                },
+                "template_path": str(template),
+            },
+            {
+                "accepted": True,
+                "material_roles": [
+                    key for key, value in (source_overrides or {}).items() if value is not None
+                ],
+                "template_path": str(template),
+                "issues": [],
+            },
+        )
+        record_stage(
+            "ocr_llm_candidates",
+            {
+                "materials": {
+                    key: str(value)
+                    for key, value in (source_overrides or {}).items()
+                    if value is not None
+                },
+                "pdf_present": pdf is not None,
+                "llm_enabled": llm_adapter is not None,
+            },
+            {
+                "ocr_performed": bool(pdf is not None and ocr_workbook_path is None),
+                "ocr_workbook_path": str(ocr_workbook) if ocr_workbook else None,
+                "candidates": candidate_payload["candidates"],
+                "selection_required": True,
+            },
+            status="completed_with_issues" if issues else "completed",
+            node_evidence=[
+                {
+                    "source_kind": "bailian_glm",
+                    "source_file": "百炼模型",
+                    "source_locator": "Word固定LLM位置",
+                }
+            ] if llm_adapter is not None else [],
+            node_issues=list(issues),
+        )
+        record_stage(
+            "fill_word",
+            {
+                "template_path": str(template),
+                "selected_llm_fields": {},
+                "deterministic_sources": {},
+            },
+            {"report_path": "", "replacement_count": 0, "unresolved_count": 0},
+            status="skipped",
+        )
+        record_stage(
+            "output",
+            {"report_path": "", "issue_paths": [str(output_dir / "issues.json")]},
+            {"artifacts": [str(candidate_path)], "highlighted_placeholder_count": 0, "missing_count": len(issues)},
+            status="skipped",
+        )
+        trace_path = recorder.export(output_dir / "workflow_trace.json")
+        manifest_path = write_json(
+            output_dir / "run_manifest.json",
+            {
+                "project_id": config["project_id"],
+                "created_at": datetime.now().isoformat(timespec="seconds"),
+                "template": str(template),
+                "template_sha256": template_hash,
+                "pdf": str(pdf) if pdf else "",
+                "pdf_sha256": _sha256(pdf) if pdf else "",
+                "workflow_version": workflow_definition.version,
+                "workflow_contract_version": workflow_definition.contract_version,
+                "status": "awaiting_selection",
+                "outputs": [
+                    *([str(ocr_workbook)] if ocr_workbook else []),
+                    str(candidate_path),
+                    str(trace_path),
+                    str(output_dir / "issues.json"),
+                ],
+            },
+        )
+        return PipelineResult(
+            output_dir / "资产评估报告_待复核.docx",
+            output_dir / "字段审计清单.xlsx",
+            ocr_workbook,
+            manifest_path,
+            issues,
+            candidate_path,
+            candidate_fields,
+        )
+
     required_monetary_fields = list(config.get("required_monetary_fields", []))
     monetary_gate = require_financial_fields(fields, required_monetary_fields)
     monetary_policy = apply_missing_field_policy(
@@ -1408,7 +1569,7 @@ def run_pipeline(
     if _sha256(template) != template_hash:
         raise RuntimeError("模板被意外修改")
     record_node(
-        "fill_word",
+        "legacy_fill_word",
         {
             "template_path": str(template),
             "output_path": str(report),
@@ -1488,159 +1649,6 @@ def run_pipeline(
         evidence,
         template_pages=template_pages,
     )
-    reviews: dict[str, dict[str, Any]] = {}
-    review_output_paths: list[str] = []
-    review_specs = {
-        "format": {
-            "node_name": "llm_format_review",
-            "review_type": "format_review",
-            "file_name": "格式审核.json",
-            "prompt_version": "review_format.v1",
-        },
-        "data": {
-            "node_name": "llm_data_validation",
-            "review_type": "data_validation",
-            "file_name": "数据校验.json",
-            "prompt_version": "review_data.v1",
-        },
-        "semantic": {
-            "node_name": "llm_semantic_review",
-            "review_type": "semantic_review",
-            "file_name": "语义审核.json",
-            "prompt_version": "review_semantic.v1",
-        },
-    }
-    review_inputs: dict[str, dict[str, Any]] = {}
-    if review_adapters:
-        review_inputs = {
-            "format": build_format_review_evidence(template, report),
-            "data": build_data_review_evidence(report, fields, audit, evidence),
-            "semantic": build_semantic_review_evidence(report, fields),
-        }
-    for review_name, spec in review_specs.items():
-        adapter = (review_adapters or {}).get(review_name)
-        if adapter is None:
-            skipped_review = {
-                "review_type": spec["review_type"],
-                "status": "skipped",
-                "summary": "未启用对应 LLM 审核",
-                "findings": [],
-                "model": "",
-                "prompt_version": spec["prompt_version"],
-            }
-            record_node(
-                spec["node_name"],
-                {
-                    "review_type": spec["review_type"],
-                    "report_path": str(report),
-                    "evidence": {},
-                },
-                skipped_review,
-                status="skipped",
-                node_issues=["未启用对应 LLM 审核"],
-            )
-            continue
-        try:
-            review_result, review_issues = adapter.review(review_inputs[review_name])
-            reviews[review_name] = review_result
-            issues.extend(review_issues)
-            for finding in review_result.get("findings", []):
-                location = finding.get("location", "")
-                problem = finding.get("problem", "")
-                issues.append(f"LLM {review_name}审核：{location}：{problem}".strip("："))
-            review_path = write_json(output_dir / spec["file_name"], review_result)
-            review_output_paths.append(str(review_path))
-            review_status = str(review_result.get("status", "completed"))
-            if review_status not in {
-                "completed",
-                "completed_with_issues",
-                "skipped",
-                "failed",
-            }:
-                review_status = (
-                    "completed_with_issues"
-                    if review_result.get("findings")
-                    else "completed"
-                )
-            recorder.versions[f"{review_name}_review_model"] = str(
-                review_result.get("model", "")
-            )
-            recorder.versions[f"{review_name}_review_prompt"] = str(
-                review_result.get("prompt_version", spec["prompt_version"])
-            )
-            record_node(
-                spec["node_name"],
-                {
-                    "review_type": spec["review_type"],
-                    "report_path": str(report),
-                    "evidence": review_inputs[review_name],
-                },
-                review_result,
-                status=review_status,
-                node_evidence=[
-                    {
-                        "source_kind": "generated_report",
-                        "source_file": report.name,
-                        "source_locator": spec["review_type"],
-                    }
-                ],
-                node_issues=review_issues,
-            )
-        except Exception as exc:
-            failed_review = {
-                "review_type": spec["review_type"],
-                "status": "failed",
-                "summary": f"审核执行失败：{exc}",
-                "findings": [],
-                "model": str(getattr(adapter, "model", "")),
-                "prompt_version": str(
-                    getattr(adapter, "prompt_version", spec["prompt_version"])
-                ),
-            }
-            reviews[review_name] = failed_review
-            issue = f"LLM {review_name}审核失败：{exc}"
-            issues.append(issue)
-            review_path = write_json(output_dir / spec["file_name"], failed_review)
-            review_output_paths.append(str(review_path))
-            record_node(
-                spec["node_name"],
-                {
-                    "review_type": spec["review_type"],
-                    "report_path": str(report),
-                    "evidence": review_inputs.get(review_name, {}),
-                },
-                failed_review,
-                status="failed",
-                node_issues=[issue],
-            )
-    aggregate = aggregate_reviews(reviews)
-    record_node(
-        "review_aggregate",
-        {"reviews": reviews},
-        aggregate,
-        status=(
-            "completed_with_issues"
-            if aggregate["status"] == "completed_with_issues"
-            else "completed"
-        ),
-        node_issues=[
-            issue for issue in issues if issue.startswith("LLM ") and "审核" in issue
-        ],
-    )
-    if reviews:
-        review_output_paths.append(
-            str(write_json(output_dir / "审核汇总.json", aggregate))
-        )
-    if (
-        not generation_issues
-        and should_create_candidate_report(
-            reviews,
-            financial_fields_complete=financial_validation["valid"],
-        )
-    ):
-        final_report = output_dir / "资产评估报告_最终候选.docx"
-        shutil.copy2(report, final_report)
-        review_output_paths.append(str(final_report))
     normalized_fields_path = write_json(
         output_dir / "normalized_fields.json",
         fields,
@@ -1651,24 +1659,98 @@ def run_pipeline(
     )
     write_json(output_dir / "issues.json", issues)
     planned_manifest_path = output_dir / "run_manifest.json"
-    record_node(
-        "export_audit",
+    candidate_locations: dict[str, list[str]] = defaultdict(list)
+    for location in template_inventory:
+        field_key = str(location.get("field_key") or "")
+        if field_key in all_llm_allowed:
+            candidate_locations[field_key].append(str(location["location_id"]))
+    selected_candidate_fields = {
+        key: str(value)
+        for key, value in fields.items()
+        if key in all_llm_allowed and value not in (None, "", [], {})
+    }
+    record_stage(
+        "start_input",
         {
-            "report_path": str(report),
-            "fields": trace_resolved_fields(fields, evidence, field_names),
+            "manual_inputs": manual_inputs_override or {},
+            "materials": {
+                key: str(value)
+                for key, value in (source_overrides or {}).items()
+                if value is not None
+            },
+            "template_path": str(template),
         },
         {
-            "audit_path": str(audit),
-            "manifest_path": str(planned_manifest_path),
+            "accepted": True,
+            "material_roles": [key for key, value in (source_overrides or {}).items() if value is not None],
+            "template_path": str(template),
+            "issues": [],
+        },
+    )
+    record_stage(
+        "ocr_llm_candidates",
+        {
+            "materials": {
+                key: str(value)
+                for key, value in (source_overrides or {}).items()
+                if value is not None
+            },
+            "pdf_present": pdf is not None,
+            "llm_enabled": llm_adapter is not None or llm_values_override is not None,
+        },
+        {
+            "ocr_performed": bool(pdf is not None and ocr_workbook_path is None),
+            "ocr_workbook_path": str(ocr_workbook) if ocr_workbook else None,
+            "candidates": [
+                {
+                    "field_key": key,
+                    "field_name": field_names.get(key, key),
+                    "value": value,
+                    "location_ids": candidate_locations.get(key, []),
+                    "selected": True,
+                }
+                for key, value in selected_candidate_fields.items()
+            ],
+            "selection_required": False,
         },
         status="completed_with_issues" if issues else "completed",
-        node_evidence=[
-            {
-                "source_kind": "generated_artifact",
-                "source_file": audit.name,
-                "source_locator": "填充结果",
-            }
-        ],
+        node_issues=[issue for issue in issues if "LLM" in issue or "GLM" in issue],
+    )
+    record_stage(
+        "fill_word",
+        {
+            "template_path": str(template),
+            "selected_llm_fields": selected_candidate_fields,
+            "deterministic_sources": {
+                key: str(value.get("file", ""))
+                for key, value in evidence.items()
+                if isinstance(value, dict) and value.get("file")
+            },
+        },
+        {
+            "report_path": str(report),
+            "replacement_count": len(replacements),
+            "unresolved_count": len(generation_issues),
+        },
+        status="completed_with_issues" if financial_validation["valid"] is False or generation_issues else "completed",
+        node_issues=financial_issues,
+    )
+    output_artifacts = [
+        *([str(ocr_workbook)] if ocr_workbook else []),
+        str(report),
+        str(audit),
+        str(issue_workbook),
+        str(issue_json),
+    ]
+    record_stage(
+        "output",
+        {"report_path": str(report), "issue_paths": [str(issue_workbook), str(issue_json)]},
+        {
+            "artifacts": output_artifacts,
+            "highlighted_placeholder_count": len(generation_issues),
+            "missing_count": len(generation_issues),
+        },
+        status="completed_with_issues" if generation_issues else "completed",
         node_issues=list(issues),
     )
     trace_path = recorder.export(output_dir / "workflow_trace.json")
@@ -1684,7 +1766,7 @@ def run_pipeline(
         "financial_rule_version": "financial_aliases.v1",
         "prompt_version": getattr(llm_adapter, "prompt_version", "yellow_narratives.v1"),
         "llm_models": {
-            name: review.get("model", "") for name, review in reviews.items()
+            "narrative": str(getattr(llm_adapter, "model", "")),
         },
         "ocr_cache_reused": bool(ocr_workbook_path),
         "ocr_cache_source": str(ocr_workbook_path) if ocr_workbook_path else "",
@@ -1704,16 +1786,7 @@ def run_pipeline(
             str(normalized_fields_path),
             str(normalized_evidence_path),
             str(trace_path),
-            *review_output_paths,
         ],
-        "reviews": {
-            name: {
-                "status": review.get("status", ""),
-                "model": review.get("model", ""),
-                "prompt_version": review.get("prompt_version", ""),
-            }
-            for name, review in reviews.items()
-        },
     }
     manifest_path = write_json(planned_manifest_path, manifest)
     return PipelineResult(report, audit, ocr_workbook, manifest_path, issues)

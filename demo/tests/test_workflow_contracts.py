@@ -10,7 +10,7 @@ def test_validates_current_workflow_models_and_dependencies():
 
     result = validate_workflow_contract(definition, schemas)
 
-    assert result == {"valid": True, "issues": [], "node_count": 13}
+    assert result == {"valid": True, "issues": [], "node_count": 4}
 
 
 def test_rejects_unknown_model_and_dependency_cycle():

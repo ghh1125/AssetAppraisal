@@ -1,7 +1,7 @@
 {
   "version": "2026-07-28.2",
   "rule_versions": {
-    "workflow_contract": "workflow_contract.v1",
+    "workflow_contract": "workflow_contract.v2",
     "workflow_trace": "workflow_trace.v1",
     "narrative_policy": "narrative_policy.v1",
     "yellow_routes": "yellow_routes.v1",
@@ -12,15 +12,14 @@
     "generation_issues": "generation_issues.v2",
     "placeholder_policy": "placeholder_policy.v1",
     "prompt": "yellow_narratives.v2",
-    "output_schema": "yellow_narratives_output.v2",
-    "review_output_schema": "review_output.v1"
+    "output_schema": "yellow_narratives_output.v2"
   },
   "sources": [
     {"name":"评估报告版式-沟通标注版.docx","purpose":"只读资产评估报告模板","version":"当前留存版","update_method":"项目负责人替换模板并重新生成映射","missing_behavior":"终止运行，无法生成 Word"},
     {"name":"通富2025.6.30合并及母公司审计报告.pdf","purpose":"审计历史数据与财务报表 OCR 原始来源","version":"2025-06-30","update_method":"每个项目替换为对应审计报告并生成结构化 XLSX","missing_behavior":"跳过 OCR；无法匹配的数据在 Word 保留黄色占位符并进入生成问题清单"},
     {"name":"通富昆山评估报告-S2.docx","purpose":"已填报告/OCR识别后业务文字的参考来源","version":"S2","update_method":"每个项目替换为对应已填参考报告","missing_behavior":"相关字段保留黄色占位符并进入生成问题清单"},
     {"name":"OCR结构化结果.xlsx","purpose":"每次运行由扫描 PDF 生成的页级文本、表格、标准财务数据和识别问题中间件","version":"ocr_workbook.v1","update_method":"有 PDF 时默认由阿里云文档智能适配器生成或复用；本地 PP-StructureV3 仅为显式可选提供方；不覆盖任何输入文件","missing_behavior":"没有 PDF 或 OCR 服务失败时不生成有效识别内容；待复核 Word 仍继续生成"},
-    {"name":"通富审核后财报-单体1月5日.xlsx","purpose":"审计 PDF OCR 后的已核验结构化财务结果；用于回归核对和非黄色占位符","version":"2025-06-30 审核后版","update_method":"由 OCR 服务生成或由业务提供已核验结构化结果，并在 source_lineage 登记原 PDF","missing_behavior":"无法匹配的数据单元格使用黄色 XXX；仍生成待复核 Word，但不生成最终候选 Word"},
+    {"name":"通富审核后财报-单体1月5日.xlsx","purpose":"审计 PDF OCR 后的已核验结构化财务结果；用于回归核对和非黄色占位符","version":"2025-06-30 审核后版","update_method":"由 OCR 服务生成或由业务提供已核验结构化结果，并在 source_lineage 登记原 PDF","missing_behavior":"无法匹配的数据单元格使用黄色 XXX；仍生成待复核 Word"},
     {"name":"通富热处理（昆山）有限公司-收益法-20250630.xlsx","purpose":"收益法项目参数、评估结果及商标行核对来源","version":"2025-06-30","update_method":"每个项目替换为对应收益法工作簿","missing_behavior":"相关字段使用黄色占位符并进入生成问题清单"},
     {"name":"上报表文件_通富昆山_已处理.xlsx","purpose":"资产基础法、长期资产构成及上报数据来源","version":"2025-06-30","update_method":"每个项目替换为对应上报表","missing_behavior":"相关字段使用黄色占位符并进入生成问题清单"},
     {"name":"tongfu.manual.example.yaml","purpose":"委托方、被评估单位核验名称、报告编号和人工选择字段","version":"v1.1","update_method":"运行前由业务负责人复制并填写；报告编号可输入完整编号，程序提取流水号","missing_behavior":"未填写值在 Word 保留黄色占位符；已填写的受控选项非法时终止运行"}
@@ -53,10 +52,8 @@
       "credential_env": ["DASHSCOPE_API_KEY"],
       "prompt_version": "yellow_narratives.v2",
       "output_schema_version": "yellow_narratives_output.v2",
-      "review_tasks": ["format_review", "data_validation", "semantic_review"],
-      "review_prompt_versions": ["review_format.v1", "review_data.v1", "review_semantic.v1"],
       "update_method": "模型或 Prompt 变更时同步结构化输出契约和样例",
-      "missing_behavior": "叙述字段保留黄色占位符并记录生成问题清单；审核失败时保留报告并生成失败状态审核结果"
+      "missing_behavior": "叙述字段保留黄色占位符并记录生成问题清单"
     }
   ]
 }

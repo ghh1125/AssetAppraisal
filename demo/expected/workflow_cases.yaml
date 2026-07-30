@@ -17,38 +17,6 @@
     "main_products"
   ],
   "narrative_does_not_add_unrouted": [],
-  "candidate_without_reviews": false,
-  "candidate_with_completed_review": true,
-  "candidate_with_missing_financial_fields": false,
-  "aggregate_without_reviews": {
-    "status": "completed",
-    "review_count": 0,
-    "finding_count": 0,
-    "severity_counts": {
-      "high": 0,
-      "medium": 0,
-      "low": 0
-    },
-    "failed_reviews": [],
-    "findings": []
-  },
-  "aggregate_failed_and_high_finding": {
-    "status": "completed_with_issues",
-    "review_count": 2,
-    "finding_count": 1,
-    "severity_counts": {
-      "high": 1,
-      "medium": 0,
-      "low": 0
-    },
-    "failed_reviews": ["format"],
-    "findings": [
-      {
-        "severity": "high",
-        "problem": "金额与来源不一致"
-      }
-    ]
-  },
   "missing_marker_preserves_20xx": "20XX",
   "missing_marker_defaults_to_xxx": "XXX"
 }

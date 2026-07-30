@@ -1,19 +1,38 @@
 {
-  "version": "1.1.0",
-  "contract_version": "workflow_contract.v1",
+  "version": "2.0.0",
+  "contract_version": "workflow_contract.v2",
   "nodes": [
-    {"name": "inventory", "input_model": "InventoryInput", "output_model": "InventoryOutput", "depends_on": [], "human_checkpoint": null},
-    {"name": "ocr_pdf", "input_model": "OcrPdfInput", "output_model": "OcrPdfOutput", "depends_on": ["inventory"], "human_checkpoint": null},
-    {"name": "export_ocr_workbook", "input_model": "ExportOcrWorkbookInput", "output_model": "ExportOcrWorkbookOutput", "depends_on": ["ocr_pdf"], "human_checkpoint": null},
-    {"name": "extract_sources", "input_model": "ExtractSourcesInput", "output_model": "ExtractSourcesOutput", "depends_on": ["export_ocr_workbook"], "human_checkpoint": null},
-    {"name": "resolve_fields", "input_model": "ResolveFieldsInput", "output_model": "ResolveFieldsOutput", "depends_on": ["extract_sources"], "human_checkpoint": null},
-    {"name": "select_narrative_modules", "input_model": "SelectNarrativeModulesInput", "output_model": "SelectNarrativeModulesOutput", "depends_on": ["resolve_fields"], "human_checkpoint": "用户至少选择一个主体概况模块"},
-    {"name": "generate_narrative", "input_model": "GenerateNarrativeInput", "output_model": "GenerateNarrativeOutput", "depends_on": ["select_narrative_modules"], "human_checkpoint": null},
-    {"name": "fill_word", "input_model": "FillWordInput", "output_model": "FillWordOutput", "depends_on": ["generate_narrative"], "human_checkpoint": null},
-    {"name": "llm_format_review", "input_model": "ReviewInput", "output_model": "ReviewOutput", "depends_on": ["fill_word"], "human_checkpoint": null},
-    {"name": "llm_data_validation", "input_model": "ReviewInput", "output_model": "ReviewOutput", "depends_on": ["fill_word"], "human_checkpoint": null},
-    {"name": "llm_semantic_review", "input_model": "ReviewInput", "output_model": "ReviewOutput", "depends_on": ["fill_word"], "human_checkpoint": null},
-    {"name": "review_aggregate", "input_model": "ReviewAggregateInput", "output_model": "ReviewAggregateOutput", "depends_on": ["llm_format_review", "llm_data_validation", "llm_semantic_review"], "human_checkpoint": "评估师审核三类 LLM 审核问题"},
-    {"name": "export_audit", "input_model": "ExportAuditInput", "output_model": "ExportAuditOutput", "depends_on": ["review_aggregate"], "human_checkpoint": "评估师审核生成 Word、字段审计清单和问题清单"}
+    {
+      "name": "start_input",
+      "description": "接收用户填写的基础信息、PDF和Excel材料，并使用后台只读模板。",
+      "input_model": "StartInput",
+      "output_model": "StartOutput",
+      "depends_on": [],
+      "human_checkpoint": null
+    },
+    {
+      "name": "ocr_llm_candidates",
+      "description": "有PDF时执行OCR并形成结构化数据；百炼模型为Word固定LLM位置生成全部候选文本，暂停等待用户选择。",
+      "input_model": "CandidateGenerationInput",
+      "output_model": "CandidateGenerationOutput",
+      "depends_on": ["start_input"],
+      "human_checkpoint": "用户逐项选择要写入Word的LLM候选内容"
+    },
+    {
+      "name": "fill_word",
+      "description": "将人工、Excel、OCR、企查查和用户选中的LLM内容按模板映射写入新Word，不修改原模板。",
+      "input_model": "WordFillInput",
+      "output_model": "WordFillOutput",
+      "depends_on": ["ocr_llm_candidates"],
+      "human_checkpoint": null
+    },
+    {
+      "name": "output",
+      "description": "输出Word、字段审计清单和带实际页码的问题清单；找不到的内容保留并高亮XXX。",
+      "input_model": "OutputInput",
+      "output_model": "OutputOutput",
+      "depends_on": ["fill_word"],
+      "human_checkpoint": "人工下载并复核Word和问题清单"
+    }
   ]
 }

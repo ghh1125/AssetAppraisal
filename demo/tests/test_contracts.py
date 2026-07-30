@@ -7,19 +7,10 @@ from demo import schemas
 def test_workflow_nodes_have_documented_models():
     workflow = json.loads(Path("demo/workflow.yaml").read_text(encoding="utf-8"))
     assert [node["name"] for node in workflow["nodes"]] == [
-        "inventory",
-        "ocr_pdf",
-        "export_ocr_workbook",
-        "extract_sources",
-        "resolve_fields",
-        "select_narrative_modules",
-        "generate_narrative",
+        "start_input",
+        "ocr_llm_candidates",
         "fill_word",
-        "llm_format_review",
-        "llm_data_validation",
-        "llm_semantic_review",
-        "review_aggregate",
-        "export_audit",
+        "output",
     ]
     for node in workflow["nodes"]:
         for model_name in (node["input_model"], node["output_model"]):
@@ -31,7 +22,7 @@ def test_workflow_nodes_have_documented_models():
 
 def test_workflow_has_human_review_checkpoint():
     workflow = json.loads(Path("demo/workflow.yaml").read_text(encoding="utf-8"))
-    assert workflow["nodes"][-1]["human_checkpoint"] == "评估师审核生成 Word、字段审计清单和问题清单"
+    assert workflow["nodes"][1]["human_checkpoint"] == "用户逐项选择要写入Word的LLM候选内容"
 
 
 def test_schema_exposes_explicit_business_required_metadata():
@@ -41,17 +32,17 @@ def test_schema_exposes_explicit_business_required_metadata():
     assert optional_schema["properties"]["evidence"]["x-是否必填"] == "否"
 
 
-def test_manifest_registers_contract_trace_and_review_schema_versions():
+def test_manifest_registers_current_contract_and_trace_versions():
     manifest = json.loads(
         Path("demo/data_manifest.yaml").read_text(encoding="utf-8")
     )
     versions = manifest["rule_versions"]
 
-    assert versions["workflow_contract"] == "workflow_contract.v1"
+    assert versions["workflow_contract"] == "workflow_contract.v2"
     assert versions["workflow_trace"] == "workflow_trace.v1"
     assert versions["narrative_policy"] == "narrative_policy.v1"
     assert versions["financial_validation"] == "financial_validation.v2"
-    assert versions["review_output_schema"] == "review_output.v1"
+    assert "review_output_schema" not in versions
     assert versions["optional_sources"] == "optional_sources.v1"
     assert versions["workbook_semantics"] == "workbook_semantics.v3"
     assert versions["generation_issues"] == "generation_issues.v2"

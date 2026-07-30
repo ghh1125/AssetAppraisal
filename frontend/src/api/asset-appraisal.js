@@ -35,3 +35,9 @@ export function createAssetAppraisalRun() {
 }
 
 export const getAssetAppraisalRun = (runId) => getJson(`/asset-appraisal/runs/${encodeURIComponent(runId)}`)
+
+export function selectAssetAppraisalCandidates(runId, selectedFields) {
+  const form = new FormData()
+  form.append('selected_fields', JSON.stringify(selectedFields || {}))
+  return postForm(`/asset-appraisal/runs/${encodeURIComponent(runId)}/select`, form)
+}
