@@ -47,8 +47,8 @@ def test_readme_documents_all_outputs_route_counts_and_failure_policy():
     assert "资产评估报告_待复核.docx" in readme
     for removed_output in ("字段审计清单.xlsx", "生成问题清单.xlsx", "issues.json"):
         assert removed_output not in readme
-    for route_count in ("百炼叙述：7", "企查查 API：5", "PDF OCR/XLSX：6", "节点输入：2"):
-        assert route_count in readme
+    for route_label in ("百炼叙述", "企查查 API", "PDF OCR/XLSX", "节点输入", "unresolved_manual"):
+        assert route_label in readme
     assert "Python 3.11" in readme
     assert "DASHSCOPE_API_KEY" in readme
-    assert "指定来源无值时留空" in readme
+    assert "指定来源无值时保留并标黄" in readme

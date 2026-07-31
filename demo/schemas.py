@@ -129,6 +129,21 @@ class WordLocation(DemoModel):
     record_type: str = Field(description="占位符或黄色说明类型", examples=["占位符"])
     context: str = Field(description="Word 原文上下文", examples=["XXX有限公司"])
     marker: str = Field(description="原占位符或黄色标记", examples=["XXX"])
+    comment_source_kind: str | None = Field(
+        default=None,
+        description="最新版 Word 批注声明的来源类别",
+        examples=["qichacha_api"],
+    )
+    comment_source_instruction: str | None = Field(
+        default=None,
+        description="最新版 Word 批注原文",
+        examples=["数据来源：通过企查查/天眼查等API获取"],
+    )
+    force_unresolved: bool = Field(
+        default=False,
+        description="批注是否明确要求保留并高亮原占位符",
+        examples=[False],
+    )
 
 
 class LocationMapping(DemoModel):
@@ -137,6 +152,9 @@ class LocationMapping(DemoModel):
     field_name: str = Field(description="位置对应字段中文名称", examples=["被评估单位全称"])
     record_type: str = Field(description="占位符或黄色说明类型", examples=["占位符"])
     source_priority: list[str] = Field(default_factory=list, description="固定来源优先级", examples=[["income_workbook", "manual"]])
+    comment_source_kind: str | None = Field(default=None, description="Word 批注声明的来源类别", examples=["bailian_glm"])
+    comment_source_instruction: str | None = Field(default=None, description="Word 批注原文", examples=["数据来源：大模型"])
+    force_unresolved: bool = Field(default=False, description="是否禁止自动填充并保留黄色占位符", examples=[False])
 
 
 class InventoryInput(DemoModel):
@@ -236,17 +254,21 @@ class FillWordOutput(DemoModel):
 
 class ManualBasicInputs(DemoModel):
     commissioning_party_name: str | None = Field(default=None, description="委托方公司名称", examples=["示例委托有限公司"])
-    target_company_name: str | None = Field(default=None, description="评估主体（被评估公司）名称", examples=["示例被评估有限公司"])
+    commissioning_party_short_name: str | None = Field(default=None, description="委托方公司简称", examples=["示例委托"])
     transaction_type: Literal["转让", "收购", "增资", "减资"] | None = Field(default=None, description="委托类型，单选", examples=["收购"])
+    target_company_name: str | None = Field(default=None, description="评估主体（被评估公司）名称", examples=["示例被评估有限公司"])
+    target_company_short_name: str | None = Field(default=None, description="评估主体公司简称", examples=["示例主体"])
+    valuation_subject_type: Literal["股东全部权益价值", "股东部分权益价值", "企业整体价值", "资产组价值"] | None = Field(default=None, description="评估对象，单选", examples=["股东全部权益价值"])
     selected_valuation_method: list[Literal["资产基础法", "收益法", "市场法"]] | str | None = Field(default=None, description="评估方法，多选且至少一个", examples=[["收益法", "资产基础法"]])
     final_valuation_method: Literal["资产基础法", "收益法", "市场法"] | None = Field(default=None, description="评估结论采用方法，单选", examples=["收益法"])
+    report_serial: str | int | None = Field(default=None, description="评估报告编号流水号，非负整数", examples=[1])
 
 
 class StartInput(DemoModel):
     manual_inputs: ManualBasicInputs = Field(
         default_factory=ManualBasicInputs,
-        description="图片定义的五项人工基础信息；其余模板字段由材料、API、系统时间或占位符规则处理",
-        examples=[{"commissioning_party_name": "示例委托有限公司", "target_company_name": "示例被评估有限公司", "transaction_type": "收购", "selected_valuation_method": ["收益法"], "final_valuation_method": "收益法"}],
+        description="最新图片定义的九项必填人工基础信息；其余模板字段由材料、API、系统时间或占位符规则处理",
+        examples=[{"commissioning_party_name": "示例委托有限公司", "commissioning_party_short_name": "示例委托", "target_company_name": "示例被评估有限公司", "target_company_short_name": "示例主体", "transaction_type": "收购", "valuation_subject_type": "股东全部权益价值", "selected_valuation_method": ["收益法"], "final_valuation_method": "收益法", "report_serial": 1}],
     )
     materials: dict[str, str] = Field(
         default_factory=dict,

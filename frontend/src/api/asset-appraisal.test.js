@@ -3,9 +3,8 @@ import assert from 'node:assert/strict'
 
 import { buildAssetAppraisalForm } from './asset-appraisal.js'
 
-test('run request uploads the generic related-materials list', () => {
+test('run request uploads the three typed material slots', () => {
   const form = buildAssetAppraisalForm({
-    materials: [new Blob(['pdf']), new Blob(['workbook'])],
     pdf: new Blob(['pdf']),
     reportingWorkbook: new Blob(['asset']),
     incomeWorkbook: new Blob(['income']),
@@ -18,8 +17,6 @@ test('run request uploads the generic related-materials list', () => {
   })
 
   assert.deepEqual([...form.keys()], [
-    'materials',
-    'materials',
     'pdf',
     'reporting_workbook',
     'income_workbook',

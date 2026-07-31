@@ -83,6 +83,45 @@ def _field_from_comment(text: str) -> str | None:
     return None
 
 
+def infer_comment_source(comment_texts: Iterable[str]) -> dict[str, str]:
+    """Classify the source instruction written in the latest Word comments.
+
+    The annotation is the business source-of-truth.  This intentionally does
+    not infer a provider from a filename or a paragraph number.  A comment can
+    name more than one source (for example, API facts used as LLM evidence),
+    so ``source_kind`` remains ``mixed`` in that case and the full instruction
+    is retained for the audit trail.
+    """
+    instruction = " | ".join(str(item or "").strip() for item in comment_texts if str(item or "").strip())
+    if not instruction:
+        return {"source_kind": "", "source_instruction": ""}
+    if any(token in instruction for token in ("暂时不做填充", "获取不到", "未确认", "无填充时高亮")):
+        return {"source_kind": "unresolved_manual", "source_instruction": instruction}
+    if "已有前序数据插入" in instruction:
+        return {"source_kind": "derived", "source_instruction": instruction}
+    has_manual = "人工基础信息" in instruction or "人工输入" in instruction or "用户" in instruction
+    has_qcc = "企查查" in instruction or "天眼查" in instruction or "API" in instruction
+    has_material = any(token in instruction for token in ("PDF", "财务表格", "表格", "审计报告", "Excel"))
+    has_llm = "大模型" in instruction or "LLM" in instruction
+    has_system = "系统时间" in instruction or "系统日期" in instruction or "报告生成" in instruction
+    sources = sum(bool(item) for item in (has_manual, has_qcc, has_material, has_llm, has_system))
+    if sources > 1:
+        kind = "mixed"
+    elif has_qcc:
+        kind = "qichacha_api"
+    elif has_llm:
+        kind = "bailian_glm"
+    elif has_material:
+        kind = "pdf_ocr_xlsx"
+    elif has_manual:
+        kind = "node_input"
+    elif has_system:
+        kind = "system"
+    else:
+        kind = "unclassified"
+    return {"source_kind": kind, "source_instruction": instruction}
+
+
 def comment_field_candidates(comment_texts: Iterable[str]) -> list[str]:
     result: list[str] = []
     for text in comment_texts:
@@ -105,7 +144,9 @@ def _comment_field_sequence(text: str) -> list[str]:
         return ["company_profile_text"]
     if ("评估结论采用方法" in text or "评估结论方法采用" in text) and "金额数据" in text:
         return [
-            "final_valuation_method", "final_appraisal_value",
+            # The first marker is in “被评估单位XXX价值”; the comment
+            # describes the source of the following result, not that marker.
+            "valuation_subject_type", "final_appraisal_value",
             "final_value_chinese", "book_net_assets", "appraisal_increment",
             "appraisal_increment_rate",
         ]
@@ -138,7 +179,38 @@ def _comment_field_sequence(text: str) -> list[str]:
             "valuation_subject_type", "valuation_date_year", "valuation_date_month",
             "valuation_date_day",
         ]
+    if "已有前序数据插入" in text:
+        return [
+            "final_valuation_method", "final_appraisal_value", "final_value_chinese_wan",
+            "appraisal_increment", "appraisal_increment_rate",
+        ]
     return []
+
+
+def _comment_context_field(item: dict[str, Any], source_kind: str) -> str | None:
+    """Map comment-only anchors (headings/table lead-ins) to a business key."""
+    context = str(item.get("context", ""))
+    instruction = " ".join(str(text) for text in item.get("comment_texts", []))
+    combined = f"{context} {instruction}"
+    if source_kind == "qichacha_api":
+        if "委托方" in combined:
+            return "commissioning_party_profile"
+        if "评估主体" in combined:
+            return "target_company_profile"
+        if "股东及股权" in combined or "股东" in context:
+            return "ownership_at_valuation_date"
+        if "软件著作权" in combined:
+            return "software_copyrights"
+        if "账外无形资产" in combined:
+            return "unrecorded_intangibles"
+    if source_kind == "pdf_ocr_xlsx":
+        if "评估对象和评估范围" in context or "评估范围" in combined:
+            return "valuation_scope"
+        if "长期资产" in combined or "账面记录情况" in context:
+            return "major_long_term_assets"
+        if "资产基础法估值" in combined:
+            return "asset_approach_result_section"
+    return None
 
 
 def build_comment_aware_locations(
@@ -204,6 +276,39 @@ def build_comment_aware_locations(
             "comment_ids": item.get("comment_ids", []),
             "comment_texts": item.get("comment_texts", []),
         })
+        comment_texts = item.get("comment_texts", [])
+        marker_count = len(list(re.finditer(r"X{2,}", str(item.get("context", "")), re.I)))
+        source_comment_texts = comment_texts
+        if len(comment_texts) == marker_count and marker_count > 1:
+            source_comment_texts = [
+                comment_texts[min(max(int(item.get("occurrence_index", 1)) - 1, 0), len(comment_texts) - 1)]
+            ]
+        comment_source = infer_comment_source(source_comment_texts)
+        selected["comment_source_kind"] = comment_source["source_kind"]
+        selected["comment_source_instruction"] = comment_source["source_instruction"]
+        # For an explicit manual-input comment, the annotation must override
+        # any stale Excel locator retained in the legacy mapping.  Other
+        # source classes stay as lineage metadata because a PDF comment may
+        # legitimately be supported by an OCR workbook or an Excel cross-check.
+        if comment_source["source_kind"] == "node_input":
+            selected["source_kind"] = "人工输入"
+            selected["source_file"] = "人工基础信息"
+            selected["source_locator"] = "人工基础信息"
+        unresolved_positions = [
+            index
+            for index, text in enumerate(source_comment_texts, 1)
+            if any(token in str(text) for token in ("暂时不做填充", "获取不到", "未确认", "无填充时高亮"))
+        ]
+        # A paragraph can contain two separately anchored comments.  Word's
+        # inventory exposes them in anchor order; apply an unresolved comment
+        # only to its corresponding marker (not to every marker in the
+        # paragraph, e.g. P0481's first XX is unresolved while the second is
+        # the selected method).
+        if unresolved_positions and (
+            len(source_comment_texts) == 1
+            or int(item.get("occurrence_index", 1)) <= unresolved_positions[0]
+        ):
+            selected["force_unresolved"] = True
         comment_text = " ".join(item.get("comment_texts", []))
         comment_keys = _comment_field_sequence(comment_text)
         if comment_keys:
@@ -231,5 +336,13 @@ def build_comment_aware_locations(
         # use the corresponding unique comment key.
         if comment_keys and len(comment_keys) == 1 and not candidates:
             selected["field_key"] = comment_keys[0]
+        contextual_key = _comment_context_field(item, comment_source["source_kind"])
+        if contextual_key and item.get("record_type") == "批注内容块":
+            # A comment-only heading/table lead-in has no marker occurrence;
+            # its source instruction is authoritative over any legacy context
+            # candidate paired by normalized paragraph text.
+            selected["field_key"] = contextual_key
+        elif not selected.get("field_key") and contextual_key:
+            selected["field_key"] = contextual_key
         result.append(selected)
     return result

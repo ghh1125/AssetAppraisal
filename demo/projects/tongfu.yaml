@@ -315,6 +315,11 @@
     }
   ],
   "paragraph_replacements": [
+    {
+      "part": "word/document.xml",
+      "paragraph_index": 88,
+      "template": "十一、评估方法：{selected_valuation_method}"
+    },
     {"part": "word/document.xml", "paragraph_index": 104, "value": "（一）委托人："},
     {
       "part": "word/document.xml",
@@ -356,6 +361,11 @@
       "part": "word/document.xml",
       "paragraph_index": 559,
       "template": "采用{asset_approach_method_label}对企业{target_company_name}价值进行评估，得出被评估单位在评估基准日的评估结果如下："
+    },
+    {
+      "part": "word/document.xml",
+      "paragraph_index": 551,
+      "value": "\t（二）资产基础法评估值"
     },
     {
       "part": "word/document.xml",

@@ -241,8 +241,7 @@ def run_project(
         annotation_template = template
     annotation_inventory = inventory_template(annotation_template)
     same_template_structure = (
-        len(template_inventory) == len(annotation_inventory)
-        and sum(item["record_type"] == "占位符" for item in template_inventory)
+        sum(item["record_type"] == "占位符" for item in template_inventory)
         == sum(item["record_type"] == "占位符" for item in annotation_inventory)
     )
     if any(item.get("comment_texts") for item in annotation_inventory) and same_template_structure:
@@ -290,6 +289,11 @@ def run_project(
     for record in locations:
         key = record["field_key"]
         if key in fields:
+            continue
+        # A latest-template comment can explicitly say that the value is not
+        # confirmed/obtainable.  Do not let a stale legacy Excel locator on
+        # the same paragraph silently populate that slot.
+        if record.get("force_unresolved"):
             continue
         if manual.get(key) not in (None, ""):
             fields[key] = manual[key]
@@ -696,13 +700,21 @@ def run_project(
     # as a user download, but the run records exactly which placeholder was
     # annotated with which source instruction, including the new comment-based
     # template variant.  Legacy yellow-highlight templates produce zero here.
-    template_locations = annotation_inventory
+    template_locations = (
+        locations
+        if any(item.get("comment_texts") for item in annotation_inventory)
+        else annotation_inventory
+    )
     comment_annotations = [
         {
             "location_id": item["location_id"],
             "context": item.get("context", ""),
             "comment_ids": item.get("comment_ids", []),
             "comment_texts": item.get("comment_texts", []),
+            "field_key": item.get("field_key", ""),
+            "comment_source_kind": item.get("comment_source_kind", ""),
+            "comment_source_instruction": item.get("comment_source_instruction", ""),
+            "force_unresolved": bool(item.get("force_unresolved")),
         }
         for item in template_locations
         if item.get("comment_texts")

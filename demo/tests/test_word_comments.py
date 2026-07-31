@@ -1,7 +1,8 @@
 from pathlib import Path
 
 from demo.adapters.word import extract_word_comments, inventory_template
-from demo.domain.comment_mapping import build_comment_aware_locations
+from demo.domain.comment_mapping import build_comment_aware_locations, infer_comment_source
+from demo.domain.replacement import build_replacements
 import json
 
 
@@ -33,7 +34,7 @@ def test_comment_template_maps_all_placeholder_locations_to_business_fields() ->
         return
     base = json.loads((ROOT / "mappings/appraisal_report_v1.yaml").read_text(encoding="utf-8"))["locations"]
     mapped = build_comment_aware_locations(inventory_template(template), base)
-    assert len(mapped) == 132
+    assert len(mapped) == 143
     assert not [item for item in mapped if not item.get("field_key")]
 
 
@@ -54,6 +55,10 @@ def test_comment_template_maps_repeated_placeholders_in_order() -> None:
         "target_company_name", "book_net_assets", "income_approach_value",
         "income_increment", "income_increment_rate",
     ]
+    assert [mapped[f"DOCUMENT-P0557-X{i:02d}"] for i in range(1, 6)] == [
+        "final_valuation_method", "final_appraisal_value", "final_value_chinese_wan",
+        "appraisal_increment", "appraisal_increment_rate",
+    ]
     assert [mapped[f"DOCUMENT-P0587-X{i:02d}"] for i in range(1, 4)] == [
         "report_date_year", "report_date_month", "report_date_day",
     ]
@@ -64,3 +69,27 @@ def test_comment_template_maps_repeated_placeholders_in_order() -> None:
     assert mapped["DOCUMENT-P0552-X01"] == "valuation_subject_type"
     assert mapped["DOCUMENT-P0556-X01"] == "final_valuation_method"
     assert mapped["DOCUMENT-P0321-X01"] == "company_profile_text"
+
+
+def test_latest_comments_drive_source_classification_and_explicit_unresolved_slots() -> None:
+    template = Path("/Users/ghh/Downloads/评估报告版式-沟通标注版_v2.docx")
+    if not template.is_file():
+        return
+    base = json.loads((ROOT / "mappings/appraisal_report_v1.yaml").read_text(encoding="utf-8"))["locations"]
+    locations = {
+        item["location_id"]: item
+        for item in build_comment_aware_locations(inventory_template(template), base)
+    }
+    assert infer_comment_source(["通过企查查/天眼查等API获取"])["source_kind"] == "qichacha_api"
+    assert infer_comment_source(["大模型输入评估主体信息"])["source_kind"] == "bailian_glm"
+    assert infer_comment_source(["PDF审计报告识别获取"])["source_kind"] == "pdf_ocr_xlsx"
+    assert infer_comment_source(["通过企查查API或大模型获取"])["source_kind"] == "mixed"
+    assert locations["DOCUMENT-P0089-X01"]["field_key"] == "valuation_subject_type"
+    assert locations["DOCUMENT-P0469-X01"]["force_unresolved"] is True
+    assert locations["DOCUMENT-P0469-X01"]["comment_source_kind"] == "unresolved_manual"
+    assert locations["DOCUMENT-P0481-X02"].get("force_unresolved") is not True
+    assert locations["DOCUMENT-P0481-X02"]["comment_source_kind"] == "node_input"
+    assert build_replacements(
+        [locations["DOCUMENT-P0469-X01"]],
+        {"valuation_subject_type": "股东全部权益价值"},
+    )["DOCUMENT-P0469-X01"] == "XXX"

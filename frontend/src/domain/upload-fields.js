@@ -1,11 +1,27 @@
 export const uploadFields = Object.freeze([
   {
-    key: 'materials',
-    accept: '.pdf,.doc,.docx,.xls,.xlsx,.xlsm',
-    icon: 'PDF · Excel · Word',
-    titleKey: 'materialsTitle',
-    hintKey: 'materialsHint',
-    multiple: true,
+    key: 'pdf',
+    accept: '.pdf',
+    icon: 'PDF',
+    titleKey: 'auditPdfTitle',
+    hintKey: 'auditPdfHint',
+    multiple: false,
+  },
+  {
+    key: 'reportingWorkbook',
+    accept: '.xls,.xlsx,.xlsm',
+    icon: 'Excel',
+    titleKey: 'reportingWorkbookTitle',
+    hintKey: 'reportingWorkbookHint',
+    multiple: false,
+  },
+  {
+    key: 'incomeWorkbook',
+    accept: '.xls,.xlsx,.xlsm',
+    icon: 'Excel',
+    titleKey: 'incomeWorkbookTitle',
+    hintKey: 'incomeWorkbookHint',
+    multiple: false,
   },
 ])
 

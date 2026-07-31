@@ -41,6 +41,23 @@ def normalize_report_serial(value: Any) -> str:
     return text
 
 
+def validate_report_serial_input(value: Any) -> str:
+    """Validate the image-defined non-negative integer report serial."""
+    text = normalize_report_serial(value)
+    if not text or not re.fullmatch(r"\d+", text):
+        raise ValueError("评估报告编号流水号必须是大于等于零的整数")
+    return text
+
+
+def validate_required_text(value: Any, label: str, max_length: int) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError(f"{label}不能为空")
+    if len(text) > max_length:
+        raise ValueError(f"{label}不能超过{max_length}个字符")
+    return text
+
+
 def report_number_year(value: Any) -> str:
     """Extract the report-number year when the user pasted a full number."""
     match = re.search(r"(?<!\d)((?:19|20)\d{2})(?!\d)", str(value or ""))

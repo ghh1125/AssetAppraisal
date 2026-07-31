@@ -62,6 +62,14 @@ def trace_mappings(locations: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "field_name": item["field_name"],
             "record_type": item["record_type"],
             "source_priority": list(item.get("candidate_sources", [])),
+            **(
+                {
+                    "comment_source_kind": item["comment_source_kind"],
+                    "comment_source_instruction": item["comment_source_instruction"],
+                }
+                if item.get("comment_source_kind")
+                else {}
+            ),
         }
         for item in locations
     ]

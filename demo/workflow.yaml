@@ -4,7 +4,7 @@
   "nodes": [
     {
       "name": "start_input",
-      "description": "接收图片定义的五项人工基础信息、可多选的Word/Excel/PDF材料，并使用后台只读模板。",
+      "description": "接收图片定义的九项必填人工基础信息、三个可选的类型化PDF/Excel材料，并使用后台只读模板。",
       "input_model": "StartInput",
       "output_model": "StartOutput",
       "depends_on": [],

@@ -140,6 +140,24 @@ def inventory_template(path: Path) -> list[dict]:
                         "comment_ids": comment_ids,
                         "comment_texts": comment_texts,
                     })
+                # Newer communication templates use comments on headings and
+                # table lead-ins that contain no literal XXX marker.  Keep
+                # those anchors in the inventory so their source instruction
+                # is still available for mapping/audit (the final clean
+                # template simply ignores the synthetic C location during
+                # replacement).
+                if comment_ids and not markers and not highlight:
+                    records.append({
+                        "location_id": f"{short}-P{p_index:04d}-C01",
+                        "record_type": "批注内容块",
+                        "paragraph_index": p_index,
+                        "occurrence_index": 1,
+                        "marker": "",
+                        "context": context,
+                        "in_table": in_table,
+                        "comment_ids": comment_ids,
+                        "comment_texts": comment_texts,
+                    })
     return records
 
 

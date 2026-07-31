@@ -616,8 +616,7 @@ def run_pipeline(
         annotation_template = template
     annotation_inventory = inventory_template(annotation_template)
     same_template_structure = (
-        len(template_inventory) == len(annotation_inventory)
-        and sum(item["record_type"] == "占位符" for item in template_inventory)
+        sum(item["record_type"] == "占位符" for item in template_inventory)
         == sum(item["record_type"] == "占位符" for item in annotation_inventory)
     )
     comment_template = (
@@ -1756,8 +1755,14 @@ def run_pipeline(
             "context": item.get("context", ""),
             "comment_ids": item.get("comment_ids", []),
             "comment_texts": item.get("comment_texts", []),
+            "field_key": item.get("field_key", ""),
+            "comment_source_kind": item.get("comment_source_kind", ""),
+            "comment_source_instruction": item.get("comment_source_instruction", ""),
+            "force_unresolved": bool(item.get("force_unresolved")),
         }
-        for item in annotation_inventory
+        # ``locations`` contains the authoritative comment-to-field/source
+        # mapping, including comment-only anchors; the raw inventory does not.
+        for item in locations
         if item.get("comment_texts")
     ]
     comment_path = write_json(output_dir / "template_comments.json", comment_annotations)

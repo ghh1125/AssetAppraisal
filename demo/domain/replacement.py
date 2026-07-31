@@ -68,6 +68,9 @@ def _display_value(item: dict[str, Any], value: Any) -> Any:
 def build_replacements(locations: list[dict[str, Any]], fields: dict[str, Any]) -> dict[str, str]:
     result = {}
     for item in locations:
+        if item.get("force_unresolved"):
+            result[item["location_id"]] = missing_marker(item)
+            continue
         value = fields.get(item["field_key"])
         if value in (None, "", []):
             value = missing_marker(item)

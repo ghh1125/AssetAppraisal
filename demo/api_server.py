@@ -25,6 +25,8 @@ from .run import _load_local_env
 from .adapters.ocr_factory import create_ocr_adapter
 from .domain.field_validation import (
     normalize_valuation_methods,
+    validate_required_text,
+    validate_report_serial_input,
     validate_final_valuation_method,
     validate_transaction_type,
     validate_valuation_subject_type,
@@ -387,28 +389,22 @@ async def create_run(
     use_qichacha: bool = Form(True),
     reuse_ocr: bool = Form(True),
 ):
-    # The UI accepts a single multi-file material input, while the pipeline
-    # keeps stable semantic roles internally.  The named fields remain as a
-    # backwards-compatible API for existing CLI/clients.
-    generic_materials = list(materials or [])
-    if pdf is not None:
-        generic_materials.append(pdf)
-    if reporting_workbook is not None:
-        generic_materials.append(reporting_workbook)
-    if income_workbook is not None:
-        generic_materials.append(income_workbook)
+    # Named slots from the current UI are authoritative even when the user
+    # gives the workbook an arbitrary filename.  The legacy ``materials``
+    # multi-file field is only used to fill roles that were not supplied by a
+    # typed slot.
     role_uploads: dict[str, UploadFile | None] = {
-        "pdf": None,
-        "reporting_workbook": None,
-        "income_workbook": None,
+        "pdf": pdf,
+        "reporting_workbook": reporting_workbook,
+        "income_workbook": income_workbook,
         "reference_report": None,
     }
     workbook_candidates: list[UploadFile] = []
-    for upload in generic_materials:
+    for upload in list(materials or []):
         suffix = Path(upload.filename or "").suffix.lower()
         if suffix == ".pdf" and role_uploads["pdf"] is None:
             role_uploads["pdf"] = upload
-        elif suffix in {".xlsx", ".xlsm"}:
+        elif suffix in {".xls", ".xlsx", ".xlsm"}:
             workbook_candidates.append(upload)
         elif suffix in {".doc", ".docx"} and role_uploads["reference_report"] is None:
             role_uploads["reference_report"] = upload
@@ -426,12 +422,12 @@ async def create_run(
         "pdf": (role_uploads["pdf"], (".pdf",), "审计报告 PDF"),
         "income_workbook": (
             role_uploads["income_workbook"],
-            (".xlsx", ".xlsm"),
+            (".xls", ".xlsx", ".xlsm"),
             "收益法或市场法工作簿",
         ),
         "reporting_workbook": (
             role_uploads["reporting_workbook"],
-            (".xlsx", ".xlsm"),
+            (".xls", ".xlsx", ".xlsm"),
             "资产基础法/资产清查工作簿",
         ),
         "reference_report": (
@@ -458,6 +454,26 @@ async def create_run(
             raise ValueError
     except ValueError as exc:
         raise HTTPException(status_code=422, detail="用户输入字段格式错误") from exc
+    required_text_fields = (
+        ("commissioning_party_name", "委托方全称", 50),
+        ("commissioning_party_short_name", "委托方简称", 20),
+        ("target_company_name", "评估主体全称", 50),
+        ("target_company_short_name", "评估主体简称", 20),
+    )
+    try:
+        for key, label, limit in required_text_fields:
+            parsed_inputs[key] = validate_required_text(parsed_inputs.get(key), label, limit)
+        parsed_inputs["report_serial"] = validate_report_serial_input(parsed_inputs.get("report_serial"))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    missing_choices = [
+        key for key in (
+            "transaction_type", "valuation_subject_type",
+            "selected_valuation_method", "final_valuation_method",
+        ) if parsed_inputs.get(key) in (None, "", [])
+    ]
+    if missing_choices:
+        raise HTTPException(status_code=422, detail=f"缺少必填选择项：{'、'.join(missing_choices)}")
     has_upload = any(upload is not None for upload, _, _ in uploads.values())
     has_manual = any(
         value not in (None, "", [], {})

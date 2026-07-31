@@ -3,18 +3,28 @@ import test from 'node:test'
 
 import { canSubmitPartial } from './submission.js'
 
-test('manual-only input can submit', () => {
+test('all required manual inputs can submit without files', () => {
   assert.equal(
     canSubmitPartial(
       {},
-      { target_company_name: '示例有限公司' },
+      {
+        commissioning_party_name: '委托方有限公司',
+        commissioning_party_short_name: '委托方',
+        transaction_type: '收购',
+        target_company_name: '被评估有限公司',
+        target_company_short_name: '被评估',
+        valuation_subject_type: '股东全部权益价值',
+        selected_valuation_method: ['收益法'],
+        final_valuation_method: '收益法',
+        report_serial: 1,
+      },
     ),
     true,
   )
 })
 
-test('one uploaded file can submit', () => {
-  assert.equal(canSubmitPartial({ incomeWorkbook: {} }, {}), true)
+test('files remain optional and cannot bypass required manual inputs', () => {
+  assert.equal(canSubmitPartial({ incomeWorkbook: {} }, {}), false)
 })
 
 test('completely empty input cannot submit', () => {
