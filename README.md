@@ -20,7 +20,7 @@ uv sync --extra dev
 
 完整流程、配置格式、前端启动和 c2m 接入方式见 [demo/README.md](demo/README.md)。
 
-仓库内保留模板和标注两个版本：`templates/评估报告版式_v2.docx`是最终输出版式，`templates/评估报告版式-沟通标注版_批注版.docx`是批注规则版。项目配置用 `web_template` 指定输出模板、用 `annotation_template` 指定批注模板；批注只用于建立“Word位置→字段→来源”映射，不会出现在最终报告正文。旧黄色标注版仍作为 CLI 兼容回退。运行时用户可一次上传已有 Word、Excel、PDF 等材料，后端按内容识别材料角色；客户材料不随仓库提交。
+仓库内保留模板和标注两个版本：`templates/评估报告版式_v2.docx`是最终输出版式，`templates/评估报告版式-沟通标注版_批注版.docx`是批注规则版。项目配置用 `web_template`/`template` 指定输出模板、用 `annotation_template` 指定批注模板；批注只用于建立“Word位置→字段→来源”映射，不会出现在最终报告正文。运行时用户可一次上传已有 Word、Excel、PDF 等材料，后端按内容识别材料角色；客户材料不随仓库提交。
 
 ## 需要的外部服务及获取方式
 
@@ -211,7 +211,7 @@ OCR 所处的完整资产评估工作流为：
 ```bash
 uv run --python 3.11 python -m demo.run demo/projects/tongfu.yaml \
   --pdf "资产评估工作流/审计报告.pdf" \
-  --template "templates/评估报告版式-沟通标注版.docx" \
+  --template "templates/评估报告版式_v2.docx" \
   --output-dir runs/local \
   --use-glm --use-qichacha \
   --commissioning-party-name "委托方全称" \

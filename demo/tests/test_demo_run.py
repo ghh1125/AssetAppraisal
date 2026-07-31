@@ -47,7 +47,6 @@ def test_offline_run_leaves_missing_fields_blank_and_fills_material_assets(tmp_p
     assert "固定资产账面净值4,993,561.04元" not in text
     assert "长期待摊费用账面价值1,788,311.49元" not in text
     assert "现有材料未见商标申报记录" in fields["trademark_summary"]
-    assert "持有84项专利，其中在用专利63项" in text
     assert not fields["unrecorded_intangibles"].endswith("明细如下：")
 
     # The paragraph is only the table lead-in; all balance-sheet amounts

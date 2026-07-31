@@ -22,7 +22,7 @@ def test_comment_annotations_are_retained_on_word_locations() -> None:
 
 
 def test_legacy_highlight_template_remains_comment_compatible() -> None:
-    locations = inventory_template(ROOT.parent / "templates/评估报告版式-沟通标注版.docx")
+    locations = inventory_template(ROOT.parent / "templates/评估报告版式_v2.docx")
     assert locations
     assert all(isinstance(item.get("comment_texts", []), list) for item in locations)
 

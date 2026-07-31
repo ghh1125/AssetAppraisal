@@ -43,7 +43,7 @@ uv python install 3.11
 uv sync --python 3.11 --extra dev --extra services
 uv run --python 3.11 python -m demo.run demo/projects/tongfu.yaml \
   --pdf '资产评估工作流/通富2025.6.30合并及母公司审计报告.pdf' \
-  --template 'templates/评估报告版式-沟通标注版.docx' \
+  --template 'templates/评估报告版式_v2.docx' \
   --output-dir runs/tongfu-ocr --ocr-provider aliyun --use-glm --use-qichacha \
   --commissioning-party-name '委托方全称' \
   --commissioning-party-short-name '委托方简称' \
@@ -82,7 +82,7 @@ OCR 缓存、LLM 候选和运行轨迹属于流程内部状态，不作为用户
 
 `frontend/` 将图片定义的五项人工输入、一个可多选的 Word/Excel/PDF 资料入口、后端固定 Word 模板和产物下载做成页面。上传文件名不需要与配置一致，后端按扩展名和工作表语义识别 PDF、Word、资产/收益/市场法 Excel 的角色；只有资料中存在 PDF 时才检查 OCR 缓存。Word 模板由后端固定提供，不需要上传；OCR 结构化 Excel是内部中间结果，不要求用户重复上传。
 
-模板批注：仓库中的 `templates/评估报告版式-沟通标注版_批注版.docx`保留新版 Word 批注，`templates/评估报告版式_v2.docx`是最终输出版式。项目配置通过 `annotation_template` 读取批注，通过 `web_template`/`template` 填充并输出普通版 Word；运行时会将批注 ID、批注文本和对应占位符写入内部 `template_comments.json`，批注不会出现在最终报告正文。无批注的旧模板继续使用黄色标注兼容路径。
+模板批注：仓库中的 `templates/评估报告版式-沟通标注版_批注版.docx`保留新版 Word 批注，`templates/评估报告版式_v2.docx`是最终输出版式。项目配置通过 `annotation_template` 读取批注，通过 `web_template`/`template` 填充并输出普通版 Word；运行时会将批注 ID、批注文本和对应占位符写入内部 `template_comments.json`，批注不会出现在最终报告正文。
 
 任务结果区会实时显示四个节点的时间线和状态。节点 2 完成后状态为“等待人工选择”，用户确认候选后才继续节点 3 和节点 4；节点状态同时写入 API 返回的 `nodes` 和 `workflow_trace.json`。
 

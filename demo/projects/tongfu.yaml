@@ -1,6 +1,6 @@
 {
   "project_id": "tongfu_20250630",
-  "template": "../../templates/评估报告版式-沟通标注版.docx",
+  "template": "../../templates/评估报告版式_v2.docx",
   "web_template": "../../templates/评估报告版式_v2.docx",
   "annotation_template": "../../templates/评估报告版式-沟通标注版_批注版.docx",
   "mapping": "../mappings/appraisal_report_v1.yaml",
