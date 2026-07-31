@@ -56,7 +56,10 @@ app.add_middleware(
 
 def _project_template() -> Path:
     config = json.loads(PROJECT_CONFIG.read_text(encoding="utf-8"))
-    template = Path(config["template"])
+    # The web workflow uses the latest comment-annotated template when the
+    # project provides one; CLI regression fixtures keep the legacy yellow
+    # template as their explicit ``template`` entry.
+    template = Path(config.get("web_template", config["template"]))
     resolved = template if template.is_absolute() else (PROJECT_CONFIG.parent / template).resolve()
     if not resolved.is_file():
         raise RuntimeError(f"后端默认模板不存在：{resolved}")

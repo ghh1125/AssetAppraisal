@@ -1,6 +1,7 @@
 {
   "project_id": "tongfu_20250630",
   "template": "../../templates/评估报告版式-沟通标注版.docx",
+  "web_template": "../../templates/评估报告版式-沟通标注版_批注版.docx",
   "mapping": "../mappings/appraisal_report_v1.yaml",
   "manual_inputs": "tongfu.manual.example.yaml",
   "llm": {
