@@ -39,9 +39,12 @@
       "name": "qichacha",
       "kind": "external_api",
       "api_codes": ["735", "231", "514", "233"],
+      "optional_api_codes": ["2001", "962", "213", "886"],
+      "api_codes_default_behavior": "启用企查查时八个接口全部调用；QICHACHA_EXTRA_API_CODES 仅用于限制集合",
+      "optional_api_codes_env": "QICHACHA_EXTRA_API_CODES",
       "base_url_env": "QICHACHA_API_BASE_URL",
       "credential_env": ["QICHACHA_APP_KEY", "QICHACHA_SECRET_KEY"],
-      "update_method": "按接口供应商版本更新并回归四个 ApiCode",
+      "update_method": "按接口供应商版本更新并回归基础接口及已启用的可选 ApiCode",
       "missing_behavior": "对应企查查字段保留黄色占位符"
     },
     {

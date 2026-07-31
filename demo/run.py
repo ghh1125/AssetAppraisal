@@ -909,15 +909,26 @@ def main(argv: list[str] | None = None) -> int:
                     "231": "QICHACHA_ENDPOINT_231",
                     "514": "QICHACHA_ENDPOINT_514",
                     "233": "QICHACHA_ENDPOINT_233",
+                    "2001": "QICHACHA_ENDPOINT_2001",
+                    "962": "QICHACHA_ENDPOINT_962",
+                    "213": "QICHACHA_ENDPOINT_213",
+                    "886": "QICHACHA_ENDPOINT_886",
                 }.items()
                 if os.environ.get(name)
             }
+            extra_api_codes_value = tuple(
+                code.strip()
+                for code in os.environ.get("QICHACHA_EXTRA_API_CODES", "").split(",")
+                if code.strip()
+            )
+            extra_api_codes = extra_api_codes_value or None
             qichacha_adapter = QichachaApiAdapter(
                 http_client,
                 app_key,
                 secret_key,
                 base_url=os.environ.get("QICHACHA_API_BASE_URL", "https://api.qichacha.com"),
                 endpoints=endpoints,
+                extra_api_codes=extra_api_codes,
             )
         node_inputs = (
             json.loads(args.node_inputs_json.read_text(encoding="utf-8"))

@@ -190,6 +190,28 @@ def _build_external_adapters(use_glm: bool, use_qichacha: bool) -> tuple[Any, An
             os.environ.get("QICHACHA_APP_KEY", ""),
             os.environ.get("QICHACHA_SECRET_KEY", ""),
             base_url=os.environ.get("QICHACHA_API_BASE_URL", "https://api.qichacha.com"),
+            endpoints={
+                code: os.environ[name]
+                for code, name in {
+                    "735": "QICHACHA_ENDPOINT_735",
+                    "231": "QICHACHA_ENDPOINT_231",
+                    "514": "QICHACHA_ENDPOINT_514",
+                    "233": "QICHACHA_ENDPOINT_233",
+                    "2001": "QICHACHA_ENDPOINT_2001",
+                    "962": "QICHACHA_ENDPOINT_962",
+                    "213": "QICHACHA_ENDPOINT_213",
+                    "886": "QICHACHA_ENDPOINT_886",
+                }.items()
+                if os.environ.get(name)
+            },
+            extra_api_codes=(
+                tuple(
+                    code.strip()
+                    for code in os.environ.get("QICHACHA_EXTRA_API_CODES", "").split(",")
+                    if code.strip()
+                )
+                or None
+            ),
         )
     return llm_adapter, qichacha_adapter, http_client
 

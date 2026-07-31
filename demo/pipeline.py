@@ -1127,6 +1127,20 @@ def run_pipeline(
                     + json.dumps(target_profile, ensure_ascii=False, default=str),
                 }
             )
+        # Optional QCC business APIs contribute facts to the LLM evidence
+        # pool, never directly to a Word paragraph. Their codes are enabled
+        # explicitly through QICHACHA_EXTRA_API_CODES, so a normal run does
+        # not incur new paid calls unexpectedly.
+        for role, qcc_payload in qcc_payloads.items():
+            for item in qcc_payload.get("evidence", []) if isinstance(qcc_payload, dict) else []:
+                if not isinstance(item, dict) or not item.get("evidence_id") or not item.get("text"):
+                    continue
+                structured_evidence.append(
+                    {
+                        "evidence_id": item["evidence_id"],
+                        "text": f"{role}企查查 ApiCode {item.get('api_code', '')}：{item['text']}",
+                    }
+                )
         llm_evidence = {
             "selected_modules": selected_modules,
             "evidence": [

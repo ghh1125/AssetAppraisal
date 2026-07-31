@@ -34,15 +34,21 @@ uv sync --extra dev
 | 231 | 全国商标查询 | [全国商标查询](https://openapi.qcc.com/dataApi/231) |
 | 514 | 专利查询 | [专利查询](https://openapi.qcc.com/dataApi/514) |
 | 233 | 著作权/软件著作权查询 | [著作权软著查询](https://openapi.qcc.com/dataApi/233) |
+| 2001 | 企业信息核验（行业、经营范围、企业规模等补充事实） | [企业信息核验](https://openapi.qcc.com/dataApi/2001) |
+| 962 | 企业关系图谱（客户、供应商、股东、投资等关系事实） | [企业关系图谱](https://openapi.qcc.com/dataApi/962) |
+| 213 | 企业年报（年报基本信息、资产、股东/出资和经营资料） | [企业年报](https://openapi.qcc.com/dataApi/213) |
+| 886 | 企业模糊搜索（候选公司名称，用于可比公司候选证据） | [企业模糊搜索](https://openapi.qcc.com/dataApi/886) |
 
 对应环境变量：
 
 ```dotenv
 QICHACHA_APP_KEY=你的Key
 QICHACHA_SECRET_KEY=你的SecretKey
+# 高级配置：不填写时默认调用全部八个接口；填写后限制为指定 ApiCode
+QICHACHA_EXTRA_API_CODES=735,231,514,233,2001,962,213,886
 ```
 
-接口地址和路径已经写入程序默认配置，通常不需要修改。接口无结果时，该来源字段在 Word 保留黄色占位符，不会用其他来源冒填。
+接口地址和路径已经写入程序默认配置，通常不需要修改。启用 `--use-qichacha` 时八个接口都会调用；`QICHACHA_EXTRA_API_CODES` 仅用于明确限制调用集合（未填写即调用全部八个）。各接口返回的事实先进入证据池，再由百炼依据证据生成叙述；不会把客户、供应商、行业或可比公司名称直接当作未经核验的 Word 文字。某个接口未购买、失败或无结果时只记录问题并继续生成，相关来源字段保留黄色占位符，不会用其他来源冒填。接口路径可分别用 `QICHACHA_ENDPOINT_735`、`QICHACHA_ENDPOINT_231`、`QICHACHA_ENDPOINT_514`、`QICHACHA_ENDPOINT_233`、`QICHACHA_ENDPOINT_2001`、`QICHACHA_ENDPOINT_962`、`QICHACHA_ENDPOINT_213`、`QICHACHA_ENDPOINT_886` 覆盖。
 
 ### 百炼模型
 
@@ -55,7 +61,7 @@ APPRAISAL_LLM_MODEL=qwen3.7-max-2026-05-17
 
 项目配置可以为 `narrative` 指定模型；未指定时统一使用 `default_model`，环境变量优先级更高。当前默认模型为 `qwen3.7-max-2026-05-17`。
 
-前端不会在开始节点预先选择主体概况模块。第二节点会先为 Word 中的七个固定 LLM 位置生成候选，用户查看候选后逐项选择是否写入。
+前端不会在开始节点预先选择主体概况模块。第二节点会先为 Word 中的七个固定 LLM 位置生成候选，用户查看候选后逐项选择是否写入。七个位置就是：公司概况、行业介绍、业务及细分市场、主要产品、客户与供应商、盈利模式及 SWOT、可比上市公司。用户勾选的是“哪些候选写入 Word”，不是重新选择 API；API 负责提供可核验事实，LLM 负责基于这些事实综合成对应位置的候选文本。
 
 例如切换到其他模型，只改 `APPRAISAL_LLM_MODEL`。Prompt 和结构化输出契约分别位于：
 

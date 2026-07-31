@@ -57,13 +57,15 @@ uv run --python 3.11 python -m demo.run demo/projects/tongfu.yaml \
 
 仅在需要显式启用本地高内存模式时执行 `uv sync --extra ocr` 并设置 `APPRAISAL_OCR_PROVIDER=paddle` 或命令行参数 `--ocr-provider paddle`。`APPRAISAL_OCR_PROVIDER=none` 会完全跳过 PDF OCR。
 
-如需调用已购买的企查查接口 735（工商详情）、231（商标）、514（专利）和 233（著作权软著），设置 `QICHACHA_APP_KEY`、`QICHACHA_SECRET_KEY` 并增加 `--use-qichacha`。默认使用企查查官方签名方式；如平台给 514 或 233 分配了不同的路径，可用 `QICHACHA_ENDPOINT_514`、`QICHACHA_ENDPOINT_233` 覆盖，基地址可用 `QICHACHA_API_BASE_URL` 覆盖。两个节点输入可放入 JSON 文件并用 `--node-inputs-json` 传入。凭证只在 `run.py` 这一组合入口读取，不会进入 `domain/`、内部运行状态或 Word。
+如需调用企查查，设置 `QICHACHA_APP_KEY`、`QICHACHA_SECRET_KEY` 并增加 `--use-qichacha`。默认一次调用 735（工商详情）、231（商标）、514（专利）、233（著作权软著）、2001（企业信息核验）、962（客户/供应商关系图谱）、213（企业年报）和 886（模糊搜索候选公司）八个接口。只有在确实要限制请求集合时才设置 `QICHACHA_EXTRA_API_CODES=735,231,514,233,2001,962,213,886`；未设置即调用全部八个。默认使用企查查官方签名方式；接口路径可用同名 `QICHACHA_ENDPOINT_<ApiCode>` 覆盖，基地址可用 `QICHACHA_API_BASE_URL` 覆盖。2001、962、213 返回的行业、经营范围、客户/供应商、年报等只作为 LLM 证据；886 只提供候选公司证据，不能替代正式可比公司市场数据。某个接口未购买、失败或无结果时仅记录问题并继续生成 Word。两个节点输入可放入 JSON 文件并用 `--node-inputs-json` 传入。凭证只在 `run.py` 这一组合入口读取，不会进入 `domain/`、内部运行状态或 Word。
 
 ## 最新 Word 批注来源路由
 
 `templates/评估报告版式-沟通标注版_批注版.docx` 是批注规则版，包含 100 条 Word 批注、131 个占位符和 11 个无占位符的批注锚点；`templates/评估报告版式_v2.docx` 是实际复制填充的干净模板。批注优先于旧的黄色坐标映射，运行时逐占位符写入 `template_comments.json` 和 `workflow_trace.json`，保留批注原文、字段键和来源类别。
 
 批注来源类别如下：
+
+这里的 `PDF OCR/XLSX` 表示审计 PDF 经 OCR 后的结构化结果，以及用户上传的资产基础法/收益法工作簿。
 
 - `node_input`：人工基础信息中的公司名称、简称、交易类型、评估对象和评估方法；
 - `qichacha_api`：工商概况、股东及股权、商标、专利、软件著作权等；
@@ -101,7 +103,7 @@ npm install
 npm run dev
 ```
 
-页面第一节点只提交图片定义的九项人工基础信息和三个可选的类型化文件。任务创建后，第二节点先调用百炼为 Word 固定 LLM 位置生成候选，用户逐项勾选后再提交填充。企查查、百炼和 PDF OCR/XLSX 不要求用户重复填写；批注明确未确认的字段继续保留并高亮 `XXX`。
+页面第一节点只提交图片定义的九项人工基础信息和三个可选的类型化文件。任务创建后，第二节点先调用企查查（如已启用）和百炼，为 Word 固定的七个 LLM 位置生成候选，用户逐项勾选后再提交填充。用户选择的模块为：公司概况、行业介绍、业务及细分市场、主要产品、客户与供应商、盈利模式及 SWOT、可比上市公司。用户选择的是候选文本是否入稿；企查查和 PDF/XLSX 不要求用户重复填写；批注明确未确认的字段继续保留并高亮 `XXX`。
 
 运行轨迹和标准化字段只用于流程内部，不向用户提供下载链接。原 Word 仅作模板，输出路径与模板相同时程序拒绝运行。
 

@@ -9,5 +9,6 @@ company_profile_section、industry_overview、business_and_segments、main_produ
 3. 每项非空内容必须列出实际支持该内容的 evidence_id，优先使用工商信息和上传 Word 中的 document:reference_report:* 证据。
 4. 不得生成或返回任何其他字段，尤其不得生成金额、财务表、股权、专利、软件著作权、评估方法或评估目的。
 5. 不得编造企业、行业、客户、供应商或可比公司信息；没有具体名称时可概括已有业务模式，但不得杜撰名称。
-6. 不得输出“待人工补充”、说明、Markdown 或 JSON 以外的文本。
-7. 输出必须符合 yellow_narratives_output.v2.json。
+6. 不得使用模型自身知识、训练记忆或未列入 evidence 的行业常识补充事实；每个事实都必须能在 evidence_id 对应的证据中核对。
+7. 不得输出“待人工补充”、说明、Markdown 或 JSON 以外的文本。
+8. 输出必须符合 yellow_narratives_output.v2.json。

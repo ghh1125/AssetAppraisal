@@ -9,6 +9,7 @@ into unrelated report fields.
 """
 
 import hashlib
+import json
 import time
 from collections.abc import Mapping
 from typing import Any
@@ -268,8 +269,76 @@ def _partner_rows(payload: Any) -> list[dict[str, str]]:
     return [row for row in result if row["name"] or row["capital"] or row["percent"]]
 
 
+def _profile_key_no(payload: Any) -> str:
+    records = _records(payload)
+    if not records:
+        return ""
+    return str(_first(records[0], "KeyNo", "KeyNo", "keyNo", "CompanyKeyNo"))
+
+
+def _json_text(payload: Any, limit: int = 5000) -> str:
+    """Keep provider evidence bounded while retaining its original facts."""
+    if payload in (None, "", [], {}):
+        return ""
+    try:
+        text = json.dumps(payload, ensure_ascii=False, default=str, separators=(",", ":"))
+    except (TypeError, ValueError):
+        text = str(payload)
+    return text[:limit]
+
+
+def _graph_relations(payload: Any) -> str:
+    """Normalize ApiCode 962 customer/supplier relation rows for LLM evidence."""
+    root = _objects(payload)
+    if not isinstance(root, dict):
+        return ""
+    relation_rows = root.get("RelateList", root.get("RelationList", root.get("relateList", [])))
+    if not isinstance(relation_rows, list):
+        return ""
+    result: list[str] = []
+    for group in relation_rows:
+        if not isinstance(group, dict):
+            continue
+        topic = str(_first(group, "NodeName", "Name", "RelationName", "Type"))
+        rows = group.get("NodeDataList", group.get("DataList", group.get("List", [])))
+        if isinstance(rows, dict):
+            rows = [rows]
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            name = _first(row, "Name", "CompanyName", "NodeName", "TargetName")
+            percent = _first(row, "Percent", "SharePercent", "Amount")
+            if name:
+                result.append(_join([
+                    topic,
+                    str(name),
+                    f"比例/金额：{percent}" if percent else "",
+                ]))
+    return "；".join(result)
+
+
+def _annual_report_text(payload: Any) -> str:
+    rows = _records(payload)
+    if not rows:
+        return ""
+    return "；".join(_json_text(row, 1800) for row in rows if _json_text(row, 1800))
+
+
+def _fuzzy_candidates_text(payload: Any) -> str:
+    rows = _records(payload)
+    result = []
+    for row in rows:
+        name = _first(row, "Name", "CompanyName", "StockName")
+        industry = _first(row, "Industry", "QccIndustry", "Category")
+        if name:
+            result.append(_join([str(name), f"行业：{industry}" if industry else ""]))
+    return "；".join(result)
+
+
 class QichachaApiAdapter:
-    """Signed adapter for QCC ApiCodes 735, 231, 514 and 233.
+    """Signed adapter for QCC company and IP APIs.
 
     Endpoint paths are configurable because QCC occasionally versions IP
     endpoints.  The 735 and 231 paths are the official current paths; 514 and
@@ -284,6 +353,12 @@ class QichachaApiAdapter:
         # software-copyright submethod is the one needed by this report.
         "514": "/PatentV4/Search",
         "233": "/CopyRight/SearchCopyRight",
+        # Optional, paid business-evidence APIs. They are opt-in so a normal
+        # run never unexpectedly consumes a newly purchased API quota.
+        "2001": "/EnterpriseInfo/Verify",
+        "962": "/CompanyGraphCheck/GetInfo",
+        "213": "/AR/GetAnnualReport",
+        "886": "/FuzzySearch/GetList",
     }
 
     def __init__(
@@ -293,6 +368,7 @@ class QichachaApiAdapter:
         secret_key: str | None = None,
         base_url: str = "https://api.qichacha.com",
         endpoints: Mapping[str, str] | None = None,
+        extra_api_codes: tuple[str, ...] | list[str] | None = None,
         timeout: float = 120.0,
     ):
         self.client = client
@@ -300,13 +376,23 @@ class QichachaApiAdapter:
         self.secret_key = secret_key or ""
         self.base_url = base_url.rstrip("/")
         self.endpoints = {**self.DEFAULT_ENDPOINTS, **dict(endpoints or {})}
+        supported = set(self.DEFAULT_ENDPOINTS)
+        requested_extra = (
+            ("2001", "962", "213", "886")
+            if extra_api_codes is None
+            else extra_api_codes
+        )
+        self.extra_api_codes = tuple(
+            code for code in dict.fromkeys(str(item) for item in requested_extra)
+            if code in supported and code not in {"735", "231", "514", "233"}
+        )
         self.timeout = timeout
 
     @staticmethod
     def token(app_key: str, timespan: str, secret_key: str) -> str:
         return hashlib.md5(f"{app_key}{timespan}{secret_key}".encode("utf-8")).hexdigest().upper()
 
-    def _get(self, code: str, company_name: str) -> tuple[Any, str | None]:
+    def _get(self, code: str, company_name: str, key_no: str = "") -> tuple[Any, str | None]:
         if not self.client:
             return None, "企查查 API 客户端未配置"
         path = self.endpoints[code]
@@ -318,9 +404,13 @@ class QichachaApiAdapter:
         # rejected by the current API with status 125.
         if code == "231":
             params.update({"keyword": company_name, "pageIndex": 1, "pageSize": 50})
+        elif code == "213":
+            # Annual-report API officially uses keyNo. Some QCC tenants also
+            # accept searchKey, so retain a safe fallback for name-only calls.
+            params["keyNo"] = key_no or company_name
         else:
             params["searchKey"] = company_name
-            if code in {"514", "233"}:
+            if code in {"514", "233", "886"}:
                 params.update({"pageIndex": 1, "pageSize": 50})
         headers = {"Token": self.token(self.app_key, timespan, self.secret_key), "Timespan": timespan}
         try:
@@ -346,8 +436,15 @@ class QichachaApiAdapter:
             return {}, ["企查查 API 未配置 AppKey/SecretKey，相关字段留空"]
         payloads: dict[str, Any] = {}
         issues: list[str] = []
-        for code in ("735", "231", "514", "233"):
-            payload, issue = self._get(code, company_name)
+        base_codes = ("735", "231", "514", "233")
+        profile_payload, profile_issue = self._get("735", company_name)
+        if profile_issue:
+            issues.append(profile_issue)
+        if profile_payload is not None:
+            payloads["735"] = profile_payload
+        key_no = _profile_key_no(profile_payload)
+        for code in (*base_codes[1:], *self.extra_api_codes):
+            payload, issue = self._get(code, company_name, key_no=key_no)
             if issue:
                 issues.append(issue)
             if payload is not None:
@@ -362,6 +459,39 @@ class QichachaApiAdapter:
             "unrecorded_intangibles": _join([patents, trademarks]),
             "software_copyrights": _format_software(payloads.get("233")),
         }
+        evidence: list[dict[str, str]] = []
+        evidence_by_topic: dict[str, str] = {}
+
+        def add_evidence(api_code: str, topic: str, text: str) -> None:
+            if not text:
+                return
+            item = {
+                "evidence_id": f"api:qichacha:{api_code}:{topic}",
+                "api_code": api_code,
+                "topic": topic,
+                "source_kind": "qichacha_api",
+                "text": text,
+            }
+            evidence.append(item)
+            evidence_by_topic[topic] = _join([evidence_by_topic.get(topic, ""), text])
+
+        add_evidence("735", "company_profile_section", _format_profile(profile_payload))
+        add_evidence("735", "ownership_history", _format_changes(profile_payload))
+        add_evidence("735", "ownership_at_valuation_date", _format_partners(profile_payload))
+        add_evidence("231", "unrecorded_intangibles", trademarks)
+        add_evidence("514", "unrecorded_intangibles", patents)
+        add_evidence("233", "software_copyrights", _format_software(payloads.get("233")))
+        if "2001" in payloads:
+            add_evidence("2001", "industry_overview", _json_text(payloads["2001"]))
+            add_evidence("2001", "business_and_segments", _json_text(payloads["2001"]))
+        if "962" in payloads:
+            add_evidence("962", "customers_suppliers", _graph_relations(payloads["962"]) or _json_text(payloads["962"]))
+        if "213" in payloads:
+            add_evidence("213", "profit_model_swot", _annual_report_text(payloads["213"]) or _json_text(payloads["213"]))
+            add_evidence("213", "business_and_segments", _annual_report_text(payloads["213"]) or _json_text(payloads["213"]))
+        if "886" in payloads:
+            add_evidence("886", "comparable_list", _fuzzy_candidates_text(payloads["886"]) or _json_text(payloads["886"]))
+
         return {
             "fields": {key: value for key, value in fields.items() if value},
             "profile": _profile_record(profile_payload),
@@ -370,6 +500,8 @@ class QichachaApiAdapter:
             "patent_rows": _patent_rows(payloads.get("514")),
             "software_rows": _software_rows(payloads.get("233")),
             "software_query_ok": "233" in payloads,
+            "evidence": evidence,
+            "evidence_by_topic": evidence_by_topic,
         }, issues
 
 

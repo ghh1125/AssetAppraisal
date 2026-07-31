@@ -69,7 +69,7 @@ class _Client:
 
 def test_qichacha_adapter_signs_and_maps_only_authorized_fields():
     client = _Client()
-    adapter = QichachaApiAdapter(client, "app", "secret")
+    adapter = QichachaApiAdapter(client, "app", "secret", extra_api_codes=())
     payload, issues = adapter.fetch("示例有限公司")
     assert not issues
     assert set(payload["fields"]) == {
@@ -96,8 +96,72 @@ def test_graphical_trademark_uses_text_name_and_marks_software_query_successfull
                 return _Response({"Status": "200", "Result": []})
             return super().get(url, **kwargs)
 
-    payload, issues = QichachaApiAdapter(GraphicClient(), "app", "secret").fetch("示例有限公司")
+    payload, issues = QichachaApiAdapter(GraphicClient(), "app", "secret", extra_api_codes=()).fetch("示例有限公司")
     assert not issues
     assert payload["trademark_rows"][0]["name"] == "图形"
     assert payload["trademark_rows"][0]["image"].startswith("https://")
     assert payload["software_query_ok"] is True
+
+
+def test_qichacha_optional_business_apis_are_configurable_and_expose_evidence():
+    class ExtendedClient(_Client):
+        def get(self, url, **kwargs):
+            if url.endswith("EnterpriseInfo/Verify"):
+                self.calls.append((url, kwargs))
+                return _Response({"Status": "200", "Data": {"Name": "示例有限公司", "QccIndustry": "电子元件", "Scope": "芯片封装测试"}})
+            if url.endswith("CompanyGraphCheck/GetInfo"):
+                self.calls.append((url, kwargs))
+                return _Response({
+                    "Status": "200",
+                    "Data": {"RelateList": [
+                        {"NodeName": "客户", "NodeDataList": [{"Name": "客户甲", "Percent": "80%"}]},
+                        {"NodeName": "供应商", "NodeDataList": [{"Name": "供应商乙"}]},
+                    ]},
+                })
+            if url.endswith("AR/GetAnnualReport"):
+                self.calls.append((url, kwargs))
+                return _Response({"Status": "200", "Data": [{"Year": "2025", "Asset": "100"}]})
+            if url.endswith("FuzzySearch/GetList"):
+                self.calls.append((url, kwargs))
+                return _Response({"Status": "200", "Result": [{"Name": "可比公司甲", "CreditCode": "X"}]})
+            return super().get(url, **kwargs)
+
+    client = ExtendedClient()
+    adapter = QichachaApiAdapter(
+        client,
+        "app",
+        "secret",
+        extra_api_codes=("2001", "962", "213", "886"),
+    )
+    payload, issues = adapter.fetch("示例有限公司")
+    assert not issues
+    assert {item["api_code"] for item in payload["evidence"]} >= {"2001", "962", "213", "886"}
+    assert "客户甲" in payload["evidence_by_topic"]["customers_suppliers"]
+    assert "供应商乙" in payload["evidence_by_topic"]["customers_suppliers"]
+    assert "可比公司甲" in payload["evidence_by_topic"]["comparable_list"]
+    assert len(client.calls) == 8
+
+
+def test_qichacha_default_does_not_call_optional_paid_apis():
+    client = _Client()
+    payload, issues = QichachaApiAdapter(client, "app", "secret", extra_api_codes=()).fetch("示例有限公司")
+    assert not issues
+    assert "evidence" not in payload or not any(item["api_code"] in {"2001", "962", "213", "886"} for item in payload["evidence"])
+    assert len(client.calls) == 4
+
+
+def test_qichacha_default_calls_all_configured_business_apis():
+    client = _Client()
+    payload, issues = QichachaApiAdapter(client, "app", "secret").fetch("示例有限公司")
+    assert not issues
+    called_paths = {url.split("api.qichacha.com/", 1)[-1] for url, _ in client.calls}
+    assert called_paths >= {
+        "ECIInfoVerify/GetInfo", "tm/SearchByApplicant", "PatentV4/Search", "CopyRight/SearchCopyRight",
+        "EnterpriseInfo/Verify", "CompanyGraphCheck/GetInfo", "AR/GetAnnualReport", "FuzzySearch/GetList",
+    }
+    assert len(client.calls) == 8
+
+
+def test_narrative_prompt_forbids_model_world_knowledge():
+    prompt = Path("demo/prompts/yellow_narratives.v2.txt").read_text(encoding="utf-8")
+    assert "不得使用模型自身知识" in prompt
