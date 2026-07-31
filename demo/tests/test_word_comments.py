@@ -63,3 +63,4 @@ def test_comment_template_maps_repeated_placeholders_in_order() -> None:
     assert mapped["DOCUMENT-P0490-X01"] == "valuation_subject_type"
     assert mapped["DOCUMENT-P0552-X01"] == "valuation_subject_type"
     assert mapped["DOCUMENT-P0556-X01"] == "final_valuation_method"
+    assert mapped["DOCUMENT-P0321-X01"] == "company_profile_text"

@@ -101,6 +101,8 @@ def _comment_field_sequence(text: str) -> list[str]:
     annotation (not filenames or coordinates) and are intentionally narrow.
     """
     text = str(text or "")
+    if "模块信息" in text or "大模型" in text:
+        return ["company_profile_text"]
     if ("评估结论采用方法" in text or "评估结论方法采用" in text) and "金额数据" in text:
         return [
             "final_valuation_method", "final_appraisal_value",
