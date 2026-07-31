@@ -234,11 +234,19 @@ class FillWordOutput(DemoModel):
     replacement_count: int = Field(description="已替换位置数量", examples=[147])
 
 
+class ManualBasicInputs(DemoModel):
+    commissioning_party_name: str | None = Field(default=None, description="委托方公司名称", examples=["示例委托有限公司"])
+    target_company_name: str | None = Field(default=None, description="评估主体（被评估公司）名称", examples=["示例被评估有限公司"])
+    transaction_type: Literal["转让", "收购", "增资", "减资"] | None = Field(default=None, description="委托类型，单选", examples=["收购"])
+    selected_valuation_method: list[Literal["资产基础法", "收益法", "市场法"]] | str | None = Field(default=None, description="评估方法，多选且至少一个", examples=[["收益法", "资产基础法"]])
+    final_valuation_method: Literal["资产基础法", "收益法", "市场法"] | None = Field(default=None, description="评估结论采用方法，单选", examples=["收益法"])
+
+
 class StartInput(DemoModel):
-    manual_inputs: dict[str, Any] = Field(
-        default_factory=dict,
-        description="用户填写的委托方、被评估单位和评估方法等基础信息",
-        examples=[{"target_company_name": "示例有限公司"}],
+    manual_inputs: ManualBasicInputs = Field(
+        default_factory=ManualBasicInputs,
+        description="图片定义的五项人工基础信息；其余模板字段由材料、API、系统时间或占位符规则处理",
+        examples=[{"commissioning_party_name": "示例委托有限公司", "target_company_name": "示例被评估有限公司", "transaction_type": "收购", "selected_valuation_method": ["收益法"], "final_valuation_method": "收益法"}],
     )
     materials: dict[str, str] = Field(
         default_factory=dict,

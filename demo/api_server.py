@@ -375,6 +375,7 @@ def _execute_fill(run_id: str, selected_fields: dict[str, Any]) -> None:
 @app.post("/api/v1/asset-appraisal/runs", status_code=202)
 async def create_run(
     background_tasks: BackgroundTasks,
+    materials: list[UploadFile] | None = File(None),
     pdf: UploadFile | None = File(None),
     income_workbook: UploadFile | None = File(None),
     reporting_workbook: UploadFile | None = File(None),
@@ -383,17 +384,57 @@ async def create_run(
     use_qichacha: bool = Form(True),
     reuse_ocr: bool = Form(True),
 ):
+    # The UI accepts a single multi-file material input, while the pipeline
+    # keeps stable semantic roles internally.  The named fields remain as a
+    # backwards-compatible API for existing CLI/clients.
+    generic_materials = list(materials or [])
+    if pdf is not None:
+        generic_materials.append(pdf)
+    if reporting_workbook is not None:
+        generic_materials.append(reporting_workbook)
+    if income_workbook is not None:
+        generic_materials.append(income_workbook)
+    role_uploads: dict[str, UploadFile | None] = {
+        "pdf": None,
+        "reporting_workbook": None,
+        "income_workbook": None,
+        "reference_report": None,
+    }
+    workbook_candidates: list[UploadFile] = []
+    for upload in generic_materials:
+        suffix = Path(upload.filename or "").suffix.lower()
+        if suffix == ".pdf" and role_uploads["pdf"] is None:
+            role_uploads["pdf"] = upload
+        elif suffix in {".xlsx", ".xlsm"}:
+            workbook_candidates.append(upload)
+        elif suffix in {".doc", ".docx"} and role_uploads["reference_report"] is None:
+            role_uploads["reference_report"] = upload
+    # Content-role names are only a hint.  The semantic Excel reader still
+    # decides which workbook contains which facts after upload.
+    for upload in workbook_candidates:
+        name = (upload.filename or "").lower()
+        if role_uploads["income_workbook"] is None and any(token in name for token in ("收益", "income", "现金流", "市场")):
+            role_uploads["income_workbook"] = upload
+        elif role_uploads["reporting_workbook"] is None:
+            role_uploads["reporting_workbook"] = upload
+        elif role_uploads["income_workbook"] is None:
+            role_uploads["income_workbook"] = upload
     uploads = {
-        "pdf": (pdf, (".pdf",), "审计报告 PDF"),
+        "pdf": (role_uploads["pdf"], (".pdf",), "审计报告 PDF"),
         "income_workbook": (
-            income_workbook,
+            role_uploads["income_workbook"],
             (".xlsx", ".xlsm"),
-            "收益法工作簿",
+            "收益法或市场法工作簿",
         ),
         "reporting_workbook": (
-            reporting_workbook,
+            role_uploads["reporting_workbook"],
             (".xlsx", ".xlsm"),
-            "上报表/资产或市场法工作簿",
+            "资产基础法/资产清查工作簿",
+        ),
+        "reference_report": (
+            role_uploads["reference_report"],
+            (".doc", ".docx"),
+            "补充 Word 材料",
         ),
     }
     for field_name, (upload, suffixes, label) in uploads.items():
@@ -477,6 +518,7 @@ async def create_run(
         "audit_pdf": pdf_path,
         "income_workbook": stored_files.get("income_workbook"),
         "reporting_workbook": stored_files.get("reporting_workbook"),
+        "reference_report": stored_files.get("reference_report"),
     }
     _set_job(
         run_id,

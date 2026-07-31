@@ -24,11 +24,14 @@ from .adapters.ocr_factory import create_ocr_adapter
 from .adapters.semantic_excel import extract_workbook_facts
 from .adapters.word import (
     fill_template,
+    extract_word_comments,
     highlight_unresolved_placeholders,
+    inventory_template,
     replace_report_number_year,
 )
 from .domain.mapping import validate_mapping
 from .domain.calculations import derive_system_fields
+from .domain.comment_mapping import build_comment_aware_locations
 from .domain.field_validation import (
     apply_missing_field_policy,
     normalize_narrative_modules,
@@ -228,6 +231,9 @@ def run_project(
     source_lineage = config.get("source_lineage", {})
     mapping = json.loads(mapping_path.read_text(encoding="utf-8"))
     locations = validate_mapping(mapping)
+    template_inventory = inventory_template(template)
+    if any(item.get("comment_texts") for item in template_inventory):
+        locations = build_comment_aware_locations(template_inventory, locations)
     static_locations = mapping.get("static_locations", [])
     manual = (
         {}
@@ -257,7 +263,14 @@ def run_project(
     evidence: dict[str, dict] = {}
     issues: list[str] = []
     table_replacements: dict[int, list[list[str]]] = {}
-    records_by_key = {record["field_key"]: record for record in locations}
+    # Keep the complete business field contract for provider filtering and
+    # missing-value policy even when a comment-based template removed a yellow
+    # heading and therefore has no literal placeholder for that field.
+    records_by_key = {
+        record["field_key"]: record
+        for record in [*mapping.get("locations", []), *locations]
+        if record.get("field_key")
+    }
     for record in locations:
         key = record["field_key"]
         if key in fields:
@@ -663,6 +676,23 @@ def run_project(
         paragraph_replacements[(spec["part"], int(spec["paragraph_index"]))] = value
     run_dir = output_dir.resolve() if output_dir else (base / "../../runs" / config["project_id"] / datetime.now().strftime("%Y%m%d_%H%M%S")).resolve()
     run_dir.mkdir(parents=True, exist_ok=True)
+    # Keep Word comments as internal lineage metadata.  They are not exposed
+    # as a user download, but the run records exactly which placeholder was
+    # annotated with which source instruction, including the new comment-based
+    # template variant.  Legacy yellow-highlight templates produce zero here.
+    template_locations = inventory_template(template)
+    comment_annotations = [
+        {
+            "location_id": item["location_id"],
+            "context": item.get("context", ""),
+            "comment_ids": item.get("comment_ids", []),
+            "comment_texts": item.get("comment_texts", []),
+        }
+        for item in template_locations
+        if item.get("comment_texts")
+    ]
+    write_json(run_dir / "template_comments.json", comment_annotations)
+    all_comments = extract_word_comments(template)
     report = run_dir / "资产评估报告_待复核.docx"
     before_hash = hashlib.sha256(template.read_bytes()).hexdigest()
     fill_template(
@@ -727,6 +757,11 @@ def run_project(
         "generation_validation": {
             "valid": not generation_issues,
             "unresolved_count": len(generation_issues),
+        },
+        "template_annotations": {
+            "kind": "word_comments" if comment_annotations else "yellow_highlight_legacy",
+            "comment_count": len(all_comments),
+            "annotated_location_count": len(comment_annotations),
         },
         "outputs": [
             str(report),

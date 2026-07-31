@@ -17,6 +17,7 @@ NS = {"w": W}
 PLACEHOLDER = re.compile(r"X{2,}", re.I)
 UNRESOLVED_MARKER = re.compile(r"20XX|X{2,}", re.I)
 PART_RE = re.compile(r"word/(document|header\d+|footer\d+|footnotes|endnotes)\.xml")
+COMMENTS_PART = "word/comments.xml"
 
 
 def _paragraph_text(paragraph) -> str:
@@ -59,9 +60,49 @@ def _paragraph_text_without_highlight(paragraph) -> str:
     return re.sub(r"（\s*）|\(\s*\)", "", text)
 
 
+def _comment_texts(archive: zipfile.ZipFile) -> dict[str, str]:
+    """Read Word comments without requiring python-docx comment support.
+
+    Word stores comments in a separate OOXML part and anchors them in the
+    document with ``commentRangeStart``/``commentReference`` elements.  The
+    communication template now uses those comments as the source-of-truth
+    annotations, so inventory records retain the exact comment text and IDs.
+    Older yellow-highlight templates simply return an empty mapping.
+    """
+    if COMMENTS_PART not in archive.namelist():
+        return {}
+    root = etree.fromstring(archive.read(COMMENTS_PART))
+    return {
+        str(comment.get(f"{{{W}}}id")): "".join(
+            comment.xpath(".//w:t/text()", namespaces=NS)
+        ).strip()
+        for comment in root.xpath(".//w:comment", namespaces=NS)
+        if comment.get(f"{{{W}}}id") is not None
+    }
+
+
+def extract_word_comments(path: Path) -> dict[str, str]:
+    """Return all Word comments keyed by OOXML comment ID."""
+    with zipfile.ZipFile(path) as archive:
+        return _comment_texts(archive)
+
+
+def _paragraph_comment_ids(paragraph) -> list[str]:
+    ids: list[str] = []
+    for node in paragraph.xpath(
+        ".//w:commentRangeStart|.//w:commentReference",
+        namespaces=NS,
+    ):
+        value = node.get(f"{{{W}}}id")
+        if value is not None and value not in ids:
+            ids.append(str(value))
+    return ids
+
+
 def inventory_template(path: Path) -> list[dict]:
     records: list[dict] = []
     with zipfile.ZipFile(path) as zf:
+        comments = _comment_texts(zf)
         for part in sorted(name for name in zf.namelist() if PART_RE.fullmatch(name)):
             root = etree.fromstring(zf.read(part))
             short = Path(part).stem.upper()
@@ -71,6 +112,8 @@ def inventory_template(path: Path) -> list[dict]:
                 markers = list(PLACEHOLDER.finditer(context))
                 highlight = _highlight_text(paragraph)
                 in_table = bool(paragraph.xpath("ancestor::w:tbl", namespaces=NS))
+                comment_ids = _paragraph_comment_ids(paragraph)
+                comment_texts = [comments[item] for item in comment_ids if item in comments]
                 for occurrence, match in enumerate(markers, 1):
                     records.append({
                         "location_id": f"{short}-P{p_index:04d}-X{occurrence:02d}",
@@ -81,6 +124,8 @@ def inventory_template(path: Path) -> list[dict]:
                         "marker": match.group(0),
                         "context": context,
                         "in_table": in_table,
+                        "comment_ids": comment_ids,
+                        "comment_texts": comment_texts,
                     })
                 if highlight and not markers:
                     records.append({
@@ -92,6 +137,8 @@ def inventory_template(path: Path) -> list[dict]:
                         "marker": "黄色标注",
                         "context": context,
                         "in_table": in_table,
+                        "comment_ids": comment_ids,
+                        "comment_texts": comment_texts,
                     })
     return records
 

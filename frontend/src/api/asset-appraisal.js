@@ -7,6 +7,7 @@ export function checkAssetAppraisalOcrCache(file) {
 }
 
 export function buildAssetAppraisalForm({
+  materials,
   pdf,
   reportingWorkbook,
   incomeWorkbook,
@@ -16,6 +17,9 @@ export function buildAssetAppraisalForm({
   reuseOcr,
 }) {
   const form = new FormData()
+  for (const material of (materials || [])) {
+    if (material) form.append('materials', material)
+  }
   if (pdf) form.append('pdf', pdf)
   if (reportingWorkbook) form.append('reporting_workbook', reportingWorkbook)
   if (incomeWorkbook) form.append('income_workbook', incomeWorkbook)

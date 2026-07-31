@@ -51,6 +51,25 @@ def test_api_accepts_xlsm_income_workbook(monkeypatch, tmp_path):
     assert response.status_code == 202
 
 
+def test_api_accepts_generic_multi_file_materials(monkeypatch, tmp_path):
+    monkeypatch.setattr(api_server, "RUNS_ROOT", tmp_path)
+    monkeypatch.setattr(api_server, "_execute_run", lambda *args, **kwargs: None)
+    response = TestClient(api_server.app).post(
+        "/api/v1/asset-appraisal/runs",
+        data={"inputs": json.dumps({"target_company_name": "示例有限公司"})},
+        files=[
+            ("materials", ("审计报告.pdf", b"pdf", "application/pdf")),
+            ("materials", ("资产清查.xlsx", b"xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")),
+            ("materials", ("补充说明.docx", b"docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")),
+        ],
+    )
+    assert response.status_code == 202
+    run_id = response.json()["run_id"]
+    assert (tmp_path / run_id / "input" / "source.pdf").is_file()
+    assert (tmp_path / run_id / "input" / "reporting_workbook.xlsx").is_file()
+    assert (tmp_path / run_id / "input" / "reference_report.docx").is_file()
+
+
 def test_api_rejects_completely_empty_run(monkeypatch, tmp_path):
     monkeypatch.setattr(api_server, "RUNS_ROOT", tmp_path)
 

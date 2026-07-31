@@ -11,15 +11,10 @@ const { t } = useI18n()
 
 const form = reactive({
   commissioning_party_name: '',
-  commissioning_party_short_name: '',
   target_company_name: '',
-  report_serial: '',
-  valuation_purpose_inputs: '',
   selected_valuation_method: ['收益法', '资产基础法'],
-  valuation_subject_type: '股东全部权益价值',
   transaction_type: '收购',
   final_valuation_method: '收益法',
-  target_company_short_name: '',
 })
 const files = reactive(createUploadState())
 const useGlm = ref(true)
@@ -39,9 +34,16 @@ const statusText = computed(() => t(`asset.${run.value?.status || 'queued'}`))
 const nodeStatusText = (status) => t(`asset.nodeStatus.${status || 'pending'}`)
 
 function setFile(type, event) {
+  if (type === 'materials') {
+    files.materials = (event.fileList || [])
+      .map(item => item.originFileObj)
+      .filter(Boolean)
+    const pdf = files.materials.find(item => item.name?.toLowerCase().endsWith('.pdf'))
+    if (pdf) checkOcrCache(pdf)
+    if (!pdf) ocrCache.value = { checking: false, hit: false, source: '' }
+    return
+  }
   files[type] = event.fileList?.[0]?.originFileObj || null
-  if (type === 'pdf' && files.pdf) checkOcrCache(files.pdf)
-  if (type === 'pdf' && !files.pdf) ocrCache.value = { checking: false, hit: false, source: '' }
 }
 
 async function checkOcrCache(file) {
@@ -87,9 +89,7 @@ async function submit() {
   selectedCandidateKeys.value = []
   try {
     const result = await createAssetAppraisalRun().mutationFn({
-      pdf: files.pdf,
-      reportingWorkbook: files.reportingWorkbook,
-      incomeWorkbook: files.incomeWorkbook,
+      materials: files.materials,
       inputs: { ...form },
       useGlm: useGlm.value,
       useQichacha: useQichacha.value,
@@ -143,7 +143,8 @@ onBeforeUnmount(clearPoll)
           <a-upload-dragger
             v-for="field in uploadFields"
             :key="field.key"
-            :max-count="1"
+            :multiple="field.multiple"
+            :max-count="field.multiple ? 20 : 1"
             :accept="field.accept"
             :before-upload="() => false"
             @change="setFile(field.key, $event)"
@@ -156,7 +157,7 @@ onBeforeUnmount(clearPoll)
         <a-alert class="template-source" :message="t('asset.templateSource')" type="success" show-icon />
         <a-alert v-if="ocrCache.checking" class="ocr-cache-status" :message="t('asset.ocrCacheChecking')" type="info" show-icon />
         <a-alert v-else-if="ocrCache.hit" class="ocr-cache-status" :message="t('asset.ocrCacheHit', { source: ocrCache.source })" type="success" show-icon />
-        <a-alert v-else-if="files.pdf" class="ocr-cache-status" :message="t('asset.ocrCacheMiss')" type="warning" show-icon />
+        <a-alert v-else-if="files.materials?.some(file => file?.name?.toLowerCase().endsWith('.pdf'))" class="ocr-cache-status" :message="t('asset.ocrCacheMiss')" type="warning" show-icon />
       </a-card>
 
       <a-card class="panel" :title="t('asset.inputTitle')" :bordered="false">
@@ -165,21 +166,9 @@ onBeforeUnmount(clearPoll)
             <a-form-item :label="t('asset.commissioningName')"><a-input v-model:value="form.commissioning_party_name" /></a-form-item>
             <a-form-item :label="t('asset.targetName')"><a-input v-model:value="form.target_company_name" :placeholder="t('asset.targetNamePlaceholder')" /></a-form-item>
           </div>
-          <div class="form-row">
-            <a-form-item :label="t('asset.transaction')"><a-select v-model:value="form.transaction_type"><a-select-option value="转让">{{ t('asset.transactionOptions.transfer') }}</a-select-option><a-select-option value="收购">{{ t('asset.transactionOptions.acquisition') }}</a-select-option><a-select-option value="增资">{{ t('asset.transactionOptions.capitalIncrease') }}</a-select-option><a-select-option value="减资">{{ t('asset.transactionOptions.capitalDecrease') }}</a-select-option></a-select></a-form-item>
-            <a-form-item :label="t('asset.commissioningShortName')"><a-input v-model:value="form.commissioning_party_short_name" /></a-form-item>
-          </div>
-          <a-form-item :label="t('asset.purpose')"><a-textarea v-model:value="form.valuation_purpose_inputs" :rows="3" :placeholder="t('asset.purposePlaceholder')" /></a-form-item>
-          <div class="form-row three">
-            <a-form-item :label="t('asset.method')"><a-select v-model:value="form.selected_valuation_method" mode="multiple" :max-tag-count="2"><a-select-option value="资产基础法">{{ t('asset.methodOptions.asset') }}</a-select-option><a-select-option value="收益法">{{ t('asset.methodOptions.income') }}</a-select-option><a-select-option value="市场法">{{ t('asset.methodOptions.market') }}</a-select-option></a-select></a-form-item>
-            <a-form-item :label="t('asset.subject')"><a-select v-model:value="form.valuation_subject_type"><a-select-option value="股东全部权益价值">股东全部权益价值</a-select-option><a-select-option value="股东部分权益价值">股东部分权益价值</a-select-option><a-select-option value="企业整体价值">企业整体价值</a-select-option><a-select-option value="资产组价值">资产组价值</a-select-option></a-select></a-form-item>
-            <a-form-item :label="t('asset.finalMethod')"><a-select v-model:value="form.final_valuation_method"><a-select-option value="资产基础法">{{ t('asset.methodOptions.asset') }}</a-select-option><a-select-option value="收益法">{{ t('asset.methodOptions.income') }}</a-select-option><a-select-option value="市场法">{{ t('asset.methodOptions.market') }}</a-select-option></a-select></a-form-item>
-          </div>
-          <div class="form-row">
-            <a-form-item :label="t('asset.reportSerial')"><a-input v-model:value="form.report_serial" /></a-form-item>
-            <a-form-item :label="t('asset.targetShortName')"><a-input v-model:value="form.target_company_short_name" /></a-form-item>
-          </div>
-          <div class="switches"><a-checkbox v-model:checked="useGlm">{{ t('asset.useGlm') }}</a-checkbox><a-checkbox v-model:checked="useQichacha">{{ t('asset.useQichacha') }}</a-checkbox><a-checkbox v-model:checked="reuseOcr">{{ t('asset.reuseOcr') }}</a-checkbox></div>
+          <a-form-item :label="t('asset.transaction')"><a-select v-model:value="form.transaction_type"><a-select-option value="转让">{{ t('asset.transactionOptions.transfer') }}</a-select-option><a-select-option value="收购">{{ t('asset.transactionOptions.acquisition') }}</a-select-option><a-select-option value="增资">{{ t('asset.transactionOptions.capitalIncrease') }}</a-select-option><a-select-option value="减资">{{ t('asset.transactionOptions.capitalDecrease') }}</a-select-option></a-select></a-form-item>
+          <a-form-item :label="t('asset.method')"><a-select v-model:value="form.selected_valuation_method" mode="multiple" :max-tag-count="3"><a-select-option value="资产基础法">{{ t('asset.methodOptions.asset') }}</a-select-option><a-select-option value="收益法">{{ t('asset.methodOptions.income') }}</a-select-option><a-select-option value="市场法">{{ t('asset.methodOptions.market') }}</a-select-option></a-select></a-form-item>
+          <a-form-item :label="t('asset.finalMethod')"><a-select v-model:value="form.final_valuation_method"><a-select-option value="资产基础法">{{ t('asset.methodOptions.asset') }}</a-select-option><a-select-option value="收益法">{{ t('asset.methodOptions.income') }}</a-select-option><a-select-option value="市场法">{{ t('asset.methodOptions.market') }}</a-select-option></a-select></a-form-item>
         </a-form>
       </a-card>
     </section>

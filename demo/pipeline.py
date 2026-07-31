@@ -32,6 +32,7 @@ from demo.adapters.word import (
     document_paragraph_texts,
     fill_template,
     highlight_unresolved_placeholders,
+    extract_word_comments,
     inventory_template,
     replace_image_markers,
     replace_report_number_year,
@@ -42,6 +43,7 @@ from demo.domain.generation_issues import (
     issues_from_word_findings,
     organize_generation_issues,
 )
+from demo.domain.comment_mapping import build_comment_aware_locations
 from demo.domain.field_validation import (
     apply_missing_field_policy,
     normalize_narrative_modules,
@@ -604,13 +606,16 @@ def run_pipeline(
     mapping = json.loads(mapping_path.read_text(encoding="utf-8"))
     locations = validate_mapping(mapping)
     static_locations = mapping.get("static_locations", [])
+    template_inventory = inventory_template(template)
+    comment_template = any(item.get("comment_texts") for item in template_inventory)
+    if comment_template:
+        locations = build_comment_aware_locations(template_inventory, locations)
     field_names = {
         item["field_key"]: item["field_name"]
-        for item in [*locations, *static_locations]
+        for item in [*mapping.get("locations", []), *locations, *static_locations]
         if item.get("field_key")
     }
     routes = load_yellow_routes(config["yellow_routes"])
-    template_inventory = inventory_template(template)
     inventory_trace = [
         {
             "location_id": item["location_id"],
@@ -637,7 +642,8 @@ def run_pipeline(
         for item in template_inventory
         if item["record_type"] == "黄色标注内容块"
     }
-    validate_yellow_routes(routes, expected_location_ids=yellow_location_ids)
+    if not comment_template:
+        validate_yellow_routes(routes, expected_location_ids=yellow_location_ids)
 
     template_hash = _sha256(template)
     issues: list[str] = []
@@ -1638,7 +1644,7 @@ def run_pipeline(
     )
     planned_manifest_path = output_dir / "run_manifest.json"
     candidate_locations: dict[str, list[str]] = defaultdict(list)
-    for location in template_inventory:
+    for location in locations:
         field_key = str(location.get("field_key") or "")
         if field_key in all_llm_allowed:
             candidate_locations[field_key].append(str(location["location_id"]))
@@ -1650,7 +1656,11 @@ def run_pipeline(
     record_stage(
         "start_input",
         {
-            "manual_inputs": manual_inputs_override or {},
+            "manual_inputs": {
+                key: value
+                for key, value in (manual_inputs_override or {}).items()
+                if key in schemas.ManualBasicInputs.model_fields
+            },
             "materials": {
                 key: str(value)
                 for key, value in (source_overrides or {}).items()
@@ -1721,6 +1731,18 @@ def run_pipeline(
         node_issues=list(issues),
     )
     trace_path = recorder.export(output_dir / "workflow_trace.json")
+    comment_annotations = [
+        {
+            "location_id": item["location_id"],
+            "context": item.get("context", ""),
+            "comment_ids": item.get("comment_ids", []),
+            "comment_texts": item.get("comment_texts", []),
+        }
+        for item in template_inventory
+        if item.get("comment_texts")
+    ]
+    comment_path = write_json(output_dir / "template_comments.json", comment_annotations)
+    all_comments = extract_word_comments(template)
     manifest = {
         "project_id": config["project_id"],
         "created_at": datetime.now().isoformat(timespec="seconds"),
@@ -1739,6 +1761,11 @@ def run_pipeline(
         "ocr_cache_source": str(ocr_workbook_path) if ocr_workbook_path else "",
         "workflow_version": workflow_definition.version,
         "workflow_contract_version": workflow_definition.contract_version,
+        "template_annotations": {
+            "kind": "word_comments" if comment_annotations else "yellow_highlight_legacy",
+            "comment_count": len(all_comments),
+            "annotated_location_count": len(comment_annotations),
+        },
         "financial_validation": financial_validation,
         "generation_validation": {
             "valid": not generation_issues,
@@ -1750,6 +1777,7 @@ def run_pipeline(
             str(normalized_fields_path),
             str(normalized_evidence_path),
             str(trace_path),
+            str(comment_path),
         ],
     }
     manifest_path = write_json(planned_manifest_path, manifest)

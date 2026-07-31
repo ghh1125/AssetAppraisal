@@ -3,21 +3,15 @@ import assert from 'node:assert/strict'
 
 import { createUploadState, uploadFields } from './upload-fields.js'
 
-test('frontend exposes only the three agreed upload slots', () => {
+test('frontend exposes one generic multi-file material slot', () => {
   assert.deepEqual(
     uploadFields.map(({ key, accept }) => ({ key, accept })),
-    [
-      { key: 'pdf', accept: '.pdf' },
-      { key: 'reportingWorkbook', accept: '.xlsx,.xlsm' },
-      { key: 'incomeWorkbook', accept: '.xlsx,.xlsm' },
-    ],
+    [{ key: 'materials', accept: '.pdf,.doc,.docx,.xls,.xlsx,.xlsm' }],
   )
 })
 
-test('upload state contains no reference report or audited-financial slot', () => {
+test('upload state contains the related-materials list', () => {
   assert.deepEqual(createUploadState(), {
-    pdf: null,
-    reportingWorkbook: null,
-    incomeWorkbook: null,
+    materials: [],
   })
 })

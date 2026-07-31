@@ -1,27 +1,14 @@
 export const uploadFields = Object.freeze([
   {
-    key: 'pdf',
-    accept: '.pdf',
-    icon: 'PDF',
-    titleKey: 'pdfTitle',
-    hintKey: 'pdfHint',
-  },
-  {
-    key: 'reportingWorkbook',
-    accept: '.xlsx,.xlsm',
-    icon: 'XLSX',
-    titleKey: 'reportingWorkbookTitle',
-    hintKey: 'reportingWorkbookHint',
-  },
-  {
-    key: 'incomeWorkbook',
-    accept: '.xlsx,.xlsm',
-    icon: 'XLSX',
-    titleKey: 'incomeWorkbookTitle',
-    hintKey: 'incomeWorkbookHint',
+    key: 'materials',
+    accept: '.pdf,.doc,.docx,.xls,.xlsx,.xlsm',
+    icon: 'PDF · Excel · Word',
+    titleKey: 'materialsTitle',
+    hintKey: 'materialsHint',
+    multiple: true,
   },
 ])
 
 export function createUploadState() {
-  return Object.fromEntries(uploadFields.map(({ key }) => [key, null]))
+  return Object.fromEntries(uploadFields.map(({ key, multiple }) => [key, multiple ? [] : null]))
 }
