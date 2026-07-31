@@ -35,3 +35,25 @@ def test_comment_template_maps_all_placeholder_locations_to_business_fields() ->
     mapped = build_comment_aware_locations(inventory_template(template), base)
     assert len(mapped) == 132
     assert not [item for item in mapped if not item.get("field_key")]
+
+
+def test_comment_template_maps_repeated_placeholders_in_order() -> None:
+    template = Path("/Users/ghh/Downloads/评估报告版式-沟通标注版_v2.docx")
+    if not template.is_file():
+        return
+    base = json.loads((ROOT / "mappings/appraisal_report_v1.yaml").read_text(encoding="utf-8"))["locations"]
+    mapped = {
+        item["location_id"]: item["field_key"]
+        for item in build_comment_aware_locations(inventory_template(template), base)
+    }
+    assert [mapped[f"DOCUMENT-P0323-X{i:02d}"] for i in range(1, 5)] == [
+        "commissioning_party_name", "target_company_name",
+        "target_company_name", "valuation_subject_type",
+    ]
+    assert [mapped[f"DOCUMENT-P0550-X{i:02d}"] for i in range(1, 6)] == [
+        "target_company_name", "book_net_assets", "income_approach_value",
+        "income_increment", "income_increment_rate",
+    ]
+    assert [mapped[f"DOCUMENT-P0587-X{i:02d}"] for i in range(1, 4)] == [
+        "report_date_year", "report_date_month", "report_date_day",
+    ]

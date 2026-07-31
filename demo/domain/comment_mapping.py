@@ -92,6 +92,53 @@ def comment_field_candidates(comment_texts: Iterable[str]) -> list[str]:
     return result
 
 
+def _comment_field_sequence(text: str) -> list[str]:
+    """Return an ordered field sequence when a comment describes a group.
+
+    Word comments are attached to a paragraph, not to an individual ``XXX``.
+    For those paragraphs, the placeholder order is the only reliable way to
+    distinguish repeated values.  These rules use the explicit wording in the
+    annotation (not filenames or coordinates) and are intentionally narrow.
+    """
+    text = str(text or "")
+    if ("评估结论采用方法" in text or "评估结论方法采用" in text) and "金额数据" in text:
+        return [
+            "final_valuation_method", "final_appraisal_value",
+            "final_value_chinese", "book_net_assets", "appraisal_increment",
+            "appraisal_increment_rate",
+        ]
+    if "评估主体全称" in text and ("所有者权益" in text or "净资产" in text) and "收益法" in text:
+        return [
+            "target_company_name", "book_net_assets", "income_approach_value",
+            "income_increment", "income_increment_rate",
+        ]
+    if "评估主体全称" in text and ("所有者权益" in text or "净资产" in text) and "资产基础法" in text:
+        return [
+            "target_company_name", "book_net_assets", "asset_approach_value",
+            "asset_increment", "asset_increment_rate",
+        ]
+    if "报告生成" in text or "系统时间" in text or "报告日期" in text:
+        return ["report_date_year", "report_date_month", "report_date_day"]
+    if "评估基准日~" in text or "评估基准日加一年" in text:
+        return [
+            "validity_start_year", "validity_start_month", "validity_start_day",
+            "validity_end_year", "validity_end_month", "validity_end_day",
+        ]
+    if "PDF/财务表格识别获取基准日" in text:
+        return [
+            "target_company_name", "transaction_type",
+            "validity_start_year", "validity_start_month", "validity_start_day",
+            "validity_end_year", "validity_end_month", "validity_end_day",
+        ]
+    if "评估方法" in text and "评估对象" in text and "评估基准日" in text:
+        return [
+            "selected_valuation_method", "target_company_name", "transaction_type",
+            "valuation_subject_type", "valuation_date_year", "valuation_date_month",
+            "valuation_date_day",
+        ]
+    return []
+
+
 def build_comment_aware_locations(
     template_locations: list[dict[str, Any]],
     base_locations: list[dict[str, Any]],
@@ -118,7 +165,19 @@ def build_comment_aware_locations(
         candidates = by_position.get(parts, []) if parts else []
         normalized = _normalize_context(item.get("context", ""))
         if not candidates:
-            candidates = by_context.get(normalized, [])
+            context_candidates = by_context.get(normalized, [])
+            # Paragraph numbers can shift after a comment is added/removed.
+            # Pair placeholders by their occurrence within the same semantic
+            # paragraph instead of reusing the first field for every XXX.
+            current_occurrence = int(item.get("occurrence_index", 1))
+            candidates = [
+                candidate for candidate in context_candidates
+                if (
+                    int(candidate.get("occurrence_index", 1))
+                    if candidate.get("occurrence_index") is not None
+                    else (_location_parts(str(candidate.get("location_id", ""))) or (0, 1))[1]
+                ) == current_occurrence
+            ] or context_candidates[:1]
         selected = deepcopy(candidates[0]) if candidates else {
             "field_key": "",
             "field_name": "",
@@ -139,7 +198,13 @@ def build_comment_aware_locations(
             "comment_ids": item.get("comment_ids", []),
             "comment_texts": item.get("comment_texts", []),
         })
-        comment_keys = comment_field_candidates(item.get("comment_texts", []))
+        comment_text = " ".join(item.get("comment_texts", []))
+        comment_keys = _comment_field_sequence(comment_text)
+        if comment_keys:
+            occurrence = int(item.get("occurrence_index", 1))
+            selected["field_key"] = comment_keys[min(max(occurrence - 1, 0), len(comment_keys) - 1)]
+        else:
+            comment_keys = comment_field_candidates(item.get("comment_texts", []))
         if not comment_keys and "评估基准日为20XX年XX月XX日" in str(item.get("context", "")):
             occurrence = int(item.get("occurrence_index", 1))
             comment_keys = [

@@ -232,8 +232,24 @@ def run_project(
     mapping = json.loads(mapping_path.read_text(encoding="utf-8"))
     locations = validate_mapping(mapping)
     template_inventory = inventory_template(template)
-    if any(item.get("comment_texts") for item in template_inventory):
-        locations = build_comment_aware_locations(template_inventory, locations)
+    annotation_template = (
+        _path(base, config["annotation_template"])
+        if config.get("annotation_template")
+        else template
+    )
+    if not annotation_template.is_file():
+        annotation_template = template
+    annotation_inventory = inventory_template(annotation_template)
+    same_template_structure = (
+        len(template_inventory) == len(annotation_inventory)
+        and sum(item["record_type"] == "占位符" for item in template_inventory)
+        == sum(item["record_type"] == "占位符" for item in annotation_inventory)
+    )
+    if any(item.get("comment_texts") for item in annotation_inventory) and same_template_structure:
+        locations = build_comment_aware_locations(annotation_inventory, locations)
+    else:
+        annotation_template = template
+        annotation_inventory = template_inventory
     static_locations = mapping.get("static_locations", [])
     manual = (
         {}
@@ -680,7 +696,7 @@ def run_project(
     # as a user download, but the run records exactly which placeholder was
     # annotated with which source instruction, including the new comment-based
     # template variant.  Legacy yellow-highlight templates produce zero here.
-    template_locations = inventory_template(template)
+    template_locations = annotation_inventory
     comment_annotations = [
         {
             "location_id": item["location_id"],
@@ -692,7 +708,7 @@ def run_project(
         if item.get("comment_texts")
     ]
     write_json(run_dir / "template_comments.json", comment_annotations)
-    all_comments = extract_word_comments(template)
+    all_comments = extract_word_comments(annotation_template)
     report = run_dir / "资产评估报告_待复核.docx"
     before_hash = hashlib.sha256(template.read_bytes()).hexdigest()
     fill_template(
@@ -747,7 +763,8 @@ def run_project(
         evidence,
     )
     manifest = {
-        "project_id": config["project_id"], "template": str(template), "template_sha256": before_hash,
+        "project_id": config["project_id"], "template": str(template),
+        "annotation_template": str(annotation_template), "template_sha256": before_hash,
         "mapping_version": "1.0.0", "offline": offline, "replacement_count": len(replacements),
         "financial_validation": {
             "valid": financial_validation["valid"],

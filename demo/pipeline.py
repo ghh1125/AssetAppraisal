@@ -607,9 +607,28 @@ def run_pipeline(
     locations = validate_mapping(mapping)
     static_locations = mapping.get("static_locations", [])
     template_inventory = inventory_template(template)
-    comment_template = any(item.get("comment_texts") for item in template_inventory)
+    annotation_template = (
+        _path(base, config["annotation_template"])
+        if config.get("annotation_template")
+        else template
+    )
+    if not annotation_template.is_file():
+        annotation_template = template
+    annotation_inventory = inventory_template(annotation_template)
+    same_template_structure = (
+        len(template_inventory) == len(annotation_inventory)
+        and sum(item["record_type"] == "占位符" for item in template_inventory)
+        == sum(item["record_type"] == "占位符" for item in annotation_inventory)
+    )
+    comment_template = (
+        same_template_structure
+        and any(item.get("comment_texts") for item in annotation_inventory)
+    )
     if comment_template:
-        locations = build_comment_aware_locations(template_inventory, locations)
+        locations = build_comment_aware_locations(annotation_inventory, locations)
+    else:
+        annotation_template = template
+        annotation_inventory = template_inventory
     field_names = {
         item["field_key"]: item["field_name"]
         for item in [*mapping.get("locations", []), *locations, *static_locations]
@@ -1292,7 +1311,7 @@ def run_pipeline(
 
     if prepare_only:
         candidate_locations: dict[str, list[str]] = defaultdict(list)
-        for location in template_inventory:
+        for location in locations:
             field_key = str(location.get("field_key") or "")
             if field_key in all_llm_allowed:
                 candidate_locations[field_key].append(str(location["location_id"]))
@@ -1738,15 +1757,16 @@ def run_pipeline(
             "comment_ids": item.get("comment_ids", []),
             "comment_texts": item.get("comment_texts", []),
         }
-        for item in template_inventory
+        for item in annotation_inventory
         if item.get("comment_texts")
     ]
     comment_path = write_json(output_dir / "template_comments.json", comment_annotations)
-    all_comments = extract_word_comments(template)
+    all_comments = extract_word_comments(annotation_template)
     manifest = {
         "project_id": config["project_id"],
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "template": str(template),
+        "annotation_template": str(annotation_template),
         "template_sha256": template_hash,
         "pdf": str(pdf) if pdf is not None else "",
         "pdf_sha256": _sha256(pdf) if pdf is not None else "",

@@ -20,7 +20,7 @@ uv sync --extra dev
 
 完整流程、配置格式、前端启动和 c2m 接入方式见 [demo/README.md](demo/README.md)。
 
-仓库内保留两个模板版本：`templates/评估报告版式-沟通标注版.docx`是旧黄色标注兼容版，`templates/评估报告版式-沟通标注版_批注版.docx`是新版批注版。前端默认使用项目配置的 `web_template` 批注版，CLI 可用 `--template`显式选择。运行时用户可一次上传已有 Word、Excel、PDF 等材料，后端按内容识别材料角色；客户材料不随仓库提交。
+仓库内保留模板和标注两个版本：`templates/评估报告版式_v2.docx`是最终输出版式，`templates/评估报告版式-沟通标注版_批注版.docx`是批注规则版。项目配置用 `web_template` 指定输出模板、用 `annotation_template` 指定批注模板；批注只用于建立“Word位置→字段→来源”映射，不会出现在最终报告正文。旧黄色标注版仍作为 CLI 兼容回退。运行时用户可一次上传已有 Word、Excel、PDF 等材料，后端按内容识别材料角色；客户材料不随仓库提交。
 
 ## 需要的外部服务及获取方式
 
