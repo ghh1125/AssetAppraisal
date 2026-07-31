@@ -154,11 +154,15 @@ def build_comment_aware_locations(
         return base_locations
     by_position: dict[tuple[int, int], list[dict[str, Any]]] = {}
     by_context: dict[str, list[dict[str, Any]]] = {}
+    context_counts: dict[str, int] = {}
     for item in base_locations:
         parts = _location_parts(str(item.get("location_id", "")))
         if parts:
             by_position.setdefault(parts, []).append(item)
         by_context.setdefault(_normalize_context(item.get("context", "")), []).append(item)
+    for item in template_locations:
+        normalized = _normalize_context(item.get("context", ""))
+        context_counts[normalized] = context_counts.get(normalized, 0) + 1
     result: list[dict[str, Any]] = []
     for item in template_locations:
         parts = _location_parts(str(item.get("location_id", "")))
@@ -205,6 +209,12 @@ def build_comment_aware_locations(
             selected["field_key"] = comment_keys[min(max(occurrence - 1, 0), len(comment_keys) - 1)]
         else:
             comment_keys = comment_field_candidates(item.get("comment_texts", []))
+            # A single annotated placeholder is authoritative even when the
+            # legacy mapping had a stale field for that paragraph.  For a
+            # multi-placeholder paragraph, retain the ordered base mapping
+            # unless a dedicated sequence rule above applies.
+            if len(comment_keys) == 1 and context_counts.get(normalized, 0) == 1:
+                selected["field_key"] = comment_keys[0]
         if not comment_keys and "评估基准日为20XX年XX月XX日" in str(item.get("context", "")):
             occurrence = int(item.get("occurrence_index", 1))
             comment_keys = [

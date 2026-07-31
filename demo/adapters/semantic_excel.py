@@ -187,6 +187,54 @@ def _equity_value_candidate(workbook) -> dict[str, Any] | None:
     return best
 
 
+def _market_value_candidate(workbook) -> dict[str, Any] | None:
+    """Find market-method conclusion tables that use generic result labels.
+
+    Some market workbooks do not label the result ``股东全部权益价值``;
+    they use ``评估结论`` or ``股权价值`` in a result sheet instead.  This is
+    a semantic fallback and deliberately ranks a conclusion row above
+    comparable-company calculation rows.
+    """
+    best: dict[str, Any] | None = None
+    for sheet in workbook.worksheets:
+        title = str(sheet.title or "")
+        for row in sheet.iter_rows():
+            for label_cell in row:
+                label = _text(label_cell.value)
+                if not label or not (
+                    label == "评估结论"
+                    or label == "股权价值"
+                    or "最终评估结论" in label
+                ):
+                    continue
+                numeric = None
+                numeric_cell = None
+                for column in range(
+                    label_cell.column + 1,
+                    min(sheet.max_column, label_cell.column + 8) + 1,
+                ):
+                    value = _number(sheet.cell(label_cell.row, column).value)
+                    if value is not None:
+                        numeric = value
+                        numeric_cell = f"{sheet.title}!{get_column_letter(column)}{label_cell.row}"
+                        break
+                if numeric is None:
+                    continue
+                score = 50 if label == "评估结论" else 20
+                if any(token in title for token in ("估值", "结果", "汇总")):
+                    score += 10
+                if "可比公司" in title:
+                    score -= 15
+                candidate = {
+                    "score": score,
+                    "value": numeric * _unit_scale_to_wan(sheet),
+                    "locator": numeric_cell,
+                }
+                if best is None or candidate["score"] > best["score"]:
+                    best = candidate
+    return best
+
+
 def _products_and_tax(workbook) -> tuple[list[str], list[float], list[str]]:
     products: list[str] = []
     tax_rates: list[float] = []
@@ -940,6 +988,17 @@ def extract_workbook_facts(path: Path, role: str) -> dict[str, Any]:
                 elif method == "income":
                     fields["income_approach_value"] = value
                     evidence["income_approach_value"] = source
+            else:
+                method = _workbook_valuation_method(workbook)
+                if method == "market":
+                    market = _market_value_candidate(workbook)
+                    if market:
+                        fields["market_approach_value"] = market["value"]
+                        evidence["market_approach_value"] = {
+                            "kind": "semantic_excel",
+                            "file": path.name,
+                            "locator": market["locator"],
+                        }
 
             products, tax_rates, product_locators = _products_and_tax(workbook)
             if products:

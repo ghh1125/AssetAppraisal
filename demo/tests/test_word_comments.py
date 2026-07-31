@@ -57,3 +57,9 @@ def test_comment_template_maps_repeated_placeholders_in_order() -> None:
     assert [mapped[f"DOCUMENT-P0587-X{i:02d}"] for i in range(1, 4)] == [
         "report_date_year", "report_date_month", "report_date_day",
     ]
+    assert mapped["DOCUMENT-P0473-X01"] == "target_company_name"
+    assert mapped["DOCUMENT-P0476-X01"] == "selected_valuation_method"
+    assert mapped["DOCUMENT-P0489-X01"] == "valuation_subject_type"
+    assert mapped["DOCUMENT-P0490-X01"] == "valuation_subject_type"
+    assert mapped["DOCUMENT-P0552-X01"] == "valuation_subject_type"
+    assert mapped["DOCUMENT-P0556-X01"] == "final_valuation_method"

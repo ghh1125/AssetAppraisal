@@ -136,6 +136,22 @@ def test_market_value_falls_back_to_net_asset_evaluation_row(tmp_path: Path):
     assert "income_approach_value" not in facts["fields"]
 
 
+def test_market_result_label_can_be_generic_conclusion(tmp_path: Path):
+    path = _save_workbook(
+        tmp_path / "market-conclusion.xlsx",
+        {
+            "估值过程和结果": [
+                ["采用市场法"],
+                ["项目", "金额"],
+                ["评估结论", 9000],
+            ]
+        },
+    )
+    facts = extract_workbook_facts(path, "income_workbook")
+    assert facts["fields"]["market_approach_value"] == 9000
+    assert facts["evidence"]["market_approach_value"]["locator"].endswith("!B3")
+
+
 def test_summary_header_can_be_far_above_net_asset_total(tmp_path: Path):
     rows = [
         ["金额单位：人民币万元"],
