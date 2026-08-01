@@ -360,6 +360,9 @@ def _execute_fill(run_id: str, selected_fields: dict[str, Any]) -> None:
             key: Path(value) if value else None
             for key, value in context.get("source_overrides", {}).items()
         }
+        # Node 2 persists validated Qichacha payloads inside this run directory.
+        # The pipeline reuses valid roles and only uses this client when the
+        # snapshot is absent or incomplete, prioritizing report completeness.
         llm_adapter, qichacha_adapter, _http_client = _build_external_adapters(
             False, bool(context.get("use_qichacha"))
         )

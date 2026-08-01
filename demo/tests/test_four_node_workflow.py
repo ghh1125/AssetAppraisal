@@ -145,6 +145,147 @@ def test_qichacha_evidence_ids_are_unique_between_company_roles(tmp_path: Path) 
     )
 
 
+def test_candidate_node_persists_qichacha_snapshot_for_word_fill(tmp_path: Path) -> None:
+    class SnapshotQichachaAdapter:
+        def fetch(self, company_name):
+            return {
+                "profile": {"name": company_name, "credit_code": f"code-{company_name}"},
+                "fields": {},
+                "evidence": [],
+            }, []
+
+    run_pipeline(
+        project_config=ROOT / "projects/tongfu.yaml",
+        pdf_path=None,
+        output_dir=tmp_path,
+        ocr_adapter=None,
+        qichacha_adapter=SnapshotQichachaAdapter(),
+        prepare_only=True,
+        generate_all_narratives=True,
+        source_overrides={
+            "audit_pdf": None,
+            "reporting_workbook": None,
+            "income_workbook": None,
+            "reference_report": None,
+        },
+        manual_inputs_override={
+            "commissioning_party_name": "委托方有限公司",
+            "target_company_name": "被评估单位有限公司",
+        },
+    )
+
+    snapshot_path = tmp_path / "qichacha_result.json"
+    assert snapshot_path.is_file()
+    snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    assert snapshot["payloads"]["commissioning"]["profile"]["name"] == "委托方有限公司"
+    assert snapshot["payloads"]["target"]["profile"]["name"] == "被评估单位有限公司"
+
+
+def test_word_fill_reuses_qichacha_snapshot_without_new_api_calls(tmp_path: Path) -> None:
+    class CountingQichachaAdapter:
+        def __init__(self):
+            self.calls = []
+
+        def fetch(self, company_name):
+            self.calls.append(company_name)
+            return {
+                "profile": {
+                    "name": company_name,
+                    "credit_code": f"code-{company_name}",
+                    "registered_capital": "1,000万元",
+                },
+                "fields": {},
+                "evidence": [],
+            }, []
+
+    adapter = CountingQichachaAdapter()
+    run_kwargs = {
+        "project_config": ROOT / "projects/tongfu.yaml",
+        "pdf_path": None,
+        "output_dir": tmp_path,
+        "ocr_adapter": None,
+        "qichacha_adapter": adapter,
+        "generate_all_narratives": True,
+        "source_overrides": {
+            "audit_pdf": None,
+            "reporting_workbook": None,
+            "income_workbook": None,
+            "reference_report": None,
+        },
+        "manual_inputs_override": {
+            "commissioning_party_name": "委托方有限公司",
+            "target_company_name": "被评估单位有限公司",
+        },
+    }
+    run_pipeline(**run_kwargs, prepare_only=True)
+    assert adapter.calls == ["委托方有限公司", "被评估单位有限公司"]
+
+    final = run_pipeline(
+        **run_kwargs,
+        llm_values_override={},
+    )
+
+    assert final.report_path.is_file()
+    assert adapter.calls == ["委托方有限公司", "被评估单位有限公司"]
+    fields = json.loads((tmp_path / "normalized_fields.json").read_text(encoding="utf-8"))
+    assert fields["registered_capital"] == "1,000.00万元"
+
+
+def test_word_fill_retries_only_qichacha_role_missing_from_snapshot(tmp_path: Path) -> None:
+    class PartialQichachaAdapter:
+        def fetch(self, company_name):
+            if company_name == "委托方有限公司":
+                return {"profile": {"name": company_name}, "fields": {}}, []
+            return {"profile": {"name": "错误主体有限公司"}, "fields": {}}, []
+
+    class MissingRoleQichachaAdapter:
+        def __init__(self):
+            self.calls = []
+
+        def fetch(self, company_name):
+            self.calls.append(company_name)
+            return {
+                "profile": {
+                    "name": company_name,
+                    "registered_capital": "2,000万元",
+                },
+                "fields": {},
+            }, []
+
+    common = {
+        "project_config": ROOT / "projects/tongfu.yaml",
+        "pdf_path": None,
+        "output_dir": tmp_path,
+        "ocr_adapter": None,
+        "generate_all_narratives": True,
+        "source_overrides": {
+            "audit_pdf": None,
+            "reporting_workbook": None,
+            "income_workbook": None,
+            "reference_report": None,
+        },
+        "manual_inputs_override": {
+            "commissioning_party_name": "委托方有限公司",
+            "target_company_name": "被评估单位有限公司",
+        },
+    }
+    run_pipeline(
+        **common,
+        qichacha_adapter=PartialQichachaAdapter(),
+        prepare_only=True,
+    )
+    fallback = MissingRoleQichachaAdapter()
+
+    final = run_pipeline(
+        **common,
+        qichacha_adapter=fallback,
+        llm_values_override={},
+    )
+
+    assert final.report_path.is_file()
+    assert fallback.calls == ["被评估单位有限公司"]
+
+
 def test_selected_candidates_are_the_only_llm_slots_written(tmp_path: Path) -> None:
     prepared = run_pipeline(
         project_config=ROOT / "projects/tongfu.yaml",

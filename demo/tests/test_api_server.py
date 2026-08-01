@@ -3,6 +3,7 @@ import json
 from fastapi.testclient import TestClient
 
 import demo.api_server as api_server
+import demo.pipeline as pipeline_module
 
 
 def test_api_accepts_manual_only_run(monkeypatch, tmp_path):
@@ -204,6 +205,38 @@ def test_api_selection_submits_only_generated_candidates(monkeypatch, tmp_path):
 
     assert response.status_code == 202
     assert captured == {"run_id": "run-1", "selected": {"industry_overview": "行业候选"}}
+
+
+def test_fill_node_keeps_qichacha_client_available_for_missing_snapshot_data(monkeypatch, tmp_path):
+    monkeypatch.setattr(api_server, "RUNS_ROOT", tmp_path)
+    api_server.JOBS.clear()
+    api_server.JOBS["run-1"] = {
+        "run_id": "run-1",
+        "status": "awaiting_selection",
+        "selection_context": {
+            "pdf_path": "",
+            "source_overrides": {},
+            "inputs": {},
+            "use_qichacha": True,
+        },
+    }
+    calls = []
+    monkeypatch.setattr(api_server, "_load_local_env", lambda: None)
+    monkeypatch.setattr(
+        api_server,
+        "_build_external_adapters",
+        lambda use_glm, use_qichacha: calls.append((use_glm, use_qichacha))
+        or (None, None, None),
+    )
+    monkeypatch.setattr(
+        pipeline_module,
+        "run_pipeline",
+        lambda **kwargs: object(),
+    )
+
+    api_server._execute_fill("run-1", {})
+
+    assert calls == [(False, True)]
 
 
 def test_public_artifacts_expose_only_the_report_word(tmp_path):

@@ -995,20 +995,77 @@ def run_pipeline(
     qcc_profiles: dict[str, dict[str, Any]] = {}
     qcc_payloads: dict[str, dict[str, Any]] = {}
     software_no_result = False
+    qcc_provider_issues: list[str] = []
+    commissioning_name = str(fields.get("commissioning_party_name", ""))
+    target_name = str(fields.get("target_company_name", ""))
+    qcc_snapshot_path = output_dir / "qichacha_result.json"
+    if not prepare_only and qcc_snapshot_path.is_file():
+        try:
+            snapshot = json.loads(qcc_snapshot_path.read_text(encoding="utf-8"))
+            saved_payloads = snapshot.get("payloads", {})
+            expected_roles = {
+                role: name
+                for role, name in {
+                    "commissioning": commissioning_name,
+                    "target": target_name,
+                }.items()
+                if name
+            }
+            validated_payloads = {}
+            for role, name in expected_roles.items():
+                payload = _validated_qcc_payload(
+                    saved_payloads.get(role, {}),
+                    name,
+                    "委托人" if role == "commissioning" else "被评估单位",
+                    issues,
+                )
+                if payload:
+                    validated_payloads[role] = payload
+            qcc_payloads.update(validated_payloads)
+            qcc_profiles.update(
+                {
+                    role: payload.get("profile", {})
+                    for role, payload in validated_payloads.items()
+                }
+            )
+            if "commissioning" in validated_payloads:
+                qcc_values.update(
+                    _filter_provider(
+                        validated_payloads["commissioning"],
+                        {"commissioning_party_profile"},
+                        "企查查快照（委托人）",
+                        issues,
+                    )
+                )
+            if "target" in validated_payloads:
+                qcc_values.update(
+                    _filter_provider(
+                        validated_payloads["target"],
+                        qcc_allowed - {"commissioning_party_profile"},
+                        "企查查快照（被评估单位）",
+                        issues,
+                    )
+                )
+            software_no_result = bool(snapshot.get("software_no_result"))
+            qcc_provider_issues.extend(
+                str(item) for item in snapshot.get("issues", [])
+            )
+        except (OSError, ValueError, TypeError) as exc:
+            issues.append(f"企查查快照读取失败，改用实时接口：{exc}")
     if qichacha_adapter is not None:
-        commissioning_name = str(fields.get("commissioning_party_name", ""))
-        target_name = str(fields.get("target_company_name", ""))
-        if commissioning_name:
+        if commissioning_name and "commissioning" not in qcc_payloads:
             payload, provider_issues = qichacha_adapter.fetch(commissioning_name)
             issues.extend(provider_issues)
+            qcc_provider_issues.extend(provider_issues)
             software_no_result = software_no_result or any("接口 233 返回 201" in issue for issue in provider_issues)
             payload = _validated_qcc_payload(payload, commissioning_name, "委托人", issues)
             qcc_payloads["commissioning"] = payload
             qcc_profiles["commissioning"] = qcc_payloads["commissioning"].get("profile", {})
             qcc_values.update(_filter_provider(payload, {"commissioning_party_profile"}, "企查查 API（委托人）", issues))
-        if target_name:
+        if target_name and "target" not in qcc_payloads:
             payload, provider_issues = qichacha_adapter.fetch(target_name)
             issues.extend(provider_issues)
+            qcc_provider_issues.extend(provider_issues)
             software_no_result = software_no_result or any("接口 233 返回 201" in issue for issue in provider_issues)
             payload = _validated_qcc_payload(payload, target_name, "被评估单位", issues)
             qcc_payloads["target"] = payload
@@ -1022,6 +1079,7 @@ def run_pipeline(
                 search_terms = [part.strip() for part in re.split(r"[；;。\n]", scope) if part.strip()][:3]
                 comparable_evidence, comparable_issues = discover(search_terms)
                 issues.extend(comparable_issues)
+                qcc_provider_issues.extend(comparable_issues)
                 qcc_payloads["target"].setdefault("evidence", []).extend(comparable_evidence)
     target_profile = qcc_profiles.get("target", {})
     if (
@@ -1344,6 +1402,15 @@ def run_pipeline(
     )
 
     if prepare_only:
+        if qcc_payloads:
+            write_json(
+                output_dir / "qichacha_result.json",
+                {
+                    "payloads": qcc_payloads,
+                    "software_no_result": software_no_result,
+                    "issues": qcc_provider_issues,
+                },
+            )
         candidate_locations: dict[str, list[str]] = defaultdict(list)
         for location in locations:
             field_key = str(location.get("field_key") or "")
