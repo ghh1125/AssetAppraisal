@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from demo.domain.narrative_policy import select_llm_candidates
+from demo.domain.narrative_policy import LLM_TEMPLATE_FIELDS, select_llm_candidates
 from demo.domain.workflow_contracts import validate_workflow_contract
 from demo import schemas
 from demo.pipeline import run_pipeline
@@ -71,6 +71,78 @@ def test_candidate_node_pauses_before_word_is_written(tmp_path: Path) -> None:
     ]
     assert trace["nodes"][1]["output_data"]["selection_required"] is True
     assert trace["nodes"][2]["status"] == "skipped"
+
+
+def test_generate_all_candidate_node_requests_every_fixed_llm_slot(tmp_path: Path) -> None:
+    class StrictGenerateAllAdapter:
+        prompt_version = "yellow_narratives.test"
+
+        def generate(self, evidence):
+            assert set(evidence["selected_modules"]) == (
+                set(LLM_TEMPLATE_FIELDS) - {"company_profile_section"}
+            )
+            return {field_key: f"{field_key}候选" for field_key in LLM_TEMPLATE_FIELDS}, []
+
+    result = run_pipeline(
+        project_config=ROOT / "projects/tongfu.yaml",
+        pdf_path=None,
+        output_dir=tmp_path,
+        ocr_adapter=None,
+        llm_adapter=StrictGenerateAllAdapter(),
+        prepare_only=True,
+        generate_all_narratives=True,
+        manual_inputs_override={
+            "commissioning_party_name": "委托方有限公司",
+            "target_company_name": "被评估单位有限公司",
+        },
+    )
+
+    assert set(result.candidate_fields) == set(LLM_TEMPLATE_FIELDS)
+
+
+def test_qichacha_evidence_ids_are_unique_between_company_roles(tmp_path: Path) -> None:
+    class SameIdQichachaAdapter:
+        def fetch(self, company_name):
+            return {
+                "profile": {"name": company_name},
+                "fields": {},
+                "evidence": [
+                    {
+                        "evidence_id": "api:qichacha:735:company_profile_section",
+                        "api_code": "735",
+                        "text": f"企业名称：{company_name}",
+                    }
+                ],
+            }, []
+
+    class EvidenceAuditLlmAdapter:
+        prompt_version = "yellow_narratives.test"
+
+        def generate(self, evidence):
+            ids = [
+                item["evidence_id"]
+                for item in evidence["evidence"]
+                if item["evidence_id"].startswith("api:qichacha:")
+            ]
+            assert len(ids) == len(set(ids))
+            assert "api:qichacha:commissioning:735:company_profile_section" in ids
+            assert "api:qichacha:target:735:company_profile_section" in ids
+            return {}, []
+
+    run_pipeline(
+        project_config=ROOT / "projects/tongfu.yaml",
+        pdf_path=None,
+        output_dir=tmp_path,
+        ocr_adapter=None,
+        llm_adapter=EvidenceAuditLlmAdapter(),
+        qichacha_adapter=SameIdQichachaAdapter(),
+        prepare_only=True,
+        generate_all_narratives=True,
+        manual_inputs_override={
+            "commissioning_party_name": "委托方有限公司",
+            "target_company_name": "被评估单位有限公司",
+        },
+    )
 
 
 def test_selected_candidates_are_the_only_llm_slots_written(tmp_path: Path) -> None:

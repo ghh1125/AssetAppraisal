@@ -1122,7 +1122,7 @@ def run_pipeline(
         if target_profile:
             structured_evidence.append(
                 {
-                    "evidence_id": "api:qichacha:target_profile",
+                    "evidence_id": "api:qichacha:target:735:profile",
                     "text": "被评估单位工商信息："
                     + json.dumps(target_profile, ensure_ascii=False, default=str),
                 }
@@ -1135,9 +1135,21 @@ def run_pipeline(
             for item in qcc_payload.get("evidence", []) if isinstance(qcc_payload, dict) else []:
                 if not isinstance(item, dict) or not item.get("evidence_id") or not item.get("text"):
                     continue
+                raw_evidence_id = str(item["evidence_id"])
+                qcc_prefix = "api:qichacha:"
+                evidence_suffix = (
+                    raw_evidence_id[len(qcc_prefix):]
+                    if raw_evidence_id.startswith(qcc_prefix)
+                    else raw_evidence_id
+                )
+                qualified_evidence_id = (
+                    raw_evidence_id
+                    if evidence_suffix.startswith(("commissioning:", "target:"))
+                    else f"{qcc_prefix}{role}:{evidence_suffix}"
+                )
                 structured_evidence.append(
                     {
-                        "evidence_id": item["evidence_id"],
+                        "evidence_id": qualified_evidence_id,
                         "text": f"{role}企查查 ApiCode {item.get('api_code', '')}：{item['text']}",
                     }
                 )

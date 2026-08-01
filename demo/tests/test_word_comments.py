@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_comment_annotations_are_retained_on_word_locations() -> None:
     template = Path("/Users/ghh/Downloads/评估报告版式-沟通标注版_v2.docx")
     if not template.is_file():
-        template = ROOT.parent / "templates/评估报告版式-沟通标注版.docx"
+        template = ROOT.parent / "templates/评估报告版式-沟通标注版_批注版.docx"
     locations = inventory_template(template)
     first = next(item for item in locations if item["location_id"] == "DOCUMENT-P0005-X01")
     if "comment_texts" not in first:

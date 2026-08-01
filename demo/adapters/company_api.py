@@ -287,54 +287,11 @@ def _json_text(payload: Any, limit: int = 5000) -> str:
     return text[:limit]
 
 
-def _graph_relations(payload: Any) -> str:
-    """Normalize ApiCode 962 customer/supplier relation rows for LLM evidence."""
-    root = _objects(payload)
-    if not isinstance(root, dict):
-        return ""
-    relation_rows = root.get("RelateList", root.get("RelationList", root.get("relateList", [])))
-    if not isinstance(relation_rows, list):
-        return ""
-    result: list[str] = []
-    for group in relation_rows:
-        if not isinstance(group, dict):
-            continue
-        topic = str(_first(group, "NodeName", "Name", "RelationName", "Type"))
-        rows = group.get("NodeDataList", group.get("DataList", group.get("List", [])))
-        if isinstance(rows, dict):
-            rows = [rows]
-        if not isinstance(rows, list):
-            continue
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            name = _first(row, "Name", "CompanyName", "NodeName", "TargetName")
-            percent = _first(row, "Percent", "SharePercent", "Amount")
-            if name:
-                result.append(_join([
-                    topic,
-                    str(name),
-                    f"比例/金额：{percent}" if percent else "",
-                ]))
-    return "；".join(result)
-
-
 def _annual_report_text(payload: Any) -> str:
     rows = _records(payload)
     if not rows:
         return ""
     return "；".join(_json_text(row, 1800) for row in rows if _json_text(row, 1800))
-
-
-def _fuzzy_candidates_text(payload: Any) -> str:
-    rows = _records(payload)
-    result = []
-    for row in rows:
-        name = _first(row, "Name", "CompanyName", "StockName")
-        industry = _first(row, "Industry", "QccIndustry", "Category")
-        if name:
-            result.append(_join([str(name), f"行业：{industry}" if industry else ""]))
-    return "；".join(result)
 
 
 class QichachaApiAdapter:
@@ -353,12 +310,11 @@ class QichachaApiAdapter:
         # software-copyright submethod is the one needed by this report.
         "514": "/PatentV4/Search",
         "233": "/CopyRight/SearchCopyRight",
-        # Optional, paid business-evidence APIs. They are opt-in so a normal
-        # run never unexpectedly consumes a newly purchased API quota.
+        # APIs available through normal per-call purchase.  Interfaces that
+        # require enterprise real-name / scenario approval are deliberately
+        # not registered here.
         "2001": "/EnterpriseInfo/Verify",
-        "962": "/CompanyGraphCheck/GetInfo",
         "213": "/AR/GetAnnualReport",
-        "886": "/FuzzySearch/GetList",
     }
 
     def __init__(
@@ -377,11 +333,10 @@ class QichachaApiAdapter:
         self.base_url = base_url.rstrip("/")
         self.endpoints = {**self.DEFAULT_ENDPOINTS, **dict(endpoints or {})}
         supported = set(self.DEFAULT_ENDPOINTS)
-        requested_extra = (
-            ("2001", "962", "213", "886")
-            if extra_api_codes is None
-            else extra_api_codes
-        )
+        # The two normal-purchase evidence APIs run by default in node 2.
+        # Passing an explicit empty collection is useful to tests and callers
+        # that want the four direct Word-fill APIs only.
+        requested_extra = ("2001", "213") if extra_api_codes is None else extra_api_codes
         self.extra_api_codes = tuple(
             code for code in dict.fromkeys(str(item) for item in requested_extra)
             if code in supported and code not in {"735", "231", "514", "233"}
@@ -410,7 +365,7 @@ class QichachaApiAdapter:
             params["keyNo"] = key_no or company_name
         else:
             params["searchKey"] = company_name
-            if code in {"514", "233", "886"}:
+            if code in {"514", "233"}:
                 params.update({"pageIndex": 1, "pageSize": 50})
         headers = {"Token": self.token(self.app_key, timespan, self.secret_key), "Timespan": timespan}
         try:
@@ -484,14 +439,9 @@ class QichachaApiAdapter:
         if "2001" in payloads:
             add_evidence("2001", "industry_overview", _json_text(payloads["2001"]))
             add_evidence("2001", "business_and_segments", _json_text(payloads["2001"]))
-        if "962" in payloads:
-            add_evidence("962", "customers_suppliers", _graph_relations(payloads["962"]) or _json_text(payloads["962"]))
         if "213" in payloads:
             add_evidence("213", "profit_model_swot", _annual_report_text(payloads["213"]) or _json_text(payloads["213"]))
             add_evidence("213", "business_and_segments", _annual_report_text(payloads["213"]) or _json_text(payloads["213"]))
-        if "886" in payloads:
-            add_evidence("886", "comparable_list", _fuzzy_candidates_text(payloads["886"]) or _json_text(payloads["886"]))
-
         return {
             "fields": {key: value for key, value in fields.items() if value},
             "profile": _profile_record(profile_payload),

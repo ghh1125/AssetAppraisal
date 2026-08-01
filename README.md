@@ -34,21 +34,19 @@ uv sync --extra dev
 | 231 | 全国商标查询 | [全国商标查询](https://openapi.qcc.com/dataApi/231) |
 | 514 | 专利查询 | [专利查询](https://openapi.qcc.com/dataApi/514) |
 | 233 | 著作权/软件著作权查询 | [著作权软著查询](https://openapi.qcc.com/dataApi/233) |
-| 2001 | 企业信息核验（行业、经营范围、企业规模等补充事实） | [企业信息核验](https://openapi.qcc.com/dataApi/2001) |
-| 962 | 企业关系图谱（客户、供应商、股东、投资等关系事实） | [企业关系图谱](https://openapi.qcc.com/dataApi/962) |
-| 213 | 企业年报（年报基本信息、资产、股东/出资和经营资料） | [企业年报](https://openapi.qcc.com/dataApi/213) |
-| 886 | 企业模糊搜索（候选公司名称，用于可比公司候选证据） | [企业模糊搜索](https://openapi.qcc.com/dataApi/886) |
+| 2001 | 企业信息核验，补充行业、经营范围和企业规模证据 | [企业信息核验](https://openapi.qcc.com/dataApi/2001) |
+| 213 | 企业年报，补充经营及年报证据 | [企业年报](https://openapi.qcc.com/dataApi/213) |
 
 对应环境变量：
 
 ```dotenv
 QICHACHA_APP_KEY=你的Key
 QICHACHA_SECRET_KEY=你的SecretKey
-# 高级配置：不填写时默认调用全部八个接口；填写后限制为指定 ApiCode
-QICHACHA_EXTRA_API_CODES=735,231,514,233,2001,962,213,886
+# 留空时调用 735/231/514/233/2001/213；可显式限制补充证据接口
+QICHACHA_EXTRA_API_CODES=2001,213
 ```
 
-接口地址和路径已经写入程序默认配置，通常不需要修改。启用 `--use-qichacha` 时八个接口都会调用；`QICHACHA_EXTRA_API_CODES` 仅用于明确限制调用集合（未填写即调用全部八个）。各接口返回的事实先进入证据池，再由百炼依据证据生成叙述；不会把客户、供应商、行业或可比公司名称直接当作未经核验的 Word 文字。某个接口未购买、失败或无结果时只记录问题并继续生成，相关来源字段保留黄色占位符，不会用其他来源冒填。接口路径可分别用 `QICHACHA_ENDPOINT_735`、`QICHACHA_ENDPOINT_231`、`QICHACHA_ENDPOINT_514`、`QICHACHA_ENDPOINT_233`、`QICHACHA_ENDPOINT_2001`、`QICHACHA_ENDPOINT_962`、`QICHACHA_ENDPOINT_213`、`QICHACHA_ENDPOINT_886` 覆盖。
+接口地址和路径已经写入程序默认配置，通常不需要修改。启用 `--use-qichacha` 时默认调用 735、231、514、233、2001、213；前四项填工商及知识产权表，后两项只作为百炼叙述证据。962 企业图谱、886 模糊搜索，以及客户/供应商、企业业务和上市公司搜索等需实名认证或场景审核的接口均不在代码或配置中调用。客户、供应商及可比公司没有 PDF/XLSX 等可靠证据时保留黄色占位符，不由 LLM 编造。接口路径可分别用 `QICHACHA_ENDPOINT_735`、`QICHACHA_ENDPOINT_231`、`QICHACHA_ENDPOINT_514`、`QICHACHA_ENDPOINT_233`、`QICHACHA_ENDPOINT_2001`、`QICHACHA_ENDPOINT_213` 覆盖。
 
 ### 百炼模型
 

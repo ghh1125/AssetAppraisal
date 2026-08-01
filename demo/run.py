@@ -910,9 +910,7 @@ def main(argv: list[str] | None = None) -> int:
                     "514": "QICHACHA_ENDPOINT_514",
                     "233": "QICHACHA_ENDPOINT_233",
                     "2001": "QICHACHA_ENDPOINT_2001",
-                    "962": "QICHACHA_ENDPOINT_962",
                     "213": "QICHACHA_ENDPOINT_213",
-                    "886": "QICHACHA_ENDPOINT_886",
                 }.items()
                 if os.environ.get(name)
             }

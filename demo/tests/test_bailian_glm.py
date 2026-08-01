@@ -180,6 +180,46 @@ def test_glm_generates_selected_modules_field_by_field():
     assert len(client.requests) == 2
 
 
+def test_glm_generates_all_seven_fixed_word_candidates():
+    client = FieldwiseClient()
+    adapter = BailianYellowNarrativeAdapter(
+        client=client,
+        api_key="test-key",
+        prompt="规则",
+    )
+
+    values, issues = adapter.generate(
+        {
+            "selected_modules": [
+                "industry_overview",
+                "business_and_segments",
+                "main_products",
+                "customers_suppliers",
+                "profit_model_swot",
+                "comparable_list",
+            ],
+            "evidence": [
+                {
+                    "evidence_id": "api:qichacha:target:735:profile",
+                    "text": "示例有限公司经营工业设备业务。",
+                }
+            ],
+        }
+    )
+
+    assert issues == []
+    assert set(values) == {
+        "company_profile_section",
+        "industry_overview",
+        "business_and_segments",
+        "main_products",
+        "customers_suppliers",
+        "profit_model_swot",
+        "comparable_list",
+    }
+    assert len(client.requests) == 7
+
+
 def test_glm_failure_returns_empty_fields_without_exposing_api_key():
     class BrokenClient:
         def post(self, *args, **kwargs):
