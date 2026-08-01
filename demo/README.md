@@ -57,7 +57,7 @@ uv run --python 3.11 python -m demo.run demo/projects/tongfu.yaml \
 
 仅在需要显式启用本地高内存模式时执行 `uv sync --extra ocr` 并设置 `APPRAISAL_OCR_PROVIDER=paddle` 或命令行参数 `--ocr-provider paddle`。`APPRAISAL_OCR_PROVIDER=none` 会完全跳过 PDF OCR。
 
-如需调用企查查，设置 `QICHACHA_APP_KEY`、`QICHACHA_SECRET_KEY` 并增加 `--use-qichacha`。默认调用 735（工商详情）、231（商标）、514（专利）、233（著作权软著）、2001（企业信息核验）和 213（企业年报）；2001/213 只作为 LLM 补充证据。962 企业图谱、886 模糊搜索、客户/供应商、企业业务和上市公司搜索等需要实名认证或应用场景审核的接口不登记、不调用。某个接口失败或无结果时仅记录问题并继续生成 Word。接口路径可用同名 `QICHACHA_ENDPOINT_<ApiCode>` 覆盖，基地址可用 `QICHACHA_API_BASE_URL` 覆盖。两个节点输入可放入 JSON 文件并用 `--node-inputs-json` 传入。凭证只在 `run.py` 这一组合入口读取，不会进入 `domain/`、内部运行状态或 Word。
+如需调用企查查，设置 `QICHACHA_APP_KEY`、`QICHACHA_SECRET_KEY` 并增加 `--use-qichacha`。默认调用 735（工商详情）、231（商标）、514（专利）、233（著作权软著）、2001（企业信息核验）和 213（企业年报）；2001/213 只作为 LLM 补充证据。被评估主体另走 886（关键词同行候选）→915（上市公告和股票代码）→699（上市公司简介和主要指标），只把 API 返回的公司名称和指标交给 LLM 撰写相似性说明；`QICHACHA_ENABLE_COMPARABLE_DISCOVERY=false` 可关闭。962、521、723、724、1124 等面议接口不登记、不调用。某个接口失败或无结果时仅记录问题并继续生成 Word。接口路径可用同名 `QICHACHA_ENDPOINT_<ApiCode>` 覆盖，基地址可用 `QICHACHA_API_BASE_URL` 覆盖。两个节点输入可放入 JSON 文件并用 `--node-inputs-json` 传入。凭证只在 `run.py` 这一组合入口读取，不会进入 `domain/`、内部运行状态或 Word。
 
 ## 最新 Word 批注来源路由
 

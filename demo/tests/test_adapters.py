@@ -144,7 +144,47 @@ def test_qichacha_default_calls_all_non_review_apis():
 
 def test_qichacha_does_not_register_review_only_apis():
     assert "962" not in QichachaApiAdapter.DEFAULT_ENDPOINTS
-    assert "886" not in QichachaApiAdapter.DEFAULT_ENDPOINTS
+
+
+def test_qichacha_discovers_listed_comparable_candidates_from_business_keywords():
+    class ComparableClient(_Client):
+        def get(self, url, **kwargs):
+            self.calls.append((url, kwargs))
+            if url.endswith("FuzzySearch/GetList"):
+                return _Response({"Status": "200", "Result": [{"Name": "同行企业甲", "Industry": "汽车零部件"}]})
+            if url.endswith("IPOAnnouncement/GetList"):
+                return _Response({"Status": "200", "Result": {"Data": [{"CompanyName": "上市公司甲", "KeyNo": "peer-key", "StockCode": "600001", "Title": "热处理业务公告", "PublishDate": "2026-01-01"}]}})
+            if url.endswith("IPO/GetIPODetail"):
+                return _Response({"Status": "200", "Result": {"CompanyName": "上市公司甲", "Introduction": "汽车零部件热处理业务"}})
+            if url.endswith("IPO/GetMainIndicator"):
+                return _Response({"Status": "200", "Result": {"Data": {"ReportDate": ["2025-12-31"], "PrimaryList": [{"PrimaryDes": "盈利能力"}]}}})
+            return super().get(url, **kwargs)
+
+    adapter = QichachaApiAdapter(ComparableClient(), "app", "secret")
+    evidence, issues = adapter.discover_listed_comparables(["汽车零部件热处理"])
+
+    assert issues == []
+    assert {item["api_code"] for item in evidence} == {"886", "915", "699"}
+    assert "上市公司甲" in next(item["text"] for item in evidence if item["api_code"] == "915")
+    assert "600001" in next(item["text"] for item in evidence if item["api_code"] == "915")
+    assert "汽车零部件热处理业务" in next(item["text"] for item in evidence if item["api_code"] == "699")
+    detail_kwargs = next(kwargs for url, kwargs in adapter.client.calls if url.endswith("IPO/GetIPODetail"))
+    assert detail_kwargs["params"]["keyNo"] == "peer-key"
+    assert "searchKey" not in detail_kwargs["params"]
+
+
+def test_qichacha_can_disable_paid_comparable_discovery():
+    client = _Client()
+    adapter = QichachaApiAdapter(
+        client,
+        "app",
+        "secret",
+        enable_comparable_discovery=False,
+    )
+    evidence, issues = adapter.discover_listed_comparables(["汽车零部件热处理"])
+    assert evidence == []
+    assert issues == []
+    assert client.calls == []
 
 
 def test_narrative_prompt_forbids_model_world_knowledge():

@@ -911,6 +911,8 @@ def main(argv: list[str] | None = None) -> int:
                     "233": "QICHACHA_ENDPOINT_233",
                     "2001": "QICHACHA_ENDPOINT_2001",
                     "213": "QICHACHA_ENDPOINT_213",
+                    "886": "QICHACHA_ENDPOINT_886",
+                    "915": "QICHACHA_ENDPOINT_915",
                 }.items()
                 if os.environ.get(name)
             }
@@ -927,6 +929,9 @@ def main(argv: list[str] | None = None) -> int:
                 base_url=os.environ.get("QICHACHA_API_BASE_URL", "https://api.qichacha.com"),
                 endpoints=endpoints,
                 extra_api_codes=extra_api_codes,
+                enable_comparable_discovery=os.environ.get(
+                    "QICHACHA_ENABLE_COMPARABLE_DISCOVERY", "true"
+                ).strip().lower() not in {"0", "false", "no", "off"},
             )
         node_inputs = (
             json.loads(args.node_inputs_json.read_text(encoding="utf-8"))

@@ -199,6 +199,8 @@ def _build_external_adapters(use_glm: bool, use_qichacha: bool) -> tuple[Any, An
                     "233": "QICHACHA_ENDPOINT_233",
                     "2001": "QICHACHA_ENDPOINT_2001",
                     "213": "QICHACHA_ENDPOINT_213",
+                    "886": "QICHACHA_ENDPOINT_886",
+                    "915": "QICHACHA_ENDPOINT_915",
                 }.items()
                 if os.environ.get(name)
             },
@@ -210,6 +212,9 @@ def _build_external_adapters(use_glm: bool, use_qichacha: bool) -> tuple[Any, An
                 )
                 or None
             ),
+            enable_comparable_discovery=os.environ.get(
+                "QICHACHA_ENABLE_COMPARABLE_DISCOVERY", "true"
+            ).strip().lower() not in {"0", "false", "no", "off"},
         )
     return llm_adapter, qichacha_adapter, http_client
 

@@ -294,6 +294,43 @@ def _annual_report_text(payload: Any) -> str:
     return "；".join(_json_text(row, 1800) for row in rows if _json_text(row, 1800))
 
 
+def _fuzzy_candidates_text(payload: Any) -> str:
+    result = []
+    for row in _records(payload):
+        name = _first(row, "Name", "CompanyName", "StockName")
+        industry = _first(row, "Industry", "QccIndustry", "Category")
+        if name:
+            result.append(_join([str(name), f"行业：{industry}" if industry else ""]))
+    return "；".join(result)
+
+
+def _listed_announcements_text(payload: Any) -> str:
+    result = []
+    for row in _records(payload):
+        name = _first(row, "CompanyName", "Name", "StockName")
+        code = _first(row, "StockCode", "StockNumber", "Code")
+        title = _first(row, "Title", "AnnouncementTitle")
+        date = _first(row, "PublishDate", "Date", "PublishTime")
+        if name:
+            result.append(_join([
+                str(name),
+                f"股票代码：{code}" if code else "",
+                f"公告：{title}" if title else "",
+                f"日期：{date}" if date else "",
+            ]))
+    return "；".join(result)
+
+
+def _listed_candidate_rows(payload: Any) -> list[dict[str, str]]:
+    result = []
+    for row in _records(payload):
+        key_no = str(_first(row, "KeyNo", "keyNo"))
+        name = str(_first(row, "CompanyName", "Name", "StockName"))
+        if key_no and name:
+            result.append({"key_no": key_no, "name": name})
+    return result
+
+
 class QichachaApiAdapter:
     """Signed adapter for QCC company and IP APIs.
 
@@ -315,6 +352,14 @@ class QichachaApiAdapter:
         # not registered here.
         "2001": "/EnterpriseInfo/Verify",
         "213": "/AR/GetAnnualReport",
+        # Directly purchasable candidate-discovery APIs. They are called only
+        # for the target company's business keywords, never for the client.
+        "886": "/FuzzySearch/GetList",
+        "915": "/IPOAnnouncement/GetList",
+        # ApiCode 699 contains several subresources.  Both are only called
+        # after 915 has returned an actual listed-company KeyNo.
+        "699_detail": "/IPO/GetIPODetail",
+        "699_indicator": "/IPO/GetMainIndicator",
     }
 
     def __init__(
@@ -325,6 +370,7 @@ class QichachaApiAdapter:
         base_url: str = "https://api.qichacha.com",
         endpoints: Mapping[str, str] | None = None,
         extra_api_codes: tuple[str, ...] | list[str] | None = None,
+        enable_comparable_discovery: bool = True,
         timeout: float = 120.0,
     ):
         self.client = client
@@ -339,8 +385,9 @@ class QichachaApiAdapter:
         requested_extra = ("2001", "213") if extra_api_codes is None else extra_api_codes
         self.extra_api_codes = tuple(
             code for code in dict.fromkeys(str(item) for item in requested_extra)
-            if code in supported and code not in {"735", "231", "514", "233"}
+            if code in {"2001", "213"}
         )
+        self.enable_comparable_discovery = enable_comparable_discovery
         self.timeout = timeout
 
     @staticmethod
@@ -363,9 +410,11 @@ class QichachaApiAdapter:
             # Annual-report API officially uses keyNo. Some QCC tenants also
             # accept searchKey, so retain a safe fallback for name-only calls.
             params["keyNo"] = key_no or company_name
+        elif code in {"699_detail", "699_indicator"}:
+            params["keyNo"] = key_no
         else:
             params["searchKey"] = company_name
-            if code in {"514", "233"}:
+            if code in {"514", "233", "886", "915"}:
                 params.update({"pageIndex": 1, "pageSize": 50})
         headers = {"Token": self.token(self.app_key, timespan, self.secret_key), "Timespan": timespan}
         try:
@@ -453,6 +502,73 @@ class QichachaApiAdapter:
             "evidence": evidence,
             "evidence_by_topic": evidence_by_topic,
         }, issues
+
+    def discover_listed_comparables(
+        self,
+        business_keywords: list[str] | tuple[str, ...],
+    ) -> tuple[list[dict[str, str]], list[str]]:
+        """Find evidence-backed peer candidates from supplied business terms.
+
+        This deliberately returns candidate evidence, not a final peer list.
+        The pipeline and LLM may only describe the returned companies; they
+        must not introduce a company name of their own.
+        """
+        if not self.enable_comparable_discovery:
+            return [], []
+        keywords = list(dict.fromkeys(
+            str(keyword).strip() for keyword in business_keywords if str(keyword).strip()
+        ))[:3]
+        evidence: list[dict[str, str]] = []
+        issues: list[str] = []
+        for keyword in keywords:
+            fuzzy_payload, fuzzy_issue = self._get("886", keyword)
+            if fuzzy_issue:
+                issues.append(f"对标候选企业检索“{keyword}”：{fuzzy_issue}")
+            elif text := _fuzzy_candidates_text(fuzzy_payload):
+                evidence.append({
+                    "evidence_id": f"api:qichacha:886:peer:{keyword}",
+                    "api_code": "886",
+                    "topic": "comparable_list",
+                    "source_kind": "qichacha_api",
+                    "text": f"关键词“{keyword}”的同行业企业候选：{text}",
+                })
+            ipo_payload, ipo_issue = self._get("915", keyword)
+            if ipo_issue:
+                issues.append(f"对标上市公司检索“{keyword}”：{ipo_issue}")
+            elif text := _listed_announcements_text(ipo_payload):
+                evidence.append({
+                    "evidence_id": f"api:qichacha:915:peer:{keyword}",
+                    "api_code": "915",
+                    "topic": "comparable_list",
+                    "source_kind": "qichacha_api",
+                    "text": f"关键词“{keyword}”命中的上市公司公告候选：{text}",
+                })
+            for candidate in _listed_candidate_rows(ipo_payload)[:5]:
+                detail_payload, detail_issue = self._get(
+                    "699_detail", candidate["name"], key_no=candidate["key_no"]
+                )
+                indicator_payload, indicator_issue = self._get(
+                    "699_indicator", candidate["name"], key_no=candidate["key_no"]
+                )
+                if detail_issue:
+                    issues.append(f"上市候选“{candidate['name']}”简介查询：{detail_issue}")
+                if indicator_issue:
+                    issues.append(f"上市候选“{candidate['name']}”指标查询：{indicator_issue}")
+                detail_text = _json_text(detail_payload, 2500)
+                indicator_text = _json_text(indicator_payload, 2500)
+                if detail_text or indicator_text:
+                    evidence.append({
+                        "evidence_id": f"api:qichacha:699:peer:{candidate['key_no']}",
+                        "api_code": "699",
+                        "topic": "comparable_list",
+                        "source_kind": "qichacha_api",
+                        "text": _join([
+                            f"上市候选公司：{candidate['name']}",
+                            f"企业简介：{detail_text}" if detail_text else "",
+                            f"主要指标：{indicator_text}" if indicator_text else "",
+                        ]),
+                    })
+        return evidence, issues
 
 
 class CompanyApiAdapter:

@@ -1014,6 +1014,15 @@ def run_pipeline(
             qcc_payloads["target"] = payload
             qcc_profiles["target"] = qcc_payloads["target"].get("profile", {})
             qcc_values.update(_filter_provider(payload, qcc_allowed - {"commissioning_party_profile"}, "企查查 API（被评估单位）", issues))
+            discover = getattr(qichacha_adapter, "discover_listed_comparables", None)
+            scope = str(qcc_profiles["target"].get("business_scope", "")).strip()
+            if callable(discover) and scope:
+                # Use only source-text fragments as search keywords.  No LLM
+                # is permitted to invent a peer-company name at this stage.
+                search_terms = [part.strip() for part in re.split(r"[；;。\n]", scope) if part.strip()][:3]
+                comparable_evidence, comparable_issues = discover(search_terms)
+                issues.extend(comparable_issues)
+                qcc_payloads["target"].setdefault("evidence", []).extend(comparable_evidence)
     target_profile = qcc_profiles.get("target", {})
     if (
         fields.get("registered_capital") in (None, "", [])

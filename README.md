@@ -36,6 +36,9 @@ uv sync --extra dev
 | 233 | 著作权/软件著作权查询 | [著作权软著查询](https://openapi.qcc.com/dataApi/233) |
 | 2001 | 企业信息核验，补充行业、经营范围和企业规模证据 | [企业信息核验](https://openapi.qcc.com/dataApi/2001) |
 | 213 | 企业年报，补充经营及年报证据 | [企业年报](https://openapi.qcc.com/dataApi/213) |
+| 886 | 按产品、经营范围等关键词检索同行业企业候选 | [企业模糊搜索](https://openapi.qcc.com/dataApi/886) |
+| 915 | 按业务关键词检索上市公司公告及股票代码 | [上市公告搜索](https://openapi.qcc.com/dataApi/915) |
+| 699 | 补全 915 返回的上市候选公司的简介和主要指标 | [上市企业](https://openapi.qcc.com/dataApi) |
 
 对应环境变量：
 
@@ -46,7 +49,7 @@ QICHACHA_SECRET_KEY=你的SecretKey
 QICHACHA_EXTRA_API_CODES=2001,213
 ```
 
-接口地址和路径已经写入程序默认配置，通常不需要修改。启用 `--use-qichacha` 时默认调用 735、231、514、233、2001、213；前四项填工商及知识产权表，后两项只作为百炼叙述证据。962 企业图谱、886 模糊搜索，以及客户/供应商、企业业务和上市公司搜索等需实名认证或场景审核的接口均不在代码或配置中调用。客户、供应商及可比公司没有 PDF/XLSX 等可靠证据时保留黄色占位符，不由 LLM 编造。接口路径可分别用 `QICHACHA_ENDPOINT_735`、`QICHACHA_ENDPOINT_231`、`QICHACHA_ENDPOINT_514`、`QICHACHA_ENDPOINT_233`、`QICHACHA_ENDPOINT_2001`、`QICHACHA_ENDPOINT_213` 覆盖。
+接口地址和路径已经写入程序默认配置，通常不需要修改。启用 `--use-qichacha` 时默认调用 735、231、514、233、2001、213；前四项填工商及知识产权表，后两项只作为百炼叙述证据。对被评估主体，节点 2 还会以经营范围原文为关键词调用 886→915→699，形成可追溯的上市公司候选及其公开指标；可用 `QICHACHA_ENABLE_COMPARABLE_DISCOVERY=false` 关闭。962、521、723、724、1124 等面议接口不调用。客户、供应商没有 PDF/XLSX 等可靠证据时保留黄色占位符，不由 LLM 编造。接口路径可分别用 `QICHACHA_ENDPOINT_735`、`QICHACHA_ENDPOINT_231`、`QICHACHA_ENDPOINT_514`、`QICHACHA_ENDPOINT_233`、`QICHACHA_ENDPOINT_2001`、`QICHACHA_ENDPOINT_213`、`QICHACHA_ENDPOINT_886`、`QICHACHA_ENDPOINT_915` 覆盖。
 
 ### 百炼模型
 
