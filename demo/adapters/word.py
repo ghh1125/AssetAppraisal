@@ -658,6 +658,34 @@ def _set_table_column_ratios(
                 cell_width.set(f"{{{W}}}type", "dxa")
 
 
+def _paragraph_replacement_text(paragraph, items, replacements) -> str:
+    """Apply placeholder values to the visible paragraph text before splitting."""
+    text = _paragraph_text(paragraph)
+    for item in sorted(items, key=lambda item: item["occurrence_index"]):
+        marker = str(item.get("marker") or "")
+        if marker:
+            text = text.replace(marker, str(replacements[item["location_id"]]), 1)
+    text = re.sub(r"([。；;！!？?])\1+$", r"\1", text)
+    return text
+
+
+def _replace_paragraph_with_lines(paragraph, value: str) -> None:
+    """Replace one placeholder paragraph with one real ``w:p`` per line."""
+    parent = paragraph.getparent()
+    if parent is None:
+        _set_paragraph_text(paragraph, value, True)
+        return
+    lines = [line for line in str(value).splitlines() if line.strip()]
+    if not lines:
+        lines = [""]
+    position = parent.index(paragraph)
+    for offset, line in enumerate(lines):
+        clone = deepcopy(paragraph)
+        _set_paragraph_text(clone, line, True)
+        parent.insert(position + offset, clone)
+    parent.remove(paragraph)
+
+
 def fill_template(
     template: Path,
     output: Path,
@@ -693,9 +721,25 @@ def fill_template(
             if relevant or has_tables or static_replacements:
                 root = etree.fromstring(data)
                 paragraphs = root.xpath(".//w:p", namespaces=NS)
-                for (_, p_index), items in relevant:
+                relevant_by_index = {p_index: items for (_, p_index), items in relevant}
+                static_by_index = {p_index: value for (_, p_index), value in static_replacements}
+                paragraph_indices = sorted(
+                    set(relevant_by_index) | set(static_by_index),
+                    reverse=True,
+                )
+                for p_index in paragraph_indices:
+                    items = relevant_by_index.get(p_index, [])
                     paragraph = paragraphs[p_index - 1]
-                    if items[0]["record_type"] == "黄色标注内容块":
+                    split_into_lines = False
+                    if items and len(items) == 1 and items[0]["record_type"] == "占位符":
+                        value = str(replacements[items[0]["location_id"]])
+                        if "\n" in value:
+                            _replace_paragraph_with_lines(
+                                paragraph,
+                                _paragraph_replacement_text(paragraph, items, replacements),
+                            )
+                            split_into_lines = True
+                    if items and not split_into_lines and items[0]["record_type"] == "黄色标注内容块":
                         value = str(replacements[items[0]["location_id"]])
                         mode = replacement_modes.get(items[0]["location_id"], "replace_paragraph")
                         if mode == "strip_yellow_annotation":
@@ -720,10 +764,10 @@ def fill_template(
                             _set_paragraph_text(paragraph, value, True)
                         else:
                             _set_paragraph_text(paragraph, _strip_yellow_annotation(paragraph), True)
-                    else:
+                    elif items and not split_into_lines:
                         _replace_placeholders_preserving_runs(paragraph, items, replacements)
-                for (_, p_index), value in static_replacements:
-                    _set_paragraph_text(paragraphs[p_index - 1], str(value), True)
+                    if p_index in static_by_index and not split_into_lines:
+                        _set_paragraph_text(paragraph, str(static_by_index[p_index]), True)
                 if has_tables:
                     _fill_tables(root, table_replacements)
                     _set_table_column_ratios(root, table_column_ratios)

@@ -282,6 +282,35 @@ def test_yellow_annotation_value_keeps_heading_and_removes_parentheses(tmp_path:
     assert Document(output).paragraphs[0].text == "3、被评估单位概述：公司成立于2011年。"
 
 
+def test_multiline_profile_placeholder_becomes_real_word_paragraphs(tmp_path: Path):
+    template = tmp_path / "profile.docx"
+    document = Document()
+    document.add_paragraph("3、被评估单位概述")
+    document.add_paragraph("XXX。")
+    document.add_paragraph("二、评估目的")
+    document.save(template)
+    location = inventory_template(template)[0]
+    output = tmp_path / "profile-filled.docx"
+
+    fill_template(
+        template,
+        output,
+        {
+            location["location_id"]: "公司概况。\n所处行业及行业介绍：制造业。\n主要产品：控制器。",
+        },
+    )
+
+    paragraphs = Document(output).paragraphs
+    assert [paragraph.text for paragraph in paragraphs] == [
+        "3、被评估单位概述",
+        "公司概况。",
+        "所处行业及行业介绍：制造业。",
+        "主要产品：控制器。",
+        "二、评估目的",
+    ]
+    assert all("\n" not in paragraph.text for paragraph in paragraphs)
+
+
 def test_missing_placeholder_is_preserved_and_only_marker_is_highlighted(tmp_path: Path):
     template = tmp_path / "template.docx"
     document = Document()

@@ -195,12 +195,16 @@ def test_selected_modules_are_written_to_the_profile_body_in_the_word_report(tmp
     with zipfile.ZipFile(result.report_path) as archive:
         root = ET.fromstring(archive.read("word/document.xml"))
     namespace = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
-    profile_paragraph = next(
+    profile_paragraphs = [
         paragraph
         for paragraph in root.findall(".//w:p", namespace)
-        if "公司概况。" in "".join(node.text or "" for node in paragraph.findall(".//w:t", namespace))
-    )
-    assert len(profile_paragraph.findall(".//w:br", namespace)) >= 2
+        if any(
+            label in "".join(node.text or "" for node in paragraph.findall(".//w:t", namespace))
+            for label in ("公司概况。", "所处行业及行业介绍：", "主要产品：")
+        )
+    ]
+    assert len(profile_paragraphs) == 3
+    assert all(not paragraph.findall(".//w:br", namespace) for paragraph in profile_paragraphs)
 
 
 def test_candidate_file_always_exposes_the_six_selectable_report_modules(tmp_path: Path) -> None:
