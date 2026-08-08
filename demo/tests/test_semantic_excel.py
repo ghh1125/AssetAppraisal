@@ -285,6 +285,107 @@ def test_historical_financial_tables_follow_labels_not_coordinates(tmp_path: Pat
     assert income[-1] == ["四、净利润", "20.00", "30.00", "40.00"]
 
 
+def test_income_history_uses_exact_operating_cost_not_total_cost(tmp_path: Path):
+    """A standard income statement contains both total and operating cost."""
+    path = _save_workbook(
+        tmp_path / "income-statement.xlsx",
+        {
+            "利润表": [
+                ["金额单位：人民币元"],
+                ["项目", "2023年度", "2024年度", "2025年上半年"],
+                ["一、营业总收入", 80, 120, 150],
+                ["二、营业总成本", 70, 100, 130],
+                ["其中：营业成本", 30, 50, 60],
+                ["四、净利润", 20, 30, 40],
+            ],
+        },
+    )
+
+    rows = extract_workbook_facts(path, "audited_financials")["fields"][
+        "historical_income_statement_table"
+    ]["rows"]
+
+    assert rows[2] == ["减：营业成本", "30.00", "50.00", "60.00"]
+
+
+def test_income_history_recognizes_standard_rows_with_explanatory_suffixes(tmp_path: Path):
+    """Official statements append bracketed wording to subtotal labels."""
+    path = _save_workbook(
+        tmp_path / "income-subtotals.xlsx",
+        {
+            "利润表": [
+                ["金额单位：人民币元"],
+                ["项目", "2023年度", "2024年度", "2025年上半年"],
+                ["一、营业总收入", 80, 120, 150],
+                ["其中：营业成本", 30, 50, 60],
+                ["三、营业利润（亏损以‘－’号填列）", 20, 30, 40],
+                ["四、利润总额（亏损总额以‘－’号填列）", 21, 31, 41],
+                ["五、净利润（净亏损以‘－’号填列）", 18, 28, 38],
+            ],
+        },
+    )
+
+    rows = extract_workbook_facts(path, "audited_financials")["fields"][
+        "historical_income_statement_table"
+    ]["rows"]
+
+    assert rows[9] == ["二、营业利润", "20.00", "30.00", "40.00"]
+    assert rows[12] == ["三、利润总额", "21.00", "31.00", "41.00"]
+    assert rows[14] == ["四、净利润", "18.00", "28.00", "38.00"]
+
+
+def test_history_ignores_date_range_title_from_adjacent_statement(tmp_path: Path):
+    """A date range in an adjacent table title is not a reporting period."""
+    path = _save_workbook(
+        tmp_path / "side-by-side-balance.xlsx",
+        {
+            "资产负债表": [
+                ["金额单位：人民币元"],
+                [None, None, None, None, None, None, "2023.12.31-2025.6.30"],
+                ["项目", "行次", "2022年12月31", "2023年12月31", "2024年12月31", "2025年6月30", "项目"],
+                ["资产总计", 73, 176, 182, 180, 163, "负债和所有者权益合计"],
+                ["负债合计", 146, 18, 10, 4, 117, None],
+                ["所有者权益合计", 145, 158, 172, 175, 45, None],
+            ],
+        },
+    )
+
+    rows = extract_workbook_facts(path, "audited_financials")["fields"][
+        "historical_balance_sheet_table"
+    ]["rows"]
+
+    assert rows[0] == ["项目\\报表日", "2023年12月31日", "2024年12月31日", "2025年6月30日"]
+    assert rows[1] == ["总资产", "182.00", "180.00", "163.00"]
+
+
+def test_scope_table_uses_latest_period_from_formal_balance_statement(tmp_path: Path):
+    """Asset-scope fields can be obtained without an appraisal summary tab."""
+    path = _save_workbook(
+        tmp_path / "formal-balance.xlsx",
+        {
+            "资产负债表": [
+                ["金额单位：人民币元"],
+                ["项目", "行次", "2023年12月31", "2024年12月31", "2025年6月30", "项目", "行次", "2023年12月31", "2024年12月31", "2025年6月30"],
+                ["流动资产合计", 25, 162, 164, 148, "流动负债合计", 102, 10, 4, 117],
+                ["长期股权投资", 31, 8, 8, 8, "负债合计", 116, 10, 4, 117],
+                ["固定资产", 35, 8, 5, 4, "所有者权益（或股东权益）合计", 145, 172, 175, 45],
+                ["长期待摊费用", 43, 2, 2, 1, None, None, None, None, None],
+                ["非流动资产合计", 46, 20, 16, 15, None, None, None, None, None],
+                ["资产总计", 73, 182, 180, 163, None, None, None, None, None],
+            ],
+        },
+    )
+
+    scope = extract_workbook_facts(path, "audited_financials")["fields"][
+        "asset_scope_summary_table"
+    ]["rows"]
+
+    assert ["流动资产账面金额：", "148.00"] in scope
+    assert ["其中：固定资产账面金额：", "4.00"] in scope
+    assert ["负债合计账面金额：", "117.00"] in scope
+    assert ["所有者权益账面金额：", "45.00"] in scope
+
+
 def test_dual_sided_balance_ignores_the_other_section_sequence_column(tmp_path: Path):
     path = _save_workbook(
         tmp_path / "dual-balance.xlsx",

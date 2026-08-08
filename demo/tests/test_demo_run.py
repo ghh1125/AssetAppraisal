@@ -35,7 +35,7 @@ def test_offline_real_template_run_creates_new_report_only(tmp_path: Path):
     assert "企查查API获取" not in xml
 
 
-def test_offline_run_leaves_missing_fields_blank_and_fills_material_assets(tmp_path: Path):
+def test_offline_run_leaves_unavailable_fields_as_highlighted_placeholders(tmp_path: Path):
     result = run_project(Path("demo/projects/tongfu.yaml"), output_dir=tmp_path, offline=True)
     text = "\n".join(paragraph.text for paragraph in Document(result.report_path).paragraphs)
     fields = json.loads((tmp_path / "normalized_fields.json").read_text(encoding="utf-8"))
@@ -46,8 +46,9 @@ def test_offline_run_leaves_missing_fields_blank_and_fills_material_assets(tmp_p
     assert "长期股权投资账面价值8,400,000.00元" not in text
     assert "固定资产账面净值4,993,561.04元" not in text
     assert "长期待摊费用账面价值1,788,311.49元" not in text
-    assert "现有材料未见商标申报记录" in fields["trademark_summary"]
-    assert not fields["unrecorded_intangibles"].endswith("明细如下：")
+    # A new run has no hidden answer copied from a historical reference file.
+    assert "trademark_summary" not in fields
+    assert fields["unrecorded_intangibles"] == ""
 
     # The paragraph is only the table lead-in; all balance-sheet amounts
     # belong in the following configured asset/liability table.
@@ -65,7 +66,7 @@ def test_offline_run_leaves_missing_fields_blank_and_fills_material_assets(tmp_p
     assert software_table.rows[0].cells[1].text == "软件名称"
 
 
-def test_offline_run_fills_every_configured_financial_material_field(tmp_path: Path):
+def test_offline_run_uses_semantic_financial_fields_without_legacy_coordinates(tmp_path: Path):
     config_path = Path("demo/projects/tongfu.yaml")
     result = run_project(config_path, output_dir=tmp_path, offline=True)
     config = json.loads(config_path.read_text(encoding="utf-8"))
@@ -75,13 +76,7 @@ def test_offline_run_fills_every_configured_financial_material_field(tmp_path: P
         assert fields[key] not in (None, "", []), key
         assert not any(issue.startswith(f"{key}：") for issue in result.issues)
 
-    assert fields["registered_capital"] == "1,000.00万元"
-    assert [fields[f"balance_history_year_{index}"] for index in range(1, 4)] == ["2023", "2024", "2025"]
-    assert [fields[f"income_history_year_{index}"] for index in range(1, 4)] == ["2023", "2024", "2025"]
-    assert fields["audit_report_name"] == "通富2025.6.30合并及母公司审计报告"
     assert "增值税税率为13%" in fields["tax_rates"]
-    assert "企业所得税税率15%" in fields["tax_rates"]
-    assert "热处理" in fields["main_products"]
     assert "6,365.04万元" in fields["asset_approach_result_section"]
     assert "1,766.88万元" in fields["asset_approach_result_section"]
     assert "38.43%" in fields["asset_approach_result_section"]
@@ -89,6 +84,7 @@ def test_offline_run_fills_every_configured_financial_material_field(tmp_path: P
     report_text = "\n".join(paragraph.text for paragraph in Document(result.report_path).paragraphs)
     assert "、共同出资设立" not in report_text
     assert "有限公司、有限公司共同出资" not in report_text
+    assert config["legacy_coordinate_fallback"] is False
 
 
 def test_non_offline_run_uses_injected_provider_without_domain_dependency(tmp_path: Path):
@@ -276,12 +272,12 @@ def test_run_project_prefers_complete_dated_history_from_later_workbook(tmp_path
     ]
 
 
-def test_run_project_prefers_prepared_history_sheet_over_raw_audited_sheet(tmp_path: Path):
-    """A complete 历资表/历利表 is the prepared report history source.
+def test_run_project_prefers_formal_audited_history_over_prepared_history(tmp_path: Path):
+    """The audited financial statement is authoritative for book history.
 
-    The old logic always overwrote it with any audited_financials worksheet,
-    which changed the figures in the generated report despite an uploaded
-    收益法 workbook containing the reviewed historical table.
+    A model workbook's prepared history table is useful when no audited
+    statement was uploaded, but must not overwrite the formal statement with
+    different figures.
     """
     audited = tmp_path / "审计财务.xlsx"
     workbook = Workbook()
@@ -322,8 +318,59 @@ def test_run_project_prefers_prepared_history_sheet_over_raw_audited_sheet(tmp_p
 
     fields = json.loads((output / "normalized_fields.json").read_text(encoding="utf-8"))
     assert fields["historical_balance_sheet_table"]["rows"][1] == [
-        "总资产", "100.00", "200.00", "300.00"
+        "总资产", "1.00", "2.00", "3.00"
     ]
+
+
+def test_run_project_prefers_audited_scope_over_rounded_summary(tmp_path: Path):
+    """Book amounts in the report scope use the audited statement precision."""
+    reporting = tmp_path / "资产基础法.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "汇总表"
+    sheet.append(["金额单位：人民币万元"])
+    sheet.append(["项目", "账面价值", "评估价值"])
+    sheet.append(["流动资产", 14_853.73, 15_000])
+    sheet.append(["资产总计", 16_371.92, 17_000])
+    workbook.save(reporting)
+
+    audited = tmp_path / "审计财务.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "资产负债表"
+    sheet.append(["金额单位：人民币元"])
+    sheet.append(["项目", "2023年12月31", "2024年12月31", "2025年6月30"])
+    sheet.append(["流动资产合计", 100, 120, 148_537_259.26])
+    sheet.append(["非流动资产合计", 10, 12, 15_181_872.53])
+    sheet.append(["固定资产", 5, 6, 4_993_561.04])
+    sheet.append(["长期待摊费用", 1, 2, 1_788_311.49])
+    sheet.append(["资产总计", 110, 132, 163_719_131.79])
+    sheet.append(["负债合计", 10, 11, 117_737_555.13])
+    sheet.append(["所有者权益合计", 100, 121, 45_981_576.66])
+    workbook.save(audited)
+
+    output = tmp_path / "run"
+    run_project(
+        Path("demo/projects/tongfu.yaml"),
+        output_dir=output,
+        offline=True,
+        manual_inputs_override={"target_company_name": "示例公司"},
+        source_overrides={
+            "audit_pdf": None,
+            "reference_report": None,
+            "audited_financials": audited,
+            "reporting_workbook": reporting,
+            "income_workbook": None,
+        },
+    )
+
+    fields = json.loads((output / "normalized_fields.json").read_text(encoding="utf-8"))
+    assert ["流动资产账面金额：", "148,537,259.26"] in fields[
+        "asset_scope_summary_table"
+    ]["rows"]
+    assert fields["long_term_assets_table"]["rows"][3][1] == "1,788,311.49"
+    assert "固定资产账面价值4,993,561.04元" in fields["major_long_term_assets"]
+    assert "长期待摊费用账面价值1,788,311.49元" in fields["major_long_term_assets"]
 
 
 def test_semantic_scope_table_replaces_readable_legacy_coordinates(tmp_path: Path):

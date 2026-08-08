@@ -114,6 +114,11 @@ def canonical_period(value: object) -> CanonicalPeriod | None:
     text = re.sub(r"\s+", "", str(value).strip())
     if not text or any(token in text for token in _NON_HISTORICAL_TOKENS):
         return None
+    # A title such as ``2023.12.31-2025.6.30`` describes a reporting span,
+    # not one amount column.  Treating it as a period makes a side-by-side
+    # statement leak into the neighbouring statement's amount columns.
+    if len(re.findall(r"20\d{2}", text)) > 1:
+        return None
     if text in _RELATIVE_PERIODS or any(
         token in text for token in ("评估基准期", "评估基准日", "基准期", "基准日")
     ):

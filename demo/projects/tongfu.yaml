@@ -5,6 +5,7 @@
   "annotation_template": "../../templates/评估报告版式-沟通标注版_批注版.docx",
   "mapping": "../mappings/appraisal_report_v1.yaml",
   "manual_inputs": "tongfu.manual.example.yaml",
+  "legacy_coordinate_fallback": false,
   "llm": {
     "default_model": "deepseek-v4-flash-0731",
     "fallback_model": "qwen3.8-max",
@@ -14,7 +15,6 @@
   },
   "sources": {
     "audit_pdf": "../../资产评估工作流/通富2025.6.30合并及母公司审计报告.pdf",
-    "reference_report": "../../资产评估工作流/通富昆山评估报告-S2.docx",
     "audited_financials": "../../资产评估工作流/通富审核后财报-单体1月5日.xlsx",
     "income_workbook": "../../资产评估工作流/通富热处理（昆山）有限公司-收益法-20250630.xlsx",
     "reporting_workbook": "../../资产评估工作流/上报表文件_通富昆山_已处理.xlsx"
@@ -62,15 +62,7 @@
     {"location_id": "DOCUMENT-P0409-H01", "field_key": "software_copyrights", "route_kind": "qichacha_api", "replacement_mode": "strip_yellow_annotation"},
     {"location_id": "DOCUMENT-P0558-H01", "field_key": "asset_approach_result_section", "route_kind": "pdf_ocr_xlsx", "replacement_mode": "replace_paragraph"}
   ],
-  "llm_fallback_fields": {
-    "company_profile_section": "通富热处理（昆山）有限公司系由上海上大热处理有限公司和富士和机械工业（昆山）有限公司出资组建的有限责任公司，于2011年2月25日成立，注册资本人民币1,000万元。公司经营范围为各类汽车零部件的热处理加工，并提供相关技术开发、技术咨询及售后服务。",
-    "industry_overview": "所处行业及行业介绍：公司所处业务属于汽车零部件热处理及金属表面处理服务领域。审计报告披露的经营范围包括各类汽车零部件热处理加工及相关技术服务。",
-    "business_and_segments": "业务内容及细分市场：公司开展汽车零部件热处理加工、技术开发、技术咨询及售后服务；审计报告同时披露其子公司通富新材料科技（仙桃）有限公司开展汽车零部件研发、金属表面处理及热处理加工等业务。",
-    "main_products": "主要产品：汽车零部件热处理加工服务，以及与热处理相关的技术开发、技术咨询和售后服务。",
-    "customers_suppliers": "主要客户、供应商：审计报告披露的主要客户包括富士和机械工业（昆山）有限公司、富士和机械工业（湖北）有限公司；主要供应商包括上海麦睿菱测量技术有限公司、兴化市恒鑫机械有限公司。",
-    "profit_model_swot": "盈利模式，SWOT分析：公司收入主要来自汽车零部件热处理加工及相关技术服务，2025年上半年审计报表列示主营业务收入21,652,412.25元。基于现有审计资料，公司具备既有客户和专业加工业务基础；成本、客户集中度、产能及市场竞争等优势、劣势、机会和威胁仍应结合现场及市场资料复核。",
-    "comparable_list": "对标上市公司（列表、相似性）：现有审计报告未披露可比上市公司清单，本次不据此新增外部可比公司。"
-  },
+  "llm_fallback_fields": {},
   "ocr_fallback_fields": [
     "historical_balance_sheet_table",
     "historical_income_statement_table",
@@ -81,7 +73,6 @@
   "ocr_prefer_material_fields": [
     "historical_balance_sheet_table",
     "historical_income_statement_table",
-    "tax_rates",
     "major_long_term_assets"
   ],
   "ocr_aux_fields": {
@@ -92,17 +83,7 @@
   },
   "final_value_field": "income_approach_value",
   "required_financial_fields": [
-    "registered_capital",
-    "balance_history_year_1",
-    "balance_history_year_2",
-    "balance_history_year_3",
-    "income_history_year_1",
-    "income_history_year_2",
-    "income_history_year_3",
-    "audit_report_name",
     "tax_rates",
-    "main_products",
-    "financial_data_source_name",
     "book_net_assets",
     "income_approach_value",
     "asset_approach_value",
@@ -112,7 +93,6 @@
     "asset_approach_result_section"
   ],
   "required_monetary_fields": [
-    "registered_capital",
     "book_net_assets",
     "income_approach_value",
     "asset_approach_value",

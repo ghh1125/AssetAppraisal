@@ -318,7 +318,12 @@ def _canonical_scope_label(value: Any) -> str | None:
     for canonical, aliases in rules:
         if any(label == alias or label.endswith(alias + "合计") for alias in aliases):
             return canonical
-    if label == "净资产" or "净资产所有者权益" in label or "所有者权益净资产" in label:
+    if (
+        label == "净资产"
+        or label.startswith("所有者权益")
+        or "净资产所有者权益" in label
+        or "所有者权益净资产" in label
+    ):
         return "所有者权益"
     return None
 
@@ -333,7 +338,8 @@ def _summary_book_values(workbook) -> tuple[dict[str, float], dict[str, str]]:
         # Match the table meaning, never a project-specific sheet coordinate.
         title_area = _sheet_context(sheet, max_rows=10)
         is_summary = "汇总" in title_area
-        if not is_summary:
+        is_formal_balance = "资产负债表" in title_area
+        if not is_summary and not is_formal_balance:
             continue
         values: dict[str, float] = {}
         locators: dict[str, str] = {}
@@ -343,9 +349,22 @@ def _summary_book_values(workbook) -> tuple[dict[str, float], dict[str, str]]:
                 canonical = _canonical_scope_label(label_cell.value)
                 if not canonical:
                     continue
-                book_column, _ = _header_columns(sheet, label_cell.row)
-                if not book_column:
-                    continue
+                if is_formal_balance:
+                    period_columns = _period_columns_for_label(sheet, label_cell)
+                    if not period_columns:
+                        continue
+                    book_column, _ = max(
+                        period_columns,
+                        key=lambda item: (
+                            item[1][0] or 0,
+                            item[1][1] or 0,
+                            item[1][2] or 0,
+                        ),
+                    )
+                else:
+                    book_column, _ = _header_columns(sheet, label_cell.row)
+                    if not book_column:
+                        continue
                 amount = _number(sheet.cell(label_cell.row, book_column).value)
                 if amount is None:
                     continue
@@ -358,6 +377,8 @@ def _summary_book_values(workbook) -> tuple[dict[str, float], dict[str, str]]:
             score += 5
         elif "资产评估结果" in title_area:
             score += 5
+        if is_formal_balance:
+            score += 8
         if any(name in sheet.title for name in ("固定资产", "流动负债", "非流动负债")):
             score -= 20
         if score > best_score:
@@ -726,6 +747,7 @@ def _balance_label(value: Any) -> str | None:
         return "负债"
     if (
         label in {"净资产", "所有者权益合计", "所有者权益股东权益合计"}
+        or label.startswith("所有者权益")
         or "净资产所有者权益" in label
     ):
         return "所有者权益"
@@ -738,7 +760,11 @@ def _income_label(value: Any) -> str | None:
         return None
     checks = (
         ("一、营业收入", ("营业收入", "营业总收入")),
-        ("减：营业成本", ("营业成本", "营业总成本")),
+        # ``营业总成本`` includes tax, period expenses and other items.  It is
+        # not interchangeable with the report row ``营业成本``.  When the
+        # exact row is absent we leave the target unresolved rather than
+        # silently substituting a broader total.
+        ("减：营业成本", ("营业成本",)),
         ("税金及附加", ("税金及附加",)),
         ("销售费用", ("销售费用",)),
         ("管理费用", ("管理费用",)),
@@ -752,7 +778,11 @@ def _income_label(value: Any) -> str | None:
         ("减：所得税费用", ("所得税费用",)),
     )
     for canonical, aliases in checks:
-        if any(label.endswith(alias) for alias in aliases):
+        # Official financial statements commonly append an explanatory phrase
+        # such as "（亏损以‘－’号填列）" after the account name.  Match the
+        # account phrase itself, while the aliases remain deliberately narrow
+        # (notably, 营业成本 never accepts 营业总成本 above).
+        if any(alias in label for alias in aliases):
             return canonical
     if (
         "净利润" in label
@@ -856,7 +886,25 @@ def _historical_table(
     relative = [period for period in period_order if period[0] is None]
     periods = ([*dated, *relative] if dated else relative)[-3:]
     defaults = ["历史期1", "历史期2", "评估基准期"]
-    headers = [period[3] for period in periods]
+    def display_period(period: CanonicalPeriod) -> str:
+        year, month, day, source_text = period
+        # Keep simple annual labels (for example “2023年度”) as supplied, but
+        # normalize a dated balance-sheet heading to the report convention
+        # “YYYY年M月D日”.  This is presentation-only; matching remains based on
+        # the canonical tuple above.
+        if (
+            kind == "balance"
+            and year is not None
+            and month is not None
+            and day is not None
+            and ("月" in source_text or "." in source_text or "/" in source_text)
+        ):
+            return f"{year}年{month}月{day}日"
+        if kind == "income" and source_text.endswith("年上半年"):
+            return source_text.removesuffix("上半年") + "1-6月"
+        return source_text
+
+    headers = [display_period(period) for period in periods]
     headers = [*defaults[: 3 - len(headers)], *headers]
 
     def formatted_row(label: str, values: dict[CanonicalPeriod, float] | None) -> list[str]:

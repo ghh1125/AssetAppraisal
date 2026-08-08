@@ -367,7 +367,7 @@ def test_word_fill_reuses_qichacha_snapshot_without_new_api_calls(tmp_path: Path
     assert final.report_path.is_file()
     assert adapter.calls == ["委托方有限公司", "被评估单位有限公司"]
     fields = json.loads((tmp_path / "normalized_fields.json").read_text(encoding="utf-8"))
-    assert fields["registered_capital"] == "1,000.00万元"
+    assert fields["registered_capital"] == "1,000万元"
 
 
 def test_word_fill_retries_only_qichacha_role_missing_from_snapshot(tmp_path: Path) -> None:

@@ -6,6 +6,7 @@ import json
 import os
 import re
 from collections import defaultdict
+from copy import deepcopy
 from zipfile import BadZipFile
 from dataclasses import dataclass
 from datetime import datetime
@@ -48,17 +49,106 @@ from .domain.historical_table_merge import merge_historical_tables
 
 
 _PREPARED_HISTORY_SHEET_MARKERS = ("历资表", "历利表")
+_FORMAL_HISTORY_SHEET_MARKERS = ("资产负债表", "利润表")
 
 
-def _history_source_priority(evidence: dict[str, Any]) -> int:
-    """Prefer a prepared history table to a raw audited worksheet.
+def _history_source_priority(evidence: dict[str, Any], source_role: str) -> int:
+    """Rank historical candidates by their semantic source, never location.
 
-    A valuation workbook can contain the three-period ``历资表``/``历利表``
-    explicitly prepared for the report. It must not be overwritten just
-    because another workbook role happens to be named audited_financials.
+    A formal financial statement uploaded as ``audited_financials`` is the
+    authority for book-history rows.  A prepared ``历资表``/``历利表`` remains
+    a useful fallback when no formal audited statement is available.
     """
     locator = str(evidence.get("locator", ""))
-    return 2 if any(marker in locator for marker in _PREPARED_HISTORY_SHEET_MARKERS) else 1
+    if source_role == "audited_financials" and any(
+        marker in locator for marker in _FORMAL_HISTORY_SHEET_MARKERS
+    ):
+        return 30
+    if any(marker in locator for marker in _PREPARED_HISTORY_SHEET_MARKERS):
+        return 20
+    if any(marker in locator for marker in _FORMAL_HISTORY_SHEET_MARKERS):
+        return 10
+    return 0
+
+
+def _scope_source_priority(evidence: dict[str, Any], source_role: str) -> int:
+    """Prefer precise book amounts from a formal audited statement."""
+    locator = str(evidence.get("locator", ""))
+    formal_statement = "资产负债表" in locator
+    if source_role == "audited_financials" and formal_statement:
+        return 30
+    if formal_statement:
+        return 20
+    if "汇总" in locator:
+        return 10
+    return 0
+
+
+def _reconcile_long_term_assets_with_scope(
+    long_term_table: Any,
+    scope_table: Any,
+) -> dict[str, Any] | None:
+    """Use the audited scope amount for matching long-term asset rows.
+
+    Equipment quantity and condition remain detail-table facts.  For broad
+    book-value rows (for example 长期待摊费用), a formal balance statement has
+    higher precision than a rounded appraisal summary, so only that amount is
+    reconciled here.
+    """
+    if not isinstance(long_term_table, dict) or not isinstance(scope_table, dict):
+        return None
+    long_rows = long_term_table.get("rows")
+    scope_rows = scope_table.get("rows")
+    if not isinstance(long_rows, list) or not isinstance(scope_rows, list):
+        return None
+    scope_values = {
+        str(row[0]).replace("其中：", ""): str(row[1])
+        for row in scope_rows
+        if isinstance(row, list) and len(row) >= 2 and str(row[1]) not in {"", "XXX"}
+    }
+    mapping = {
+        "无形资产": "无形资产账面金额：",
+        "长期待摊费用": "长期待摊费用账面金额：",
+    }
+    reconciled = deepcopy(long_term_table)
+    changed = False
+    for row in reconciled.get("rows", [])[1:]:
+        if not isinstance(row, list) or len(row) < 2:
+            continue
+        source_label = mapping.get(str(row[0]).strip())
+        if source_label and source_label in scope_values and row[1] != scope_values[source_label]:
+            row[1] = scope_values[source_label]
+            changed = True
+    return reconciled if changed else None
+
+
+def _major_long_term_assets_from_reconciled_tables(
+    long_term_table: Any,
+    scope_table: Any,
+) -> str | None:
+    """Compose the narrative from the same evidence as the displayed table."""
+    if not isinstance(long_term_table, dict) or not isinstance(scope_table, dict):
+        return None
+    scope_values = {
+        str(row[0]).replace("其中：", ""): str(row[1])
+        for row in scope_table.get("rows", [])
+        if isinstance(row, list) and len(row) >= 2 and str(row[1]) not in {"", "XXX"}
+    }
+    long_values = {
+        str(row[0]).strip(): str(row[1])
+        for row in long_term_table.get("rows", [])[1:]
+        if isinstance(row, list) and len(row) >= 2 and str(row[1]) not in {"", "XXX"}
+    }
+    values = (
+        ("固定资产", scope_values.get("固定资产账面金额：")),
+        ("无形资产", scope_values.get("无形资产账面金额：") or long_values.get("无形资产")),
+        ("长期待摊费用", scope_values.get("长期待摊费用账面金额：") or long_values.get("长期待摊费用")),
+        ("电子设备", long_values.get("电子设备")),
+    )
+    phrases = [f"{label}账面价值{amount}元" for label, amount in values if amount]
+    if not phrases:
+        return None
+    return "（一）被评估单位主要长期资产的账面记录情况如下：截至评估基准日，" + "；".join(phrases) + "。"
 from .domain.source_precedence import prefer_semantic_result
 from .domain.generation_issues import (
     apply_page_locations,
@@ -323,8 +413,18 @@ def run_project(
             fields[key] = value
             evidence[key] = {"kind": "manual", "file": manual_path.name, "locator": key}
     fields["asset_approach_method_label"] = _asset_method_label(fields.get("selected_valuation_method"))
+    # A reusable run must not depend on the sheet names and coordinates of a
+    # previous client.  Kept only for explicitly opted-in legacy projects;
+    # the standard workflow resolves uploaded materials semantically below.
+    use_legacy_coordinate_fallback = bool(
+        config.get("legacy_coordinate_fallback", False)
+    )
 
-    for spec in config.get("financial_tables", []):
+    for spec in (
+        config.get("financial_tables", [])
+        if use_legacy_coordinate_fallback
+        else []
+    ):
         source_name = spec["source"]
         matrix, read_issues = try_read_configured_table(
             sources.get(source_name),
@@ -357,7 +457,7 @@ def run_project(
     # not a prose field.  Fill it in every run mode so the CLI cannot leave
     # the template's default numbers behind.
     scope_table = config.get("asset_scope_summary_table")
-    if isinstance(scope_table, dict):
+    if use_legacy_coordinate_fallback and isinstance(scope_table, dict):
         source_name = str(scope_table["source"])
         matrix, read_issues = try_read_configured_table(
             sources.get(source_name),
@@ -391,7 +491,7 @@ def run_project(
         table_replacements[int(scope_table["target_table_index"])] = matrix
 
     long_term_table = config.get("long_term_assets_table")
-    if isinstance(long_term_table, dict):
+    if use_legacy_coordinate_fallback and isinstance(long_term_table, dict):
         matrix = _read_long_term_assets_table(config, sources, issues)
         table_replacements[int(long_term_table["target_table_index"])] = matrix
 
@@ -405,7 +505,11 @@ def run_project(
             ["", "", "", "", ""],
         ]
 
-    for spec in config.get("financial_fields", []):
+    for spec in (
+        config.get("financial_fields", [])
+        if use_legacy_coordinate_fallback
+        else []
+    ):
         source_name = spec["source"]
         locator = spec["locator"]
         values, read_issues = try_read_cells(
@@ -425,7 +529,11 @@ def run_project(
             source_name, sources, locator, source_lineage
         )
 
-    for spec in config.get("material_fields", []):
+    for spec in (
+        config.get("material_fields", [])
+        if use_legacy_coordinate_fallback
+        else []
+    ):
         try:
             value, source = resolve_material_field(
                 spec,
@@ -461,6 +569,7 @@ def run_project(
     }
     semantic_history_roles: dict[str, str] = {}
     semantic_history_priorities: dict[str, int] = {}
+    semantic_scope_priority = 0
     for source_name in (
         "reporting_workbook",
         "audited_financials",
@@ -509,7 +618,10 @@ def run_project(
                 "historical_balance_sheet_table",
                 "historical_income_statement_table",
             }:
-                candidate_history_priority = _history_source_priority(semantic_source)
+                candidate_history_priority = _history_source_priority(
+                    semantic_source,
+                    source_name,
+                )
                 existing_history_priority = semantic_history_priorities.get(field_key, 0)
                 if existing_is_semantic and candidate_history_priority > existing_history_priority:
                     fields[field_key] = value
@@ -518,6 +630,18 @@ def run_project(
                     semantic_history_priorities[field_key] = candidate_history_priority
                     continue
                 if existing_is_semantic and candidate_history_priority < existing_history_priority:
+                    continue
+            if field_key == "asset_scope_summary_table":
+                candidate_scope_priority = _scope_source_priority(
+                    semantic_source,
+                    source_name,
+                )
+                if existing_is_semantic and candidate_scope_priority > semantic_scope_priority:
+                    fields[field_key] = value
+                    evidence[field_key] = semantic_source
+                    semantic_scope_priority = candidate_scope_priority
+                    continue
+                if existing_is_semantic and candidate_scope_priority < semantic_scope_priority:
                     continue
             if (
                 field_key
@@ -536,7 +660,10 @@ def run_project(
                     if merged == value:
                         evidence[field_key] = semantic_source
                         semantic_history_roles[field_key] = source_name
-                        semantic_history_priorities[field_key] = _history_source_priority(semantic_source)
+                        semantic_history_priorities[field_key] = _history_source_priority(
+                            semantic_source,
+                            source_name,
+                        )
                     else:
                         evidence[field_key] = {
                             "kind": "semantic_excel_merged",
@@ -581,7 +708,85 @@ def run_project(
                 "historical_income_statement_table",
             }:
                 semantic_history_roles[field_key] = source_name
-                semantic_history_priorities[field_key] = _history_source_priority(semantic_source)
+                semantic_history_priorities[field_key] = _history_source_priority(
+                    semantic_source,
+                    source_name,
+                )
+            if field_key == "asset_scope_summary_table":
+                semantic_scope_priority = _scope_source_priority(
+                    semantic_source,
+                    source_name,
+                )
+
+    # The template table identity is stable, but its source data is not.
+    # Write tables from semantic evidence directly so an old workbook cell
+    # map can never leak values into a new client's report.
+    target_table_by_field: dict[str, int] = {
+        str(spec["field_key"]): int(spec["target_table_index"])
+        for spec in config.get("financial_tables", [])
+        if "field_key" in spec and "target_table_index" in spec
+    }
+    if isinstance(scope_table, dict) and "target_table_index" in scope_table:
+        target_table_by_field[str(scope_table["field_key"])] = int(
+            scope_table["target_table_index"]
+        )
+    if isinstance(long_term_table, dict) and "target_table_index" in long_term_table:
+        target_table_by_field["long_term_assets_table"] = int(
+            long_term_table["target_table_index"]
+        )
+    if _scope_source_priority(
+        evidence.get("asset_scope_summary_table", {}),
+        "audited_financials",
+    ) >= 20:
+        reconciled_long_term_assets = _reconcile_long_term_assets_with_scope(
+            fields.get("long_term_assets_table"),
+            fields.get("asset_scope_summary_table"),
+        )
+        if reconciled_long_term_assets is not None:
+            fields["long_term_assets_table"] = reconciled_long_term_assets
+            long_term_source = evidence.get("long_term_assets_table", {})
+            scope_source = evidence.get("asset_scope_summary_table", {})
+            evidence["long_term_assets_table"] = {
+                "kind": "semantic_excel_merged",
+                "file": "；".join(
+                    value
+                    for value in dict.fromkeys(
+                        [
+                            str(long_term_source.get("file", "")),
+                            str(scope_source.get("file", "")),
+                        ]
+                    )
+                    if value
+                ),
+                "locator": "；".join(
+                    value
+                    for value in dict.fromkeys(
+                        [
+                            str(long_term_source.get("locator", "")),
+                            str(scope_source.get("locator", "")),
+                        ]
+                    )
+                    if value
+                ),
+            }
+        reconciled_narrative = _major_long_term_assets_from_reconciled_tables(
+            fields.get("long_term_assets_table"),
+            fields.get("asset_scope_summary_table"),
+        )
+        if reconciled_narrative:
+            fields["major_long_term_assets"] = reconciled_narrative
+            evidence["major_long_term_assets"] = dict(
+                evidence.get("long_term_assets_table", {})
+            )
+    for field_key, table_index in target_table_by_field.items():
+        value = fields.get(field_key)
+        source = evidence.get(field_key, {})
+        if (
+            isinstance(value, dict)
+            and isinstance(value.get("rows"), list)
+            and str(source.get("kind", "")).startswith("semantic_excel")
+        ):
+            table_replacements[table_index] = value["rows"]
 
     unfinished_asset_source = evidence.get("asset_approach_value", {})
     result_section_source = evidence.get(
@@ -698,7 +903,11 @@ def run_project(
                 issues.append(f"{key}：无可用值，已按规则留空")
     replacements = build_replacements(locations, fields)
     paragraph_replacements: dict[tuple[str, int], str] = {}
-    for spec in config.get("paragraph_replacements", []):
+    for spec in (
+        config.get("paragraph_replacements", [])
+        if use_legacy_coordinate_fallback
+        else []
+    ):
         if "field_key" in spec:
             value = str(fields.get(spec["field_key"], ""))
         elif "template" in spec:
