@@ -1137,6 +1137,20 @@ def extract_workbook_facts(path: Path, role: str) -> dict[str, Any]:
             issues.extend(table_issues)
             for field_key, source in table_evidence.items():
                 evidence[field_key] = {**source, "file": path.name}
+            # A user may put a market-method workbook in the first Excel slot
+            # (for example when no asset-inventory workbook is available).
+            # Determine its role from workbook content, never from the upload
+            # slot or filename, and retain the conclusion with its cell-level
+            # source evidence.
+            if _workbook_valuation_method(workbook) == "market":
+                market = _market_value_candidate(workbook)
+                if market:
+                    fields["market_approach_value"] = market["value"]
+                    evidence["market_approach_value"] = {
+                        "kind": "semantic_excel",
+                        "file": path.name,
+                        "locator": market["locator"],
+                    }
             for history_kind, field_key in (
                 ("balance", "historical_balance_sheet_table"),
                 ("income", "historical_income_statement_table"),

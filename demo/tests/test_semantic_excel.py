@@ -188,6 +188,27 @@ def test_market_result_label_can_be_generic_conclusion(tmp_path: Path):
     assert facts["evidence"]["market_approach_value"]["locator"].endswith("!B3")
 
 
+def test_market_workbook_is_recognized_even_if_uploaded_in_reporting_slot(
+    tmp_path: Path,
+):
+    """Workbook meaning, rather than the UI slot, decides its method role."""
+    path = _save_workbook(
+        tmp_path / "arbitrary-upload-name.xlsx",
+        {
+            "估值过程和结果": [
+                ["采用市场法"],
+                ["项目", "金额"],
+                ["评估结论", 9000],
+            ]
+        },
+    )
+
+    facts = extract_workbook_facts(path, "reporting_workbook")
+
+    assert facts["fields"]["market_approach_value"] == 9000
+    assert facts["evidence"]["market_approach_value"]["locator"].endswith("!B3")
+
+
 def test_summary_header_can_be_far_above_net_asset_total(tmp_path: Path):
     rows = [
         ["金额单位：人民币万元"],
