@@ -84,6 +84,8 @@ def test_offline_run_uses_semantic_financial_fields_without_legacy_coordinates(t
     report_text = "\n".join(paragraph.text for paragraph in Document(result.report_path).paragraphs)
     assert "、共同出资设立" not in report_text
     assert "有限公司、有限公司共同出资" not in report_text
+    assert fields["audit_report_name"] == "通富2025.6.30合并及母公司审计报告"
+    assert fields["financial_data_source_name"] == "通富2025.6.30合并及母公司审计报告"
     assert config["legacy_coordinate_fallback"] is False
 
 

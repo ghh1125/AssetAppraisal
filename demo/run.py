@@ -52,6 +52,37 @@ _PREPARED_HISTORY_SHEET_MARKERS = ("历资表", "历利表")
 _FORMAL_HISTORY_SHEET_MARKERS = ("资产负债表", "利润表")
 
 
+def _financial_data_source_label(
+    sources: Mapping[str, Path],
+) -> tuple[str, dict[str, str]]:
+    """Give every financial-data citation a truthful, human-readable source.
+
+    An audit PDF is optional in the four-node workflow.  The citation below
+    the asset/liability tables must nevertheless never remain ``XX`` merely
+    because the user supplied financial Excel files without that PDF.
+    """
+    audit_pdf = sources.get("audit_pdf")
+    if audit_pdf is not None and audit_pdf.is_file():
+        return audit_pdf.stem, {
+            "kind": "source_file",
+            "file": audit_pdf.name,
+            "locator": "审计报告文件名",
+        }
+    for source_name in ("audited_financials", "reporting_workbook", "income_workbook"):
+        source = sources.get(source_name)
+        if source is not None and source.is_file():
+            return "用户上传的审计财务资料", {
+                "kind": "source_file",
+                "file": source.name,
+                "locator": "用户上传的财务工作簿",
+            }
+    return "用户上传的财务资料", {
+        "kind": "source_file",
+        "file": "",
+        "locator": "未提供审计报告或财务工作簿",
+    }
+
+
 def _history_source_priority(evidence: dict[str, Any], source_role: str) -> int:
     """Rank historical candidates by their semantic source, never location.
 
@@ -412,6 +443,15 @@ def run_project(
         if value not in (None, "") and key not in fields:
             fields[key] = value
             evidence[key] = {"kind": "manual", "file": manual_path.name, "locator": key}
+    # These two template slots cite financial material.  They are not
+    # financial values and therefore must not depend on the legacy Excel
+    # coordinate reader.  Populate them from the PDF where present, or from
+    # the user-supplied finance workbook when PDF is intentionally omitted.
+    financial_source_name, financial_source_evidence = _financial_data_source_label(sources)
+    for field_key in ("audit_report_name", "financial_data_source_name"):
+        if fields.get(field_key) in (None, ""):
+            fields[field_key] = financial_source_name
+            evidence[field_key] = dict(financial_source_evidence)
     fields["asset_approach_method_label"] = _asset_method_label(fields.get("selected_valuation_method"))
     # A reusable run must not depend on the sheet names and coordinates of a
     # previous client.  Kept only for explicitly opted-in legacy projects;
