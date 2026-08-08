@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +45,26 @@ FIELD_KEYWORDS = {
     "profit_model_swot": ("盈利", "利润", "优势", "劣势", "风险", "竞争", "生产模式", "销售模式"),
     "comparable_list": ("可比", "同行", "上市公司", "竞争", "行业"),
 }
+
+
+# These texts are deliberately statements about the available record, not
+# substitutes for facts that were not supplied.  They keep the six optional
+# narrative modules readable without turning missing source material into a
+# yellow ``XXX`` or an invented business fact.
+NO_EVIDENCE_STATEMENTS = {
+    "industry_overview": "现有已上传材料及已调用企业信息接口未提供可直接核验的所处行业及行业介绍，未据此作进一步描述。",
+    "business_and_segments": "现有已上传材料及已调用企业信息接口未提供可直接核验的业务内容及细分市场信息，未据此作进一步描述。",
+    "main_products": "现有已上传材料及已调用企业信息接口未提供可直接核验的主要产品信息，未据此作进一步描述。",
+    "customers_suppliers": "现有已上传材料及已调用企业信息接口未披露主要客户及供应商，未据此识别具体交易对手。",
+    "comparable_list": "现有材料及已调用企业信息接口未获得同时包含证券代码、公告标题和公告日期的上市公司候选，未据此形成对标上市公司清单。",
+}
+SWOT_FALLBACKS = (
+    ("盈利模式：", "现有材料未提供可直接核验的盈利模式证据。"),
+    ("优势：", "现有材料未提供可直接核验的竞争优势证据。"),
+    ("劣势：", "现有材料未提供可直接核验的竞争劣势证据。"),
+    ("机会：", "现有材料未提供可直接核验的发展机会证据。"),
+    ("风险：", "现有材料未提供可直接核验的主要风险证据。"),
+)
 
 
 OUTPUT_SCHEMA = json.loads(
@@ -136,24 +157,48 @@ class BailianYellowNarrativeAdapter:
         *,
         limit: int = 12,
     ) -> list[dict[str, Any]]:
+        # The six narrative modules describe the target company.  Once its
+        # QCC profile is available, exclude the commissioning party rather
+        # than letting a similarly worded business scope leak into the
+        # target's industry or product description.
+        target_profile_present = any(
+            "api:qichacha:target:" in str(item.get("evidence_id", ""))
+            for item in evidence
+        )
+        eligible_evidence = (
+            [
+                item
+                for item in evidence
+                if "api:qichacha:commissioning:" not in str(item.get("evidence_id", ""))
+            ]
+            if target_profile_present
+            else evidence
+        )
         if field_key == "comparable_list":
             # A target-company profile can be evidence about the target's
             # industry, but it can never be evidence that the target is its
             # own comparable.  Permit only actual API peer candidates or an
             # uploaded material explicitly labelled as a comparable list.
-            peer_evidence = [
-                item
-                for item in evidence
-                if any(
-                    token in str(item.get("evidence_id", ""))
-                    for token in (":886:", ":915:", ":699:")
+            peer_evidence = []
+            for item in eligible_evidence:
+                evidence_id = str(item.get("evidence_id", ""))
+                text = str(item.get("text", ""))
+                # A QCC fuzzy-search result is a business-name lead only. It
+                # must not be treated as a listed comparable.  Api 915
+                # records are sufficient only when the report can show the
+                # company, stock code, announcement title and date.
+                announcement = ":915:" in evidence_id and all(
+                    marker in text for marker in ("股票代码：", "公告：", "日期：")
                 )
-                or "可比上市公司" in str(item.get("text", ""))
-            ]
+                uploaded_list = "可比上市公司" in text and all(
+                    marker in text for marker in ("股票代码", "公告", "日期")
+                )
+                if announcement or uploaded_list:
+                    peer_evidence.append(item)
             return peer_evidence[:limit]
         keywords = FIELD_KEYWORDS[field_key]
         scored: list[tuple[int, int, dict[str, Any]]] = []
-        for index, item in enumerate(evidence):
+        for index, item in enumerate(eligible_evidence):
             text = str(item.get("text", ""))
             score = sum(1 for keyword in keywords if keyword.lower() in text.lower())
             if field_key == "company_profile_section" and str(
@@ -163,7 +208,7 @@ class BailianYellowNarrativeAdapter:
             if score:
                 scored.append((score, index, item))
         if not scored:
-            return evidence[: min(limit, len(evidence))]
+            return eligible_evidence[: min(limit, len(eligible_evidence))]
         return [
             item
             for _, _, item in sorted(scored, key=lambda value: (-value[0], value[1]))[:limit]
@@ -198,6 +243,73 @@ class BailianYellowNarrativeAdapter:
             values[field_key] = value
         return values, issues
 
+    @staticmethod
+    def _normalize_profit_model_swot(value: str) -> tuple[str, bool]:
+        """Require the five report headings without inferring missing facts."""
+        text = str(value or "").strip()
+        if all(label in text for label, _ in SWOT_FALLBACKS):
+            return text, False
+        sections: list[str] = []
+        for label, fallback in SWOT_FALLBACKS:
+            if label in text:
+                # Preserve the model's evidence-backed wording as-is.  The
+                # report only needs labels absent from a sparse response.
+                continue
+            if label == "盈利模式：" and text:
+                sections.append(f"{label}{text.rstrip('。')}。")
+            else:
+                sections.append(f"{label}{fallback}")
+        return "".join([text, *sections]), True
+
+    @staticmethod
+    def _industry_fallback(field_evidence: list[dict[str, Any]]) -> str:
+        """Render a direct industry field from target API evidence only."""
+        patterns = (
+            r"(?:所属行业为|所属行业[：:]|行业[：:])\s*([^，；。\n}\]\"']{2,80})",
+            r"[\"']Industry[\"']\s*[:：]\s*[\"']?([^，；。\n}\]\"']{2,80})",
+        )
+        for item in field_evidence:
+            text = str(item.get("text", ""))
+            for pattern in patterns:
+                match = re.search(pattern, text)
+                if match:
+                    industry = match.group(1).strip()
+                    if industry:
+                        return f"根据已调用企业信息接口，被评估单位所属行业为{industry}。"
+        return NO_EVIDENCE_STATEMENTS["industry_overview"]
+
+    @staticmethod
+    def _comparable_fallback(field_evidence: list[dict[str, Any]]) -> str:
+        records = [str(item.get("text", "")).strip() for item in field_evidence]
+        if not records:
+            return NO_EVIDENCE_STATEMENTS["comparable_list"]
+        return "以下为按经营关键词命中的上市公司公告候选，不等于可比性最终认定。" + "\n".join(records)
+
+    @staticmethod
+    def _normalize_selected_value(
+        field_key: str,
+        value: str,
+        field_evidence: list[dict[str, Any]],
+    ) -> tuple[str, str | None]:
+        value = str(value or "").strip()
+        if not value:
+            if field_key == "industry_overview":
+                return BailianYellowNarrativeAdapter._industry_fallback(field_evidence), "未返回内容，已从企业信息接口回退生成行业说明"
+            if field_key == "profit_model_swot":
+                normalized, _ = BailianYellowNarrativeAdapter._normalize_profit_model_swot("")
+                return normalized, "未返回内容，已按五个维度写入可核验缺失说明"
+            if field_key == "comparable_list":
+                return BailianYellowNarrativeAdapter._comparable_fallback(field_evidence), "未返回内容，已按企查查公告证据生成候选说明"
+            return NO_EVIDENCE_STATEMENTS.get(field_key, ""), "未返回内容，已写入材料未披露说明"
+        if field_key == "profit_model_swot":
+            normalized, changed = BailianYellowNarrativeAdapter._normalize_profit_model_swot(value)
+            return normalized, "未覆盖盈利模式及 SWOT 五个维度，已补充可核验缺失说明" if changed else None
+        if field_key == "comparable_list" and not all(
+            marker in value for marker in ("股票代码", "公告", "日期")
+        ):
+            return BailianYellowNarrativeAdapter._comparable_fallback(field_evidence), "未按多维公告格式输出，已使用企查查公告证据生成候选清单"
+        return value, None
+
     def generate(self, evidence: dict[str, Any]) -> tuple[dict[str, str], list[str]]:
         selected_modules = evidence.get("selected_modules")
         if isinstance(selected_modules, list):
@@ -213,9 +325,12 @@ class BailianYellowNarrativeAdapter:
             for field_key in requested:
                 field_evidence = self._relevant_evidence(field_key, all_evidence)
                 if not field_evidence:
-                    # A candidate without supporting evidence must remain
-                    # unavailable. Do not ask the model to fill it from its
-                    # own world knowledge.
+                    if field_key != "company_profile_section":
+                        value, issue = self._normalize_selected_value(field_key, "", [])
+                        if value:
+                            values[field_key] = value
+                        if issue:
+                            issues.append(f"GLM 字段 {field_key}：{issue}")
                     continue
                 field_payload = {
                     "requested_field": field_key,
@@ -238,9 +353,16 @@ class BailianYellowNarrativeAdapter:
                     payload,
                     known_evidence,
                 )
-                if field_key in field_values:
-                    values[field_key] = field_values[field_key]
+                value, normalization_issue = self._normalize_selected_value(
+                    field_key,
+                    field_values.get(field_key, ""),
+                    field_evidence,
+                )
+                if value:
+                    values[field_key] = value
                 issues.extend(field_issues)
+                if normalization_issue:
+                    issues.append(f"GLM 字段 {field_key}：{normalization_issue}")
             return values, issues
 
         try:

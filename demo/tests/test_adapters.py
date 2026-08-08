@@ -151,7 +151,7 @@ def test_qichacha_does_not_register_review_only_apis():
     assert "962" not in QichachaApiAdapter.DEFAULT_ENDPOINTS
 
 
-def test_qichacha_discovers_listed_comparable_candidates_from_business_keywords():
+def test_qichacha_discovers_listed_comparable_candidates_from_announcements_without_unverified_detail_calls():
     class ComparableClient(_Client):
         def get(self, url, **kwargs):
             self.calls.append((url, kwargs))
@@ -159,23 +159,31 @@ def test_qichacha_discovers_listed_comparable_candidates_from_business_keywords(
                 return _Response({"Status": "200", "Result": [{"Name": "同行企业甲", "Industry": "汽车零部件"}]})
             if url.endswith("IPOAnnouncement/GetList"):
                 return _Response({"Status": "200", "Result": {"Data": [{"CompanyName": "上市公司甲", "KeyNo": "peer-key", "StockCode": "600001", "Title": "热处理业务公告", "PublishDate": "2026-01-01"}]}})
-            if url.endswith("IPO/GetIPODetail"):
-                return _Response({"Status": "200", "Result": {"CompanyName": "上市公司甲", "Introduction": "汽车零部件热处理业务"}})
-            if url.endswith("IPO/GetMainIndicator"):
-                return _Response({"Status": "200", "Result": {"Data": {"ReportDate": ["2025-12-31"], "PrimaryList": [{"PrimaryDes": "盈利能力"}]}}})
             return super().get(url, **kwargs)
 
     adapter = QichachaApiAdapter(ComparableClient(), "app", "secret")
     evidence, issues = adapter.discover_listed_comparables(["汽车零部件热处理"])
 
     assert issues == []
-    assert {item["api_code"] for item in evidence} == {"886", "915", "699"}
+    assert {item["api_code"] for item in evidence} == {"886", "915"}
     assert "上市公司甲" in next(item["text"] for item in evidence if item["api_code"] == "915")
     assert "600001" in next(item["text"] for item in evidence if item["api_code"] == "915")
-    assert "汽车零部件热处理业务" in next(item["text"] for item in evidence if item["api_code"] == "699")
-    detail_kwargs = next(kwargs for url, kwargs in adapter.client.calls if url.endswith("IPO/GetIPODetail"))
-    assert detail_kwargs["params"]["keyNo"] == "peer-key"
-    assert "searchKey" not in detail_kwargs["params"]
+    assert all("IPO/GetIPO" not in url for url, _ in adapter.client.calls)
+
+
+def test_listed_announcements_are_deduplicated_by_company_and_stock_code():
+    from demo.adapters.company_api import _listed_announcements_text
+
+    text = _listed_announcements_text(
+        {"Status": "200", "Result": {"Data": [
+            {"CompanyName": "上市公司甲", "StockCode": "600001", "Title": "公告一", "PublishDate": "2026-01-01"},
+            {"CompanyName": "上市公司甲", "StockCode": "600001", "Title": "公告二", "PublishDate": "2026-01-02"},
+            {"CompanyName": "上市公司乙", "StockCode": "600002", "Title": "公告三", "PublishDate": "2026-01-03"},
+        ]}}
+    )
+
+    assert text.count("上市公司甲") == 1
+    assert "上市公司乙" in text
 
 
 def test_qichacha_can_disable_paid_comparable_discovery():
@@ -198,7 +206,7 @@ def test_comparable_search_terms_reduce_business_scope_to_compact_industry_phras
     ) == ["汽车零部件热处理", "汽车零部件", "热处理"]
 
 
-def test_comparable_narrative_evidence_excludes_the_target_company_profile():
+def test_comparable_narrative_evidence_requires_an_announcement_with_multiple_dimensions():
     evidence = [
         {
             "evidence_id": "api:qichacha:target:735:profile",
@@ -206,7 +214,7 @@ def test_comparable_narrative_evidence_excludes_the_target_company_profile():
         },
         {
             "evidence_id": "api:qichacha:target:915:peer:汽车零部件热处理",
-            "text": "上市公司公告候选：上市公司甲；股票代码：600001",
+            "text": "上市公司公告候选：上市公司甲；股票代码：600001；公告：热处理业务公告；日期：2026-01-01",
         },
     ]
 
@@ -217,6 +225,23 @@ def test_comparable_narrative_evidence_excludes_the_target_company_profile():
     assert selected == [evidence[1]]
 
 
+def test_comparable_narrative_evidence_rejects_a_name_only_candidate():
+    evidence = [
+        {
+            "evidence_id": "api:qichacha:target:915:peer:工业设备",
+            "text": "上市公司公告候选：上市公司甲；股票代码：600001",
+        },
+    ]
+
+    selected = BailianYellowNarrativeAdapter._relevant_evidence(
+        "comparable_list", evidence
+    )
+
+    assert selected == []
+
+
 def test_narrative_prompt_forbids_model_world_knowledge():
     prompt = Path("demo/prompts/yellow_narratives.v2.txt").read_text(encoding="utf-8")
     assert "不得使用模型自身知识" in prompt
+    assert "未披露主要客户及供应商" in prompt
+    assert "不等于可比性最终认定" in prompt

@@ -226,6 +226,152 @@ def test_glm_generates_selected_modules_field_by_field():
     assert len(client.requests) == 2
 
 
+def test_glm_uses_a_factual_no_disclosure_statement_for_missing_customer_supplier_evidence():
+    class CustomerSupplierEmptyClient(FieldwiseClient):
+        def post(self, *args, **kwargs):
+            self.requests.append(kwargs)
+            request = json.loads(kwargs["json"]["messages"][-1]["content"])
+            field = request["requested_field"]
+            evidence_id = request["evidence"][0]["evidence_id"]
+            value = "" if field == "customers_suppliers" else f"{field}内容"
+            return FakeResponse(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": json.dumps(
+                                    {
+                                        field: {
+                                            "value": value,
+                                            "evidence_ids": [evidence_id] if value else [],
+                                        }
+                                    },
+                                    ensure_ascii=False,
+                                )
+                            }
+                        }
+                    ]
+                }
+            )
+
+    values, issues = BailianYellowNarrativeAdapter(
+        client=CustomerSupplierEmptyClient(), api_key="test-key", prompt="规则"
+    ).generate(
+        {
+            "selected_modules": ["customers_suppliers"],
+            "evidence": [
+                {
+                    "evidence_id": "api:qichacha:target:735:profile",
+                    "text": "示例有限公司经营工业设备业务。",
+                }
+            ],
+        }
+    )
+
+    assert values["customers_suppliers"] == (
+        "现有已上传材料及已调用企业信息接口未披露主要客户及供应商，"
+        "未据此识别具体交易对手。"
+    )
+    assert any("customers_suppliers" in issue for issue in issues)
+
+
+def test_glm_uses_target_company_industry_when_model_omits_evidence_ids():
+    class EmptyIndustryClient(FieldwiseClient):
+        def post(self, *args, **kwargs):
+            self.requests.append(kwargs)
+            request = json.loads(kwargs["json"]["messages"][-1]["content"])
+            field = request["requested_field"]
+            evidence_id = request["evidence"][0]["evidence_id"]
+            value = "" if field == "industry_overview" else f"{field}内容"
+            return FakeResponse(
+                {"choices": [{"message": {"content": json.dumps({field: {
+                    "value": value, "evidence_ids": [evidence_id] if value else []
+                }}, ensure_ascii=False)}}]}
+            )
+
+    values, _ = BailianYellowNarrativeAdapter(
+        client=EmptyIndustryClient(), api_key="test-key", prompt="规则"
+    ).generate(
+        {
+            "selected_modules": ["industry_overview"],
+            "evidence": [
+                {
+                    "evidence_id": "api:qichacha:commissioning:735:profile",
+                    "text": "委托方工商信息：行业：贸易业。",
+                },
+                {
+                    "evidence_id": "api:qichacha:target:735:profile",
+                    "text": "被评估单位工商信息：行业：专用设备制造业；经营范围：热处理加工。",
+                },
+            ],
+        }
+    )
+
+    assert values["industry_overview"] == "根据已调用企业信息接口，被评估单位所属行业为专用设备制造业。"
+
+
+def test_glm_excludes_commissioning_party_evidence_when_target_profile_exists():
+    target = {
+        "evidence_id": "api:qichacha:target:735:profile",
+        "text": "被评估单位工商信息：经营范围：汽车零部件热处理加工。",
+    }
+    commissioning = {
+        "evidence_id": "api:qichacha:commissioning:735:profile",
+        "text": "委托方工商信息：经营范围：涂料销售。",
+    }
+
+    selected = BailianYellowNarrativeAdapter._relevant_evidence(
+        "business_and_segments", [commissioning, target]
+    )
+
+    assert selected == [target]
+
+
+def test_glm_normalizes_profit_model_swot_to_all_required_dimensions():
+    class SparseSwotClient(FieldwiseClient):
+        def post(self, *args, **kwargs):
+            self.requests.append(kwargs)
+            request = json.loads(kwargs["json"]["messages"][-1]["content"])
+            field = request["requested_field"]
+            evidence_id = request["evidence"][0]["evidence_id"]
+            return FakeResponse(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": json.dumps(
+                                    {
+                                        field: {
+                                            "value": "2024年度营业收入为100万元。",
+                                            "evidence_ids": [evidence_id],
+                                        }
+                                    },
+                                    ensure_ascii=False,
+                                )
+                            }
+                        }
+                    ]
+                }
+            )
+
+    values, issues = BailianYellowNarrativeAdapter(
+        client=SparseSwotClient(), api_key="test-key", prompt="规则"
+    ).generate(
+        {
+            "selected_modules": ["profit_model_swot"],
+            "evidence": [
+                {
+                    "evidence_id": "field:historical_income_statement_table",
+                    "text": "营业收入：100万元。",
+                }
+            ],
+        }
+    )
+
+    assert all(label in values["profit_model_swot"] for label in ("盈利模式：", "优势：", "劣势：", "机会：", "风险："))
+    assert any("profit_model_swot" in issue for issue in issues)
+
+
 def test_glm_generates_all_seven_fixed_word_candidates():
     client = FieldwiseClient()
     adapter = BailianYellowNarrativeAdapter(
@@ -251,13 +397,13 @@ def test_glm_generates_all_seven_fixed_word_candidates():
                 },
                 {
                     "evidence_id": "api:qichacha:target:915:peer:工业设备",
-                    "text": "上市公司公告候选：上市公司甲；股票代码：600001。",
+                    "text": "上市公司公告候选：上市公司甲；股票代码：600001；公告：工业设备业务公告；日期：2026-01-01。",
                 },
             ],
         }
     )
 
-    assert issues == []
+    assert any("profit_model_swot" in issue for issue in issues)
     assert set(values) == {
         "company_profile_section",
         "industry_overview",
