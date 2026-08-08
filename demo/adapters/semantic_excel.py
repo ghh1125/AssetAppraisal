@@ -35,14 +35,23 @@ def _number(value: Any) -> float | None:
     return None
 
 
-def _unit_scale_to_wan(sheet) -> float:
+def _unit_scale_to_wan(sheet, *, max_rows: int = 10) -> float:
     samples: list[str] = [sheet.title]
-    for row in sheet.iter_rows(min_row=1, max_row=min(sheet.max_row, 10), values_only=True):
+    for row in sheet.iter_rows(
+        min_row=1,
+        max_row=min(sheet.max_row, max_rows),
+        values_only=True,
+    ):
         samples.extend(str(value) for value in row if value not in (None, ""))
-    joined = " ".join(samples).replace(" ", "")
-    if "万元" in joined:
+    if any("万元" in sample for sample in samples):
         return 1.0
-    if "金额单位" in joined and "元" in joined:
+    # Do not infer a unit from ordinary words such as ``被评估单位`` or from a
+    # scale label such as ``总资产(亿元)``.  Only an explicit unit declaration
+    # may change the numeric scale.
+    explicit_yuan = re.compile(
+        r"(?:金额单位|计量单位|单位)\s*(?:[：:（(]\s*)?(?:人民币)?元(?:[）)]|$)"
+    )
+    if any(explicit_yuan.search(re.sub(r"\s+", "", sample)) for sample in samples):
         return 0.0001
     if "（元）" in sheet.title or "(元)" in sheet.title:
         return 0.0001
@@ -690,19 +699,48 @@ def _asset_tables(
 
 
 def _historical_header_parts(sheet, label_row: int) -> dict[int, list[Any]]:
-    top_rows = range(1, min(label_row, 21))
-    nearby_rows = range(max(1, label_row - 8), label_row)
-    row_numbers = sorted(set(top_rows) | set(nearby_rows))
-    headers: dict[int, list[Any]] = {}
-    for column in range(1, sheet.max_column + 1):
-        parts: list[Any] = []
-        for row in row_numbers:
-            value = sheet.cell(row, column).value
-            if value in (None, "") or isinstance(value, (int, float, bool)):
-                continue
-            parts.append(value)
-        headers[column] = parts
-    return headers
+    def collect(row_numbers: range) -> dict[int, list[Any]]:
+        headers: dict[int, list[Any]] = {}
+        for column in range(1, sheet.max_column + 1):
+            parts: list[Any] = []
+            for row in row_numbers:
+                value = sheet.cell(row, column).value
+                if value in (None, "") or isinstance(value, (int, float, bool)):
+                    continue
+                parts.append(value)
+            headers[column] = parts
+        return headers
+
+    # A generic audited-data sheet can contain a balance statement at the top
+    # and a profit statement much later.  Start at the closest statement
+    # heading (or blank separator) before the account row, then use only that
+    # local header block.  This avoids combining the balance statement's dates
+    # with the following profit statement merely because they share columns.
+    statement_tokens = ("资产负债表", "利润表", "损益表", "利润及利润分配表")
+    # A full statement can contain dozens of account rows, so the heading may
+    # be far above a subtotal such as net profit.  Keep the scan bounded while
+    # covering ordinary financial statement blocks.
+    local_start = max(1, label_row - 100)
+    for row_number in range(label_row - 1, local_start - 1, -1):
+        row_values = [
+            sheet.cell(row_number, column).value
+            for column in range(1, min(sheet.max_column, 20) + 1)
+        ]
+        row_text = re.sub(r"\s+", "", " ".join(str(value or "") for value in row_values))
+        if any(token in row_text for token in statement_tokens):
+            local_start = row_number
+            break
+        if not any(value not in (None, "") for value in row_values):
+            local_start = row_number + 1
+            break
+
+    nearby = collect(range(local_start, label_row))
+    if any(
+        choose_historical_columns({column: parts}, candidate_columns=[column], limit=1)
+        for column, parts in nearby.items()
+    ):
+        return nearby
+    return collect(range(1, min(label_row, 21)))
 
 
 def _period_columns_for_label(sheet, label_cell) -> list[tuple[int, CanonicalPeriod]]:
@@ -800,6 +838,57 @@ def _income_label(value: Any) -> str | None:
     return None
 
 
+def _historical_statement_signal(sheet, *, kind: str, label_row: int) -> int:
+    """Score evidence that a matched row belongs to a formal statement.
+
+    A number of valuation workbooks retain empty ``资产负债表`` / ``利润表``
+    tabs while the actual audited statement is embedded in a generic
+    ``审定报表`` sheet.  The tab name is therefore useful evidence, but cannot
+    be a gate.  Look for a statement heading near the matched account row as
+    well, so this remains layout-independent.
+    """
+    if kind == "balance":
+        tokens = ("资产负债表", "财务状况表")
+        aliases = ("资产负债表", "历资表")
+    else:
+        tokens = ("利润表", "损益表", "利润及利润分配表")
+        aliases = ("利润表", "历利表", "损益表")
+
+    title = str(sheet.title or "")
+    score = 20 if any(token in title for token in aliases) else 0
+    # Some audited sheets have one statement heading at the very top and many
+    # account rows below it.  Keep that as weaker evidence than a local title,
+    # but sufficient to recognise the same formal statement without relying on
+    # the worksheet name.
+    top_text = re.sub(
+        r"\s+",
+        "",
+        " ".join(
+            str(sheet.cell(row_number, column).value or "")
+            for row_number in range(1, min(sheet.max_row, 12) + 1)
+            for column in range(1, min(sheet.max_column, 20) + 1)
+        ),
+    )
+    if any(token in top_text for token in tokens):
+        score = max(score, 15)
+    # A statement heading normally appears above the account rows.  The
+    # short local window avoids accidentally borrowing a title from a
+    # different statement elsewhere in the same worksheet.
+    for row_number in range(max(1, label_row - 100), label_row + 1):
+        text = re.sub(
+            r"\s+",
+            "",
+            " ".join(
+                str(sheet.cell(row_number, column).value or "")
+                for column in range(1, min(sheet.max_column, 20) + 1)
+            ),
+        )
+        if any(token in text for token in tokens):
+            score = max(score, 30)
+            break
+    return score
+
+
 def _historical_table(
     workbook,
     *,
@@ -815,17 +904,27 @@ def _historical_table(
         bool,
     ] | None = None
     for sheet in workbook.worksheets:
-        if not any(name in sheet.title for name in preferred):
-            continue
-        scale_to_yuan = _unit_scale_to_wan(sheet) * 10_000
+        # Formal statements embedded in a generic "审定报表" worksheet can
+        # place "单位：元" immediately above a later table, rather than in the
+        # first ten rows.  Search the statement area before applying a unit
+        # conversion; all other workbook matching remains unchanged.
+        scale_to_yuan = _unit_scale_to_wan(sheet, max_rows=120) * 10_000
         found: dict[str, dict[CanonicalPeriod, float]] = {}
         value_locators: dict[str, dict[CanonicalPeriod, str]] = {}
         period_order: list[CanonicalPeriod] = []
         locators: list[str] = []
+        statement_signal = 0
         for row in sheet.iter_rows():
             for cell in row:
                 canonical = matcher(cell.value)
                 if not canonical:
+                    continue
+                signal = _historical_statement_signal(
+                    sheet,
+                    kind=kind,
+                    label_row=cell.row,
+                )
+                if not signal:
                     continue
                 values: dict[CanonicalPeriod, float] = {}
                 cells: dict[CanonicalPeriod, str] = {}
@@ -845,6 +944,7 @@ def _historical_table(
                     found[canonical] = values
                     value_locators[canonical] = cells
                     locators.append(f"{sheet.title}!{cell.coordinate}")
+                    statement_signal = max(statement_signal, signal)
 
         derived = False
         if kind == "balance" and "总资产" in found and "负债" in found:
@@ -863,7 +963,19 @@ def _historical_table(
                 found["所有者权益"] = equity
                 value_locators["所有者权益"] = equity_locators
 
-        score = sum(len(values) for values in found.values())
+        populated = sum(len(values) for values in found.values())
+        nonzero = sum(
+            abs(value) > 1e-12
+            for values in found.values()
+            for value in values.values()
+        )
+        # A retained blank statement can have all account rows and periods but
+        # no data.  Prefer a genuinely populated audited statement by a wide
+        # margin; if there is no non-zero fact at all we leave the field
+        # unresolved rather than presenting fabricated "0.00" history.
+        if not nonzero:
+            continue
+        score = nonzero * 100 + populated * 2 + statement_signal
         if sheet.title in preferred:
             score += 10
         if found and (best is None or score > best[0]):
@@ -892,6 +1004,8 @@ def _historical_table(
         # normalize a dated balance-sheet heading to the report convention
         # “YYYY年M月D日”.  This is presentation-only; matching remains based on
         # the canonical tuple above.
+        if re.fullmatch(r"20\d{2}年\d{1,2}[-~至]\d{1,2}月", source_text):
+            return source_text
         if (
             kind == "balance"
             and year is not None

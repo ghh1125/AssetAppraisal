@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from calendar import monthrange
 from collections.abc import Mapping, Sequence
 from datetime import date, datetime
 from typing import TypeAlias
@@ -123,6 +124,15 @@ def canonical_period(value: object) -> CanonicalPeriod | None:
         token in text for token in ("评估基准期", "评估基准日", "基准期", "基准日")
     ):
         return None, None, None, text
+
+    # ``2025年1-6月`` is a reporting span, not 2025-01-06.  Retain its
+    # original label for the report and sort it by the end of the span.
+    span = re.fullmatch(r"(20\d{2})年\d{1,2}[-~至](\d{1,2})月", text)
+    if span:
+        year = int(span.group(1))
+        end_month = int(span.group(2))
+        if 1 <= end_month <= 12:
+            return year, end_month, monthrange(year, end_month)[1], text
 
     match = re.search(
         r"(?P<year>20\d{2})(?:年|[./-])"

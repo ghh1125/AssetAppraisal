@@ -2,7 +2,11 @@ from pathlib import Path
 
 from openpyxl import Workbook
 
-from demo.adapters.semantic_excel import _income_label, extract_workbook_facts
+from demo.adapters.semantic_excel import (
+    _income_label,
+    _unit_scale_to_wan,
+    extract_workbook_facts,
+)
 
 
 def _save_workbook(path: Path, sheets: dict[str, list[list[object]]]) -> Path:
@@ -283,6 +287,92 @@ def test_historical_financial_tables_follow_labels_not_coordinates(tmp_path: Pat
     income = fields["historical_income_statement_table"]["rows"]
     assert income[1] == ["一、营业收入", "80.00", "120.00", "150.00"]
     assert income[-1] == ["四、净利润", "20.00", "30.00", "40.00"]
+
+
+def test_statement_unit_is_found_when_the_audited_table_is_later_in_a_sheet(
+    tmp_path: Path,
+):
+    path = _save_workbook(
+        tmp_path / "late-statement-unit.xlsx",
+        {"审定报表": [["封面"]] * 79 + [["调整后利润表", "单位：元"]]},
+    )
+    from openpyxl import load_workbook
+
+    workbook = load_workbook(path, data_only=True)
+    try:
+        assert _unit_scale_to_wan(workbook["审定报表"], max_rows=120) == 0.0001
+    finally:
+        workbook.close()
+
+
+def test_unit_detection_does_not_mistake_company_or_scale_words_for_yuan(
+    tmp_path: Path,
+):
+    path = _save_workbook(
+        tmp_path / "no-explicit-unit.xlsx",
+        {"修正及计算": [["被评估单位", "总资产(亿元)"]]},
+    )
+    from openpyxl import load_workbook
+
+    workbook = load_workbook(path, data_only=True)
+    try:
+        assert _unit_scale_to_wan(workbook["修正及计算"], max_rows=120) == 1.0
+    finally:
+        workbook.close()
+
+
+def test_history_prefers_nonzero_audited_statement_over_empty_legacy_tabs(
+    tmp_path: Path,
+):
+    """A workbook may retain empty legacy statements beside audited data.
+
+    Select the semantically identified audited statement, rather than trusting
+    a sheet name or treating an all-zero table as complete historical data.
+    """
+    path = _save_workbook(
+        tmp_path / "multi-version-financials.xlsx",
+        {
+            "资产负债表": [
+                ["项目", "2019年度", "2020年度", "2021年度"],
+                ["资产总计", 0, 0, 0],
+                ["负债合计", 0, 0, 0],
+                ["所有者权益合计", 0, 0, 0],
+            ],
+            "利润表": [
+                ["项目", "2019年度", "2020年度", "2021年度"],
+                ["营业收入", 0, 0, 0],
+                ["营业成本", 0, 0, 0],
+                ["营业利润", 0, 0, 0],
+                ["净利润", 0, 0, 0],
+            ],
+            "审定报表": [
+                ["金额单位：人民币元"],
+                ["调整后资产负债表"],
+                ["项目", "2024年10月31日", "2023年度", "2022年度"],
+                ["资产总计", 15_024_795.81, 21_358_451, 26_058_213.91],
+                ["负债合计", 1_198_284.13, 1_027_015.89, 86_503.61],
+                ["所有者权益合计", 13_826_511.68, 20_331_435.11, 25_971_710.30],
+                [],
+                ["调整后利润表"],
+                ["项目", "2024年1-10月", "2023年度", "2022年度"],
+                ["营业收入", 1_762_065.54, 1_032_035.39, 418_141.59],
+                ["营业成本", 4_087_205.78, 3_781_545.34, 463_258.49],
+                ["营业利润", -6_504_923.43, -5_640_275.19, -1_406_635.18],
+                ["净利润", -6_504_923.43, -5_640_275.19, -1_376_337.57],
+            ],
+        },
+    )
+
+    fields = extract_workbook_facts(path, "income_workbook")["fields"]
+
+    balance = fields["historical_balance_sheet_table"]["rows"]
+    income = fields["historical_income_statement_table"]["rows"]
+    assert balance[0] == ["项目\\报表日", "2022年度", "2023年度", "2024年10月31日"]
+    assert balance[1] == ["总资产", "26,058,213.91", "21,358,451.00", "15,024,795.81"]
+    assert income[0] == ["项目\\报表年度", "2022年度", "2023年度", "2024年1-10月"]
+    assert income[1] == ["一、营业收入", "418,141.59", "1,032,035.39", "1,762,065.54"]
+    assert income[9] == ["二、营业利润", "-1,406,635.18", "-5,640,275.19", "-6,504,923.43"]
+    assert income[-1] == ["四、净利润", "-1,376,337.57", "-5,640,275.19", "-6,504,923.43"]
 
 
 def test_income_history_uses_exact_operating_cost_not_total_cost(tmp_path: Path):

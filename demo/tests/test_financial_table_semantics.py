@@ -25,6 +25,7 @@ def test_zero_result_is_valid_when_column_contains_appraisal_activity():
 
 def test_canonical_period_accepts_dates_and_rejects_rates():
     assert canonical_period("2025年6月30日") == (2025, 6, 30, "2025年6月30日")
+    assert canonical_period("2025年1-6月") == (2025, 6, 30, "2025年1-6月")
     assert canonical_period("2024年度") == (2024, 12, 31, "2024年度")
     assert canonical_period("期末数") == (None, None, None, "期末数")
     assert canonical_period("基准日审定数") == (
