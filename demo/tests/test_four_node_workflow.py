@@ -3,7 +3,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from demo.domain.narrative_policy import LLM_TEMPLATE_FIELDS, select_llm_candidates
+from docx import Document
+
+from demo.domain.narrative_policy import (
+    LLM_TEMPLATE_FIELDS,
+    compose_company_profile_narrative,
+    select_llm_candidates,
+)
 from demo.domain.workflow_contracts import validate_workflow_contract
 from demo import schemas
 from demo.pipeline import run_pipeline
@@ -98,6 +104,92 @@ def test_generate_all_candidate_node_requests_every_fixed_llm_slot(tmp_path: Pat
     )
 
     assert set(result.candidate_fields) == set(LLM_TEMPLATE_FIELDS)
+
+
+def test_web_candidate_node_ignores_empty_preselection_and_generates_all_modules(tmp_path: Path) -> None:
+    """Node 2 must not mistake the web form's empty selection for an LLM scope.
+
+    The user selects after seeing candidates, so an empty value from node 1
+    means "generate all six", not "generate none".
+    """
+
+    class StrictWebAdapter:
+        prompt_version = "yellow_narratives.test"
+
+        def generate(self, evidence):
+            assert set(evidence["selected_modules"]) == (
+                set(LLM_TEMPLATE_FIELDS) - {"company_profile_section"}
+            )
+            return {field_key: f"{field_key}候选" for field_key in LLM_TEMPLATE_FIELDS}, []
+
+    result = run_pipeline(
+        project_config=ROOT / "projects/tongfu.yaml",
+        pdf_path=None,
+        output_dir=tmp_path,
+        ocr_adapter=None,
+        llm_adapter=StrictWebAdapter(),
+        prepare_only=True,
+        generate_all_narratives=True,
+        manual_inputs_override={
+            "commissioning_party_name": "委托方有限公司",
+            "target_company_name": "被评估单位有限公司",
+            "narrative_modules": [],
+        },
+    )
+
+    assert set(result.candidate_fields) == set(LLM_TEMPLATE_FIELDS)
+
+
+def test_selected_modules_are_composed_into_the_single_profile_body_location() -> None:
+    text = compose_company_profile_narrative(
+        "公司概况。",
+        {
+            "industry_overview": "制造业，汽车零部件领域。",
+            "main_products": "汽车零部件热处理加工服务。",
+        },
+    )
+
+    assert text == (
+        "公司概况。\n"
+        "所处行业及行业介绍：制造业，汽车零部件领域。\n"
+        "主要产品：汽车零部件热处理加工服务。"
+    )
+
+
+def test_selected_modules_are_written_to_the_profile_body_in_the_word_report(tmp_path: Path) -> None:
+    result = run_pipeline(
+        project_config=ROOT / "projects/tongfu.yaml",
+        pdf_path=None,
+        output_dir=tmp_path,
+        ocr_adapter=None,
+        llm_values_override={
+            "company_profile_section": "公司概况。",
+            "industry_overview": "制造业，汽车零部件领域。",
+            "main_products": "汽车零部件热处理加工服务。",
+        },
+        source_overrides={
+            "audit_pdf": None,
+            "audited_financials": None,
+            "income_workbook": None,
+            "reporting_workbook": None,
+            "reference_report": None,
+        },
+        manual_inputs_override={
+            "commissioning_party_name": "委托方有限公司",
+            "commissioning_party_short_name": "委托方",
+            "transaction_type": "收购",
+            "target_company_name": "被评估单位有限公司",
+            "target_company_short_name": "被评估单位",
+            "valuation_subject_type": "股东全部权益价值",
+            "selected_valuation_method": "收益法",
+            "final_valuation_method": "收益法",
+            "report_serial": "1",
+        },
+    )
+
+    report_text = "\n".join(paragraph.text for paragraph in Document(result.report_path).paragraphs)
+    assert "所处行业及行业介绍：制造业，汽车零部件领域。" in report_text
+    assert "主要产品：汽车零部件热处理加工服务。" in report_text
 
 
 def test_candidate_file_always_exposes_the_six_selectable_report_modules(tmp_path: Path) -> None:

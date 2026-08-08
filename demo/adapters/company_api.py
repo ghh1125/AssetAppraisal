@@ -10,6 +10,7 @@ into unrelated report fields.
 
 import hashlib
 import json
+import re
 import time
 from collections.abc import Mapping
 from typing import Any
@@ -329,6 +330,40 @@ def _listed_candidate_rows(payload: Any) -> list[dict[str, str]]:
         if key_no and name:
             result.append({"key_no": key_no, "name": name})
     return result
+
+
+def comparable_search_terms(business_scope: str, *, limit: int = 3) -> list[str]:
+    """Derive short, searchable industry phrases from a business scope.
+
+    QCC's listed-announcement endpoint rejects full legal business-scope
+    sentences.  This uses only the uploaded/API-returned source text and
+    generic business-action suffixes; it never contains company-specific
+    coordinates or a pre-written peer list.
+    """
+
+    scope = re.sub(r"[（(][^）)]*[）)]", "", str(business_scope or ""))
+    scope = re.sub(r"各类|相关的?|以及|并提供|提供", "", scope)
+    scope = scope.replace("的", "")
+    candidates: list[str] = []
+    actions = "加工|制造|销售|服务|开发|咨询|研发|安装|维修|租赁|贸易|运营|设计|检测|生产"
+    for clause in re.split(r"[，,；;。\n及与和、]", scope):
+        clause = clause.strip()
+        if not clause:
+            continue
+        for match in re.finditer(rf"([\u4e00-\u9fff]{{2,16}}?)(?:{actions})", clause):
+            term = match.group(1).strip("等")
+            if 2 <= len(term) <= 12 and term not in candidates:
+                candidates.append(term)
+            # A narrower parent term (for example, “汽车零部件” from
+            # “汽车零部件热处理”) makes an acceptable fallback query.
+            for suffix in ("热处理", "制造", "加工", "服务", "设备"):
+                if term.endswith(suffix) and len(term) > len(suffix) + 1:
+                    parent = term[: -len(suffix)]
+                    if parent not in candidates:
+                        candidates.append(parent)
+                    if suffix not in candidates:
+                        candidates.append(suffix)
+    return candidates[:limit]
 
 
 class QichachaApiAdapter:

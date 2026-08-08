@@ -110,6 +110,21 @@ class BailianYellowNarrativeAdapter:
         *,
         limit: int = 12,
     ) -> list[dict[str, Any]]:
+        if field_key == "comparable_list":
+            # A target-company profile can be evidence about the target's
+            # industry, but it can never be evidence that the target is its
+            # own comparable.  Permit only actual API peer candidates or an
+            # uploaded material explicitly labelled as a comparable list.
+            peer_evidence = [
+                item
+                for item in evidence
+                if any(
+                    token in str(item.get("evidence_id", ""))
+                    for token in (":886:", ":915:", ":699:")
+                )
+                or "可比上市公司" in str(item.get("text", ""))
+            ]
+            return peer_evidence[:limit]
         keywords = FIELD_KEYWORDS[field_key]
         scored: list[tuple[int, int, dict[str, Any]]] = []
         for index, item in enumerate(evidence):
@@ -171,6 +186,11 @@ class BailianYellowNarrativeAdapter:
             all_evidence = list(evidence.get("evidence", []))
             for field_key in requested:
                 field_evidence = self._relevant_evidence(field_key, all_evidence)
+                if not field_evidence:
+                    # A candidate without supporting evidence must remain
+                    # unavailable. Do not ask the model to fill it from its
+                    # own world knowledge.
+                    continue
                 field_payload = {
                     "requested_field": field_key,
                     "evidence": field_evidence,

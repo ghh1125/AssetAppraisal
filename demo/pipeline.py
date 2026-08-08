@@ -56,6 +56,7 @@ from demo.domain.mapping import validate_mapping
 from demo.domain.narrative_policy import (
     NARRATIVE_MODULE_LABELS,
     SELECTABLE_LLM_TEMPLATE_FIELDS,
+    compose_company_profile_narrative,
     select_narrative_fields,
     select_llm_candidates,
 )
@@ -1086,9 +1087,12 @@ def run_pipeline(
             discover = getattr(qichacha_adapter, "discover_listed_comparables", None)
             scope = str(qcc_profiles["target"].get("business_scope", "")).strip()
             if callable(discover) and scope:
-                # Use only source-text fragments as search keywords.  No LLM
-                # is permitted to invent a peer-company name at this stage.
-                search_terms = [part.strip() for part in re.split(r"[；;。\n]", scope) if part.strip()][:3]
+                # QCC validates query length; derive compact search terms from
+                # the API-returned business scope rather than sending the
+                # whole legal sentence. No LLM may invent a peer name here.
+                from demo.adapters.company_api import comparable_search_terms
+
+                search_terms = comparable_search_terms(scope)
                 comparable_evidence, comparable_issues = discover(search_terms)
                 issues.extend(comparable_issues)
                 qcc_provider_issues.extend(comparable_issues)
@@ -1232,8 +1236,16 @@ def run_pipeline(
                         "text": f"{role}企查查 ApiCode {item.get('api_code', '')}：{item['text']}",
                     }
                 )
+        # Node 2 runs before the reviewer has selected modules.  The web form
+        # therefore sends an empty list at this stage; that means “produce all
+        # candidates”, not “do not produce narratives”.
+        llm_request_modules = (
+            list(SELECTABLE_LLM_TEMPLATE_FIELDS)
+            if generate_all_narratives
+            else selected_modules
+        )
         llm_evidence = {
-            "selected_modules": selected_modules,
+            "selected_modules": llm_request_modules,
             "evidence": [
                 {"evidence_id": item["evidence_id"], "text": item["text"]}
                 for item in [*normalized["text_blocks"], *normalized["table_cells"]]
@@ -1309,15 +1321,20 @@ def run_pipeline(
         if value in (None, "", []):
             issues.append(f"{route.field_key}：指定来源无可用值，已留空")
 
-    # The template has a heading field and a separate body placeholder for the
-    # same company-profile narrative.  Keep them synchronized so replacing the
-    # yellow heading never leaves the original placeholder punctuation behind.
-    if fields.get("company_profile_section") and not fields.get("company_profile_text"):
-        fields["company_profile_text"] = str(fields["company_profile_section"]).rstrip("。；; ")
+    # The template has one body placeholder below “3、被评估单位概述”. Its
+    # comment lists the six optional node-2 modules; it does not provide six
+    # separate Word destinations. Compose only the accepted candidates into
+    # that one paragraph, preserving the template's typography and position.
+    profile_body = compose_company_profile_narrative(
+        str(fields.get("company_profile_section", "")),
+        fields,
+    )
+    if profile_body:
+        fields["company_profile_text"] = profile_body
         evidence["company_profile_text"] = {
-            "kind": "bailian_glm_profile_alias",
+            "kind": "bailian_glm_profile_composite",
             "file": pdf.name if pdf is not None else "",
-            "locator": "company_profile_section",
+            "locator": "company_profile_section + 用户选中的概述模块",
         }
 
     # The six overview slots are numbered sub-items in the template.  LLM
@@ -1428,6 +1445,11 @@ def run_pipeline(
             field_key = str(location.get("field_key") or "")
             if field_key in all_llm_allowed:
                 candidate_locations[field_key].append(str(location["location_id"]))
+        profile_body_locations = [
+            str(location["location_id"])
+            for location in locations
+            if str(location.get("field_key") or "") == "company_profile_text"
+        ]
         candidate_fields = {
             key: value
             for key, value in llm_values.items()
@@ -1449,7 +1471,9 @@ def run_pipeline(
                     "field_key": key,
                     "field_name": NARRATIVE_MODULE_LABELS[key],
                     "value": str(candidate_fields.get(key, "")),
-                    "location_ids": candidate_locations.get(key, []),
+                    # The six optional choices share the one profile-body
+                    # placeholder in the final template.
+                    "location_ids": candidate_locations.get(key, []) or profile_body_locations,
                     "available": key in candidate_fields,
                     "selected": False,
                 }
@@ -1457,10 +1481,15 @@ def run_pipeline(
             ],
         }
         candidate_path = write_json(output_dir / "llm候选内容.json", candidate_payload)
+        trace_manual_inputs = {
+            key: value
+            for key, value in (manual_inputs_override or {}).items()
+            if key in schemas.ManualBasicInputs.model_fields
+        }
         record_stage(
             "start_input",
             {
-                "manual_inputs": manual_inputs_override or {},
+                "manual_inputs": trace_manual_inputs,
                 "materials": {
                     key: str(value)
                     for key, value in (source_overrides or {}).items()

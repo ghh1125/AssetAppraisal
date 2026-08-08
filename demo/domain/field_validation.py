@@ -115,7 +115,9 @@ def normalize_narrative_modules(value: Any) -> list[str]:
     if value in (None, ""):
         return list(NARRATIVE_MODULES)
     if value == []:
-        raise ValueError("主体概况模块至少选择一个")
+        # Node 1 deliberately has no narrative choice.  Node 2 generates all
+        # candidates, and the reviewer may choose none when filling Word.
+        return []
     values = [value] if isinstance(value, str) else list(value) if isinstance(value, (list, tuple, set)) else []
     selected = [item for item in values if item in NARRATIVE_MODULES]
     if not selected:

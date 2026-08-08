@@ -2,7 +2,12 @@ from pathlib import Path
 
 from openpyxl import Workbook
 
-from demo.adapters.company_api import CompanyApiAdapter, QichachaApiAdapter
+from demo.adapters.company_api import (
+    CompanyApiAdapter,
+    QichachaApiAdapter,
+    comparable_search_terms,
+)
+from demo.adapters.bailian_glm import BailianYellowNarrativeAdapter
 from demo.adapters.excel import read_cells, try_read_cells
 from demo.adapters.llm import LlmAdapter
 from demo.adapters.ocr import OcrAdapter
@@ -185,6 +190,31 @@ def test_qichacha_can_disable_paid_comparable_discovery():
     assert evidence == []
     assert issues == []
     assert client.calls == []
+
+
+def test_comparable_search_terms_reduce_business_scope_to_compact_industry_phrases():
+    assert comparable_search_terms(
+        "各类汽车零部件的热处理加工并提供相关的技术开发、技术咨询及售后服务。"
+    ) == ["汽车零部件热处理", "汽车零部件", "热处理"]
+
+
+def test_comparable_narrative_evidence_excludes_the_target_company_profile():
+    evidence = [
+        {
+            "evidence_id": "api:qichacha:target:735:profile",
+            "text": "被评估单位工商信息：行业：制造业；经营范围：汽车零部件热处理",
+        },
+        {
+            "evidence_id": "api:qichacha:target:915:peer:汽车零部件热处理",
+            "text": "上市公司公告候选：上市公司甲；股票代码：600001",
+        },
+    ]
+
+    selected = BailianYellowNarrativeAdapter._relevant_evidence(
+        "comparable_list", evidence
+    )
+
+    assert selected == [evidence[1]]
 
 
 def test_narrative_prompt_forbids_model_world_knowledge():

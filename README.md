@@ -49,7 +49,7 @@ QICHACHA_SECRET_KEY=你的SecretKey
 QICHACHA_EXTRA_API_CODES=2001,213
 ```
 
-接口地址和路径已经写入程序默认配置，通常不需要修改。启用 `--use-qichacha` 时，企查查优先在节点 2 调用：默认调用 735、231、514、233、2001、213；前四项填工商及知识产权表，后两项只作为百炼叙述证据。对被评估主体，节点 2 还会以经营范围原文为关键词调用 886→915→699，形成可追溯的上市公司候选及其公开指标。经主体名称校验的响应会保存为运行目录内部快照；节点 3 优先复用每个主体的有效快照，只对节点 2 未取得或身份校验失败的主体再次调用接口补充，以填充率优先。可用 `QICHACHA_ENABLE_COMPARABLE_DISCOVERY=false` 关闭对标公司发现。962、521、723、724、1124 等面议接口不调用。客户、供应商没有 PDF/XLSX 等可靠证据时保留黄色占位符，不由 LLM 编造。接口路径可分别用 `QICHACHA_ENDPOINT_735`、`QICHACHA_ENDPOINT_231`、`QICHACHA_ENDPOINT_514`、`QICHACHA_ENDPOINT_233`、`QICHACHA_ENDPOINT_2001`、`QICHACHA_ENDPOINT_213`、`QICHACHA_ENDPOINT_886`、`QICHACHA_ENDPOINT_915` 覆盖。
+接口地址和路径已经写入程序默认配置，通常不需要修改。启用 `--use-qichacha` 时，企查查优先在节点 2 调用：默认调用 735、231、514、233、2001、213；前四项填工商及知识产权表，后两项只作为百炼叙述证据。对被评估主体，节点 2 会从 API 返回的经营范围中提取短业务关键词，再调用 886→915→699，形成可追溯的上市公司候选及其公开指标；被评估主体自身绝不会作为对标上市公司写入。经主体名称校验的响应会保存为运行目录内部快照；节点 3 优先复用每个主体的有效快照，只对节点 2 未取得或身份校验失败的主体再次调用接口补充，以填充率优先。可用 `QICHACHA_ENABLE_COMPARABLE_DISCOVERY=false` 关闭对标公司发现。962、521、723、724、1124 等面议接口不调用。客户、供应商没有 PDF/XLSX 等可靠证据时保留黄色占位符，不由 LLM 编造。接口路径可分别用 `QICHACHA_ENDPOINT_735`、`QICHACHA_ENDPOINT_231`、`QICHACHA_ENDPOINT_514`、`QICHACHA_ENDPOINT_233`、`QICHACHA_ENDPOINT_2001`、`QICHACHA_ENDPOINT_213`、`QICHACHA_ENDPOINT_886`、`QICHACHA_ENDPOINT_915` 覆盖。
 
 ### 百炼模型
 

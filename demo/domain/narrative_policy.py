@@ -28,6 +28,32 @@ NARRATIVE_MODULE_LABELS = {
 }
 
 
+def compose_company_profile_narrative(
+    company_profile: str | None,
+    selected_modules: Mapping[str, Any],
+) -> str:
+    """Render selected node-2 modules into the template's one profile body.
+
+    The approved Word template has one writable paragraph below “3、被评估
+    单位概述”. Its comment lists six optional modules, but it does not contain
+    six independent placeholders. Compose only the reviewer-selected
+    candidates into that single body location.
+    """
+
+    sections: list[str] = []
+    profile = str(company_profile or "").strip()
+    if profile:
+        sections.append(profile)
+    for field_key in SELECTABLE_LLM_TEMPLATE_FIELDS:
+        value = str(selected_modules.get(field_key, "") or "").strip()
+        if not value:
+            continue
+        label = NARRATIVE_MODULE_LABELS[field_key]
+        value = value.removeprefix(f"{label}：").removeprefix(f"{label}:").strip()
+        sections.append(f"{label}：{value}")
+    return "\n".join(sections)
+
+
 def select_narrative_fields(
     routed_fields: set[str],
     selected_modules: list[str],

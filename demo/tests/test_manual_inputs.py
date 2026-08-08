@@ -28,6 +28,5 @@ def test_narrative_modules_default_to_all_six_and_filter_unknown_values():
     assert normalize_narrative_modules(["main_products", "unknown"]) == ["main_products"]
 
 
-def test_narrative_modules_require_at_least_one_selected_module():
-    with pytest.raises(ValueError, match="至少选择一个"):
-        normalize_narrative_modules([])
+def test_narrative_modules_allow_empty_selection_before_the_candidate_checkpoint():
+    assert normalize_narrative_modules([]) == []

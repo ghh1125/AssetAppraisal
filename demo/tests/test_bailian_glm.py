@@ -202,7 +202,11 @@ def test_glm_generates_all_seven_fixed_word_candidates():
                 {
                     "evidence_id": "api:qichacha:target:735:profile",
                     "text": "示例有限公司经营工业设备业务。",
-                }
+                },
+                {
+                    "evidence_id": "api:qichacha:target:915:peer:工业设备",
+                    "text": "上市公司公告候选：上市公司甲；股票代码：600001。",
+                },
             ],
         }
     )
