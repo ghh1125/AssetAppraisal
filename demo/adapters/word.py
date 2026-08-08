@@ -212,13 +212,21 @@ def _remove_paragraph_highlights(paragraph) -> None:
 
 
 def _set_run_text(run, value: str) -> None:
-    nodes = _run_text_nodes(run)
-    if not nodes:
-        run.append(etree.Element(f"{{{W}}}t"))
-        nodes = _run_text_nodes(run)
-    nodes[0].text = value
-    for node in nodes[1:]:
-        node.text = ""
+    # A literal newline inside ``w:t`` is rendered as whitespace by Word/WPS,
+    # not as a visible line break.  The narrative body deliberately contains
+    # one line per accepted module, so write real ``w:br`` nodes while keeping
+    # the source run's font, size and indentation properties intact.
+    for node in _run_text_nodes(run):
+        parent = node.getparent()
+        if parent is not None:
+            parent.remove(node)
+    for index, line in enumerate(str(value).split("\n")):
+        if index:
+            etree.SubElement(run, f"{{{W}}}br")
+        text = etree.SubElement(run, f"{{{W}}}t")
+        if line[:1].isspace() or line[-1:].isspace():
+            text.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+        text.text = line
 
 
 def _normal_runs(paragraph):

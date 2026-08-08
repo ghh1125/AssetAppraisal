@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import xml.etree.ElementTree as ET
+import zipfile
 from pathlib import Path
 
 from docx import Document
@@ -190,6 +192,15 @@ def test_selected_modules_are_written_to_the_profile_body_in_the_word_report(tmp
     report_text = "\n".join(paragraph.text for paragraph in Document(result.report_path).paragraphs)
     assert "所处行业及行业介绍：制造业，汽车零部件领域。" in report_text
     assert "主要产品：汽车零部件热处理加工服务。" in report_text
+    with zipfile.ZipFile(result.report_path) as archive:
+        root = ET.fromstring(archive.read("word/document.xml"))
+    namespace = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    profile_paragraph = next(
+        paragraph
+        for paragraph in root.findall(".//w:p", namespace)
+        if "公司概况。" in "".join(node.text or "" for node in paragraph.findall(".//w:t", namespace))
+    )
+    assert len(profile_paragraph.findall(".//w:br", namespace)) >= 2
 
 
 def test_candidate_file_always_exposes_the_six_selectable_report_modules(tmp_path: Path) -> None:
