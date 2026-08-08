@@ -6,9 +6,10 @@
   "mapping": "../mappings/appraisal_report_v1.yaml",
   "manual_inputs": "tongfu.manual.example.yaml",
   "llm": {
-    "default_model": "qwen3.7-max-2026-05-17",
+    "default_model": "deepseek-v4-flash-0731",
+    "fallback_model": "qwen3.8-max",
     "tasks": {
-      "narrative": "qwen3.7-max-2026-05-17"
+      "narrative": "deepseek-v4-flash-0731"
     }
   },
   "sources": {

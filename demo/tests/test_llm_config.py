@@ -1,10 +1,12 @@
-from demo.domain.llm_config import resolve_llm_models
+from demo.domain.llm_config import DEFAULT_LLM_FALLBACK_MODEL, DEFAULT_LLM_MODEL, resolve_llm_models
 
 
-def test_llm_models_use_current_project_default_when_no_override_exists():
+def test_llm_models_use_deepseek_default_and_qwen_fallback_when_no_override_exists():
     models = resolve_llm_models({}, {})
 
-    assert set(models.values()) == {"qwen3.7-max-2026-05-17"}
+    assert set(models.values()) == {"deepseek-v4-flash-0731"}
+    assert DEFAULT_LLM_MODEL == "deepseek-v4-flash-0731"
+    assert DEFAULT_LLM_FALLBACK_MODEL == "qwen3.8-max"
 
 
 def test_llm_models_default_to_qwen_and_allow_task_override():

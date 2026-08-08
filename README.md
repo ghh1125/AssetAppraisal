@@ -53,14 +53,15 @@ QICHACHA_EXTRA_API_CODES=2001,213
 
 ### 百炼模型
 
-在[阿里云百炼控制台](https://bailian.console.aliyun.com/)开通兼容 OpenAI 接口并创建 API Key。默认配置为 `qwen3.7-max-2026-05-17`，模型和网关都可以自行修改：
+在[阿里云百炼控制台](https://bailian.console.aliyun.com/)开通兼容 OpenAI 接口并创建 API Key。默认先调用 `deepseek-v4-flash-0731`；该次调用失败时自动改用 `qwen3.8-max`，两个模型和网关都可以自行修改：
 
 ```dotenv
 DASHSCOPE_API_KEY=你的百炼APIKey
-APPRAISAL_LLM_MODEL=qwen3.7-max-2026-05-17
+APPRAISAL_LLM_MODEL=deepseek-v4-flash-0731
+APPRAISAL_LLM_FALLBACK_MODEL=qwen3.8-max
 ```
 
-项目配置可以为 `narrative` 指定模型；未指定时统一使用 `default_model`，环境变量优先级更高。当前默认模型为 `qwen3.7-max-2026-05-17`。
+项目配置可以为 `narrative` 指定模型；未指定时统一使用 `default_model`，环境变量优先级更高。`APPRAISAL_LLM_FALLBACK_MODEL` 仅在主模型请求失败时启用，不会混合两种模型的文本。
 
 公司概况在有确定证据时自动写入。第二节点固定展示并让用户选择六个可选模块：所处行业及行业介绍、业务内容及细分市场、主要产品、主要客户及供应商、盈利模式和SWOT分析、对标上市公司（列表多维度展示）。候选没有可靠证据时会明确显示“暂无可用证据”，该位置不写入并保留黄色 `XXX`。用户勾选的是“哪些候选写入 Word”，不是重新选择 API；API 负责提供可核验事实，LLM 只负责基于这些事实综合成对应位置的候选文本。
 

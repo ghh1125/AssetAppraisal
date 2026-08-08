@@ -20,7 +20,7 @@ def test_manifest_and_changelog_cover_handoff_requirements():
     qcc = next(item for item in providers if item["name"] == "qichacha")
     assert set(qcc["api_codes"]) == {"735", "231", "514", "233"}
     glm = next(item for item in providers if item["name"] == "bailian_glm")
-    assert glm["model"] == "qwen3.7-max-2026-05-17"
+    assert glm["model"] == "deepseek-v4-flash-0731"
 
 
 def test_prompt_schema_is_the_runtime_seven_field_contract():

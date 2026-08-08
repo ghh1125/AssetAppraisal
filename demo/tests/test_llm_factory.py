@@ -12,4 +12,5 @@ def test_bailian_factory_creates_only_the_narrative_adapter():
     )
 
     assert adapters["narrative"].model == "qwen3.7-max-2026-05-17"
+    assert adapters["narrative"].fallback_model == "qwen3.8-max"
     assert "reviews" not in adapters

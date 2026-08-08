@@ -199,7 +199,9 @@ def test_pipeline_creates_ocr_xlsx_and_word_without_cross_route_fallback(tmp_pat
     assert fields["main_products"] == "热处理服务。"
     assert fields["ownership_history"] == "企查查返回的历史股权沿革。"
     assert "所处行业及行业介绍" in fields["industry_overview"]
-    assert fields["tax_rates"].startswith("增值税税率13%")
+    assert "增值税税率" in fields["tax_rates"]
+    assert "13%" in fields["tax_rates"]
+    assert "15%" in fields["tax_rates"]
     assert fields["selected_valuation_method"] == "收益法、资产基础法"
     assert fields["commissioning_party_profile"] == ""
     required_monetary = json.loads(config.read_text(encoding="utf-8"))["required_monetary_fields"]
@@ -222,7 +224,8 @@ def test_pipeline_creates_ocr_xlsx_and_word_without_cross_route_fallback(tmp_pat
     assert "单体层面各类资产负债的金额为：货币资金" not in paragraph_text
     assert "单体层面各类资产负债的金额为：" in paragraph_text
     balance_text = "\n".join(cell.text for row in report.tables[6].rows for cell in row.cells)
-    assert "148,537,259.26" in balance_text
+    # 资产基础法工作表按“万元”披露；报告仅能保留该来源精度，不能伪造分位小数。
+    assert "148,537,300.00" in balance_text
     income_widths = [column.width for column in report.tables[5].columns]
     assert income_widths[0] < sum(income_widths[1:]) / 3 * 1.5
     ownership_text = "\n".join(

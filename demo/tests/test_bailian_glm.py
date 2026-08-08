@@ -83,10 +83,8 @@ def test_glm_accepts_only_seven_fields_and_known_evidence_ids():
     assert any("book_net_assets" in issue for issue in issues)
     assert any("pdf:p99:b9" in issue for issue in issues)
     request = client.request["kwargs"]
-    assert request["json"]["model"] == "qwen3.7-max-2026-05-17"
-    # qwen3.7-max-2026-05-17 is a thinking-only snapshot; DashScope rejects
-    # an explicit ``enable_thinking=false`` for this model.
-    assert "enable_thinking" not in request["json"]
+    assert request["json"]["model"] == "deepseek-v4-flash-0731"
+    assert request["json"]["enable_thinking"] is False
     assert request["json"]["response_format"]["type"] == "json_object"
     assert request["headers"]["Authorization"] == "Bearer test-key"
 
@@ -150,6 +148,54 @@ def test_hybrid_model_explicitly_disables_thinking_for_short_narrative_calls():
     adapter.generate({"evidence": [{"evidence_id": "pdf:p1:b1", "text": "示例材料"}]})
 
     assert client.request["kwargs"]["json"]["enable_thinking"] is False
+
+
+def test_glm_retries_with_qwen_fallback_after_primary_request_failure():
+    class PrimaryFailureThenSuccessClient:
+        def __init__(self):
+            self.requests = []
+
+        def post(self, *args, **kwargs):
+            self.requests.append(kwargs)
+            if len(self.requests) == 1:
+                raise RuntimeError("primary model unavailable")
+            return FakeResponse(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": json.dumps(
+                                    {
+                                        "company_profile_section": {
+                                            "value": "示例概述",
+                                            "evidence_ids": ["pdf:p1:b1"],
+                                        }
+                                    },
+                                    ensure_ascii=False,
+                                )
+                            }
+                        }
+                    ]
+                }
+            )
+
+    client = PrimaryFailureThenSuccessClient()
+    adapter = BailianYellowNarrativeAdapter(
+        client=client,
+        api_key="test-key",
+        prompt="规则",
+        model="deepseek-v4-flash-0731",
+        fallback_model="qwen3.8-max",
+    )
+
+    values, issues = adapter.generate({"evidence": [{"evidence_id": "pdf:p1:b1", "text": "示例材料"}]})
+
+    assert values == {"company_profile_section": "示例概述"}
+    assert issues == []
+    assert [request["json"]["model"] for request in client.requests] == [
+        "deepseek-v4-flash-0731",
+        "qwen3.8-max",
+    ]
 
 
 def test_glm_generates_selected_modules_field_by_field():
@@ -234,5 +280,7 @@ def test_glm_failure_returns_empty_fields_without_exposing_api_key():
     ).generate({"evidence": []})
 
     assert values == {}
-    assert issues == ["百炼 GLM 失败：request failed"]
+    assert len(issues) == 1
+    assert "主模型 deepseek-v4-flash-0731 失败" in issues[0]
+    assert "降级模型 qwen3.8-max 失败" in issues[0]
     assert "secret-never-print" not in issues[0]

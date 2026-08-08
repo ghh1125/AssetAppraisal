@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from demo.domain.llm_config import DEFAULT_LLM_MODEL
+from demo.domain.llm_config import DEFAULT_LLM_FALLBACK_MODEL, DEFAULT_LLM_MODEL
 
 
 ALLOWED_FIELDS = frozenset(
@@ -64,6 +64,7 @@ class BailianYellowNarrativeAdapter:
         *,
         base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1",
         model: str = DEFAULT_LLM_MODEL,
+        fallback_model: str = DEFAULT_LLM_FALLBACK_MODEL,
         prompt_version: str = "yellow_narratives.v2",
     ):
         self.client = client
@@ -71,9 +72,16 @@ class BailianYellowNarrativeAdapter:
         self.prompt = prompt
         self.base_url = base_url.rstrip("/")
         self.model = model
+        self.fallback_model = fallback_model
         self.prompt_version = prompt_version
 
-    def _request(self, evidence: dict[str, Any], *, requested_field: str | None = None) -> dict[str, Any]:
+    def _request_for_model(
+        self,
+        model: str,
+        evidence: dict[str, Any],
+        *,
+        requested_field: str | None = None,
+    ) -> dict[str, Any]:
         system_prompt = self.prompt
         if requested_field:
             system_prompt += (
@@ -82,7 +90,7 @@ class BailianYellowNarrativeAdapter:
                 "其值必须是包含 value 和 evidence_ids 的对象。"
             )
         request_payload = {
-            "model": self.model,
+            "model": model,
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": json.dumps(evidence, ensure_ascii=False)},
@@ -92,7 +100,7 @@ class BailianYellowNarrativeAdapter:
             # enforce the seven-field/evidence contract locally.
             "response_format": {"type": "json_object"},
         }
-        if self.model not in THINKING_ONLY_MODELS:
+        if model not in THINKING_ONLY_MODELS:
             request_payload["enable_thinking"] = False
         response = self.client.post(
             f"{self.base_url}/chat/completions",
@@ -102,6 +110,24 @@ class BailianYellowNarrativeAdapter:
         response.raise_for_status()
         content = response.json()["choices"][0]["message"]["content"]
         return json.loads(content)
+
+    def _request(self, evidence: dict[str, Any], *, requested_field: str | None = None) -> dict[str, Any]:
+        try:
+            return self._request_for_model(self.model, evidence, requested_field=requested_field)
+        except Exception as primary_error:
+            if not self.fallback_model or self.fallback_model == self.model:
+                raise primary_error
+            try:
+                return self._request_for_model(
+                    self.fallback_model,
+                    evidence,
+                    requested_field=requested_field,
+                )
+            except Exception as fallback_error:
+                raise RuntimeError(
+                    f"主模型 {self.model} 失败：{primary_error}；"
+                    f"降级模型 {self.fallback_model} 失败：{fallback_error}"
+                ) from fallback_error
 
     @staticmethod
     def _relevant_evidence(
