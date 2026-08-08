@@ -318,8 +318,14 @@ def _replace_method_heading(paragraph, value: str) -> None:
 
 def _replace_placeholders_preserving_runs(paragraph, items, replacements) -> None:
     ordered = sorted(items, key=lambda item: item["occurrence_index"])
-    values = iter(str(replacements[item["location_id"]]) for item in ordered)
     runs = paragraph.xpath("./w:r", namespaces=NS)
+    paragraph_text = "".join(_run_text(run) for run in runs)
+    values = iter(str(replacements[item["location_id"]]) for item in ordered)
+    yuan_uppercase = (
+        "人民币" in paragraph_text
+        and "万元整" in paragraph_text
+        and any(str(replacements.get(item["location_id"], "")).endswith("元") for item in ordered)
+    )
     for index, run in enumerate(runs):
         original = _run_text(run)
         if not original:
@@ -350,6 +356,12 @@ def _replace_placeholders_preserving_runs(paragraph, items, replacements) -> Non
     for run in runs:
         if _is_highlighted(run):
             _clear_run_text(run)
+    if yuan_uppercase:
+        replacement_values = [str(replacements.get(item["location_id"], "")) for item in ordered]
+        suffix = "整" if any(value.endswith("元") for value in replacement_values) else "元整"
+        for run in runs:
+            if not _is_highlighted(run):
+                _set_run_text(run, _run_text(run).replace("万元整", suffix, 1))
     _remove_paragraph_highlights(paragraph)
 
 

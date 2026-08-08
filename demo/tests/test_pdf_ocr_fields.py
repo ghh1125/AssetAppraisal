@@ -2,6 +2,19 @@ import json
 from pathlib import Path
 
 from demo.domain.pdf_ocr_fields import resolve_configured_ocr_fields
+from demo.pipeline import _keep_unresolved_ocr_issues
+
+
+def test_semantic_material_value_suppresses_stale_ocr_missing_issue():
+    issues = [
+        "major_long_term_assets：PDF OCR 表格单元格缺失：electronics@semantic",
+        "tax_rates：PDF OCR 表格单元格缺失：vat@semantic",
+    ]
+
+    assert _keep_unresolved_ocr_issues(
+        issues,
+        {"major_long_term_assets": "固定资产账面价值1元。"},
+    ) == ["tax_rates：PDF OCR 表格单元格缺失：vat@semantic"]
 
 
 def test_semantic_ocr_locator_ignores_page_and_table_numbers():

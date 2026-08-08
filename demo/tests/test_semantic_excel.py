@@ -71,6 +71,120 @@ def test_asset_scope_uses_summary_title_inside_a_generic_sheet_name(tmp_path: Pa
     assert facts["evidence"]["asset_scope_summary_table"]["locator"].startswith("表1!")
 
 
+def test_asset_scope_prefers_complete_book_value_summary_over_partial_detail(
+    tmp_path: Path,
+):
+    """A complete semantic summary must outrank a more detailed partial sheet."""
+    path = _save_workbook(
+        tmp_path / "client-upload.xlsx",
+        {
+            "任意名称A": [
+                ["资 产 评 估 结 果 汇 总 表"],
+                ["金额单位：人民币万元"],
+                ["项目", "行次", "账面价值", "评估价值"],
+                ["流动资产", 1, 6092.67, 6518.82],
+                ["非流动资产", 2, 3271.87, 4779.23],
+                ["其中：固定资产", 3, 2817.80, 3080.17],
+                ["无形资产", 4, 20.75, 441.80],
+                ["资产总计", 5, 9364.54, 11298.05],
+                ["流动负债", 6, 1245.10, 1245.10],
+                ["非流动负债", 7, 29.39, 29.39],
+                ["负债总计", 8, 1274.49, 1274.49],
+                ["所有者权益", 9, 8090.04, 10023.56],
+            ],
+            "任意名称B": [
+                ["非流动资产评估汇总表"],
+                ["金额单位：人民币元"],
+                ["编号", "科目名称", "账面价值", "评估价值"],
+                ["4-6", "固定资产", 28_177_997.77, 30_801_730.40],
+                ["4", "非流动资产合计", 32_718_722.46, 47_792_301.42],
+            ],
+        },
+    )
+
+    facts = extract_workbook_facts(path, "reporting_workbook")
+    rows = facts["fields"]["asset_scope_summary_table"]["rows"]
+
+    assert ["流动资产账面金额：", "60,926,700.00"] in rows
+    assert ["资产合计账面金额：", "93,645,400.00"] in rows
+    assert ["负债合计账面金额：", "12,744,900.00"] in rows
+    assert ["所有者权益账面金额：", "80,900,400.00"] in rows
+    assert facts["evidence"]["asset_scope_summary_table"]["locator"].startswith("任意名称A!")
+
+
+def test_asset_scope_uses_primary_summary_block_not_tail_difference_block(tmp_path: Path):
+    """Linked/tail reconciliation rows must not overwrite the main summary."""
+    rows = [
+        ["资 产 评 估 结 果 汇 总 表"],
+        ["金额单位：人民币万元"],
+        ["项目", "行次", "账面价值", "评估价值"],
+        ["流动资产", 1, 6092.67, 6518.82],
+        ["非流动资产", 2, 3271.87, 4779.23],
+        ["资产总计", 3, 9364.54, 11298.05],
+        ["流动负债", 4, 1245.10, 1245.10],
+        ["非流动负债", 5, 29.39, 29.39],
+        ["负债总计", 6, 1274.49, 1274.49],
+        ["所有者权益", 7, 8090.04, 10023.56],
+        ["说明：表2链接", None, None, None],
+        ["资产总计", 3, 0, 0],
+        ["流动负债", 4, 0, 0],
+        ["非流动负债", 5, 0, 0],
+        ["负债总计", 6, 0, 0],
+        ["所有者权益", 7, 0, 0],
+    ]
+    path = _save_workbook(tmp_path / "linked-summary.xlsx", {"表1": rows})
+
+    facts = extract_workbook_facts(path, "reporting_workbook")
+    scope = dict(facts["fields"]["asset_scope_summary_table"]["rows"])
+
+    assert scope["资产合计账面金额："] == "93,645,400.00"
+    assert scope["负债合计账面金额："] == "12,744,900.00"
+    assert scope["所有者权益账面金额："] == "80,900,400.00"
+
+
+def test_asset_scope_prefers_precise_yuan_summary_when_same_workbook_has_wan_copy(
+    tmp_path: Path,
+):
+    """When both summaries are complete, the 元 table preserves source precision."""
+    path = _save_workbook(
+        tmp_path / "precise-summary.xlsx",
+        {
+            "表1": [
+                ["资产评估结果汇总表"],
+                ["金额单位：人民币万元"],
+                ["项目", "账面价值", "评估价值"],
+                ["流动资产", 6092.67, 6518.82],
+                ["非流动资产", 3271.87, 4779.23],
+                ["资产总计", 9364.54, 11298.05],
+                ["流动负债", 1245.10, 1245.10],
+                ["非流动负债", 29.39, 29.39],
+                ["负债总计", 1274.49, 1274.49],
+                ["所有者权益", 8090.04, 10023.56],
+            ],
+            "表2": [
+                ["资产评估结果分类汇总表"],
+                ["金额单位：人民币元"],
+                ["项目", "账面价值", "评估价值"],
+                ["一、流动资产合计", 60926670.71, 65188247.43],
+                ["二、非流动资产合计", 32718722.46, 47792301.42],
+                ["三、资产总计", 93645393.17, 112980548.85],
+                ["四、流动负债合计", 12451023.56, 12451023.56],
+                ["五、非流动负债合计", 293923.16, 293923.16],
+                ["六、负债合计", 12744946.72, 12744946.72],
+                ["七、净资产（所有者权益）", 80900446.45, 100235602.13],
+            ],
+        },
+    )
+
+    facts = extract_workbook_facts(path, "reporting_workbook")
+    scope = dict(facts["fields"]["asset_scope_summary_table"]["rows"])
+
+    assert scope["流动资产账面金额："] == "60,926,670.71"
+    assert scope["资产合计账面金额："] == "93,645,393.17"
+    assert scope["所有者权益账面金额："] == "80,900,446.45"
+    assert facts["evidence"]["asset_scope_summary_table"]["locator"].startswith("表2!")
+
+
 def test_all_zero_appraisal_column_keeps_asset_result_unresolved(tmp_path: Path):
     path = _save_workbook(
         tmp_path / "unfinished-appraisal.xlsx",
@@ -703,6 +817,32 @@ def test_electronic_detail_sheet_supports_two_row_headers(tmp_path: Path):
     assert "4-8-7电子设备!F4:F5" in facts["evidence"][
         "long_term_assets_table"
     ]["locator"]
+
+
+def test_electronic_detail_sums_quantity_column_when_it_is_available(tmp_path: Path):
+    path = _save_workbook(
+        tmp_path / "equipment-register.xlsx",
+        {
+            "设备资产明细（电子设备）": [
+                ["金额单位：人民币元"],
+                ["资产编号", "设备名称", "数量", "计量单位", "账面净值", "评估价值"],
+                ["D001", "测试设备A", 2, "台", 8_000, 8_500],
+                ["D002", "测试设备B", 3, "台", 4_000, 4_200],
+                [None, "合计", 5, "台", 12_000, 12_700],
+            ],
+            "资产结果": [
+                ["资产评估汇总表", "金额单位：人民币元"],
+                ["项目", "账面价值", "评估价值"],
+                ["无形资产", 30_000, 35_000],
+            ],
+        },
+    )
+
+    rows = extract_workbook_facts(path, "reporting_workbook")["fields"][
+        "long_term_assets_table"
+    ]["rows"]
+
+    assert rows[1] == ["电子设备", "12,000.00", "5台", "以评估明细表为准"]
 
 
 def test_electronic_summary_uses_book_net_subcolumn(tmp_path: Path):

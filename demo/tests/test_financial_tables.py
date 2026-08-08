@@ -56,3 +56,16 @@ def test_real_run_populates_balance_and_income_tables(tmp_path: Path):
     assert fields["appraisal_increment"] == pytest.approx(3901.84)
     assert fields["appraisal_increment_rate"] == pytest.approx(84.85655131617864)
     assert fields["final_valuation_method"] == "收益法"
+
+
+def test_decimal_wan_final_value_also_has_yuan_uppercase_amount():
+    from demo.domain.calculations import derive_system_fields
+
+    fields = derive_system_fields(
+        {"asset_approach_value": 10023.56},
+        "2026-08-08",
+        final_value_field="asset_approach_value",
+    )
+
+    assert fields["final_value_chinese"] == "壹亿零贰拾叁万伍仟陆佰"
+    assert fields["final_value_chinese_wan"] == "壹亿零贰拾叁万伍仟陆佰元"

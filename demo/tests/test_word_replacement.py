@@ -81,6 +81,32 @@ def test_formats_financial_values_by_mapping_unit():
     assert build_replacements(locations, fields) == {"P-X01": "8,500.00", "P-X02": "84.86"}
 
 
+def test_decimal_wan_amount_replaces_wan_suffix_with_yuan_suffix(tmp_path: Path):
+    template = tmp_path / "decimal-conclusion.docx"
+    doc = Document()
+    paragraph = doc.add_paragraph()
+    paragraph.add_run("大写：人民币")
+    paragraph.add_run("XX")
+    paragraph.add_run("万元整")
+    doc.save(template)
+
+    locations = inventory_template(template)
+    location = locations[0]
+    location["field_key"] = "final_value_chinese_wan"
+    location["context"] = "大写：人民币XX万元整"
+    location["marker"] = "XX"
+    output = tmp_path / "decimal-conclusion-filled.docx"
+    fill_template(
+        template,
+        output,
+        {location["location_id"]: "壹亿零贰拾叁万伍仟陆佰元"},
+    )
+
+    text = "\n".join(p.text for p in Document(output).paragraphs)
+    assert "人民币壹亿零贰拾叁万伍仟陆佰元整" in text
+    assert "万元整" not in text
+
+
 def test_avoids_repeating_suffix_already_present_after_marker():
     locations = [
         {"location_id": "P-X01", "field_key": "method", "field_name": "方法", "context": "最终采用XX法", "marker": "XX"},

@@ -74,6 +74,29 @@ from demo.domain.yellow_routing import (
 from demo.run import run_project
 
 
+def _keep_unresolved_ocr_issues(
+    issues: list[str],
+    fields: dict[str, Any],
+) -> list[str]:
+    """Keep OCR failures only when the same field is still unresolved.
+
+    PDF is optional in the four-node workflow.  A semantic Excel extractor can
+    resolve a field even when the legacy OCR resolver reports its configured
+    cells as missing; that stale diagnostic must not look like a current data
+    failure in the run result.
+    """
+    kept: list[str] = []
+    for issue in issues:
+        if "：PDF OCR 表格单元格缺失：" not in issue:
+            kept.append(issue)
+            continue
+        field_key = issue.split("：", 1)[0]
+        value = fields.get(field_key)
+        if value in (None, "", [], {}):
+            kept.append(issue)
+    return kept
+
+
 @dataclass(frozen=True)
 class PipelineResult:
     report_path: Path
@@ -874,7 +897,7 @@ def run_pipeline(
             evidence["founding_shareholder_2"] = dict(evidence["founding_shareholder_1"])
     resolver = ocr_field_resolver or _default_ocr_field_resolver
     resolved_ocr, resolver_issues = resolver(normalized, config)
-    issues.extend(resolver_issues)
+    issues.extend(_keep_unresolved_ocr_issues(resolver_issues, fields))
 
     ocr_allowed = fields_for_route(routes, RouteKind.PDF_OCR_XLSX)
     ocr_values = _filter_provider(resolved_ocr, ocr_allowed, "PDF OCR/XLSX 解析器", issues)

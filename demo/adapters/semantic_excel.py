@@ -340,19 +340,23 @@ def _canonical_scope_label(value: Any) -> str | None:
 def _summary_book_values(workbook) -> tuple[dict[str, float], dict[str, str]]:
     best_values: dict[str, float] = {}
     best_locators: dict[str, str] = {}
-    best_score = -1
+    best_rank: tuple[int, int, int] | None = None
     for sheet in workbook.worksheets:
         # Exported asset-cleanup workbooks frequently use generic tab names
         # such as "表1" while the first rows say "资产评估结果--汇总表".
         # Match the table meaning, never a project-specific sheet coordinate.
         title_area = _sheet_context(sheet, max_rows=10)
-        is_summary = "汇总" in title_area
-        is_formal_balance = "资产负债表" in title_area
+        normalized_title_area = _text(title_area)
+        # Excel exports often space every title character (for example
+        # ``资 产 评 估 结 果 汇 总 表``).  Classification must use normalized
+        # title semantics, not the original spacing or a sheet name.
+        is_summary = "汇总" in normalized_title_area
+        is_formal_balance = "资产负债表" in normalized_title_area
         if not is_summary and not is_formal_balance:
             continue
-        values: dict[str, float] = {}
-        locators: dict[str, str] = {}
-        scale_to_yuan = _unit_scale_to_wan(sheet) * 10_000
+        candidates: dict[str, list[tuple[int, float, str]]] = {}
+        unit_scale_to_wan = _unit_scale_to_wan(sheet)
+        scale_to_yuan = unit_scale_to_wan * 10_000
         for row in sheet.iter_rows():
             for label_cell in row:
                 canonical = _canonical_scope_label(label_cell.value)
@@ -377,21 +381,70 @@ def _summary_book_values(workbook) -> tuple[dict[str, float], dict[str, str]]:
                 amount = _number(sheet.cell(label_cell.row, book_column).value)
                 if amount is None:
                     continue
-                values[canonical] = amount * scale_to_yuan
-                locators[canonical] = (
-                    f"{sheet.title}!{get_column_letter(book_column)}{label_cell.row}"
+                candidates.setdefault(canonical, []).append(
+                    (
+                        label_cell.row,
+                        amount * scale_to_yuan,
+                        f"{sheet.title}!{get_column_letter(book_column)}{label_cell.row}",
+                    )
                 )
-        score = len(values) * 10
-        if sheet.title in {"汇总表", "1-汇总表", "结果汇总"}:
-            score += 5
-        elif "资产评估结果" in title_area:
-            score += 5
-        if is_formal_balance:
-            score += 8
-        if any(name in sheet.title for name in ("固定资产", "流动负债", "非流动负债")):
-            score -= 20
-        if score > best_score:
-            best_values, best_locators, best_score = values, locators, score
+        # A single worksheet may contain the primary summary, linked copies,
+        # and a tail ``差异`` reconciliation block.  Do not let a later copy
+        # overwrite the primary values merely because it appears later in the
+        # sheet.  Score the semantic candidate by anchor coverage and prefer
+        # the earliest occurrence when otherwise tied.
+        if not candidates:
+            continue
+        # Keep all semantic rows from a worksheet in one candidate block.
+        # Reports commonly insert a long detail section between balance-sheet
+        # anchors, so row-gap segmentation would split one valid summary into
+        # several incomplete blocks.  Duplicate linked/tail rows are handled
+        # below by taking the first occurrence of each canonical label.
+        row_numbers = sorted({row for items in candidates.values() for row, _, _ in items})
+        blocks = [row_numbers]
+        # Coverage of the seven balance-sheet anchors is more important than
+        # the raw number of rows.  A detailed fixed-asset/ liability sheet can
+        # contain many values while still being unusable as the report's
+        # complete asset/liability summary.
+        required_scope_keys = {
+            "流动资产",
+            "非流动资产",
+            "资产总计",
+            "流动负债",
+            "非流动负债",
+            "负债合计",
+            "所有者权益",
+        }
+        for block in blocks:
+            block_set = set(block)
+            values: dict[str, float] = {}
+            locators: dict[str, str] = {}
+            for canonical, items in candidates.items():
+                in_block = [item for item in items if item[0] in block_set]
+                if in_block:
+                    _, amount, locator = in_block[0]
+                    values[canonical] = amount
+                    locators[canonical] = locator
+            required_coverage = len(required_scope_keys.intersection(values))
+            score = len(values) * 10 + required_coverage * 100
+            if required_coverage == len(required_scope_keys):
+                score += 500
+            if sheet.title in {"汇总表", "1-汇总表", "结果汇总"}:
+                score += 5
+            elif "资产评估结果" in title_area:
+                score += 5
+            if is_formal_balance:
+                score += 8
+            # A complete 元 summary retains cents that a companion 万元
+            # presentation necessarily rounds away.  Prefer it only after
+            # semantic coverage has tied, never over a more complete table.
+            if unit_scale_to_wan < 1:
+                score += 20
+            if any(name in sheet.title for name in ("固定资产", "流动负债", "非流动负债")):
+                score -= 20
+            rank = (score, sum(value != 0 for value in values.values()), -block[0])
+            if best_rank is None or rank > best_rank:
+                best_values, best_locators, best_rank = values, locators, rank
     return best_values, best_locators
 
 
@@ -459,6 +512,22 @@ def _preferred_book_net_column(
     return candidates[0] if len(candidates) == 1 else None
 
 
+def _quantity_unit_column(sheet, header_row: int, first_data_row: int) -> int | None:
+    """Locate an explicit unit column beside an asset-detail quantity column."""
+    header_rows = (header_row, max(header_row, first_data_row - 1))
+    for row_number in dict.fromkeys(header_rows):
+        for column in range(1, sheet.max_column + 1):
+            label = _text(sheet.cell(row_number, column).value)
+            if label in {"计量单位", "单位", "数量单位"}:
+                return column
+    return None
+
+
+def _format_quantity(total: float, units: set[str]) -> str:
+    amount = str(int(total)) if total.is_integer() else f"{total:g}"
+    return f"{amount}{next(iter(units))}" if len(units) == 1 else f"{amount}项"
+
+
 def _electronic_equipment_detail_value(
     workbook,
 ) -> tuple[float | None, str, str, str]:
@@ -498,6 +567,8 @@ def _electronic_equipment_detail_value(
                 if not whole_sheet_is_electronic
                 else None
             )
+            quantity_column = (roles.get("quantity") or [None])[0]
+            unit_column = _quantity_unit_column(sheet, header_row, first_data_row)
             id_column = (roles.get("asset_id") or [None])[0]
             name_column = (roles.get("asset_name") or [None])[0]
             if id_column is None and name_column is None:
@@ -505,6 +576,8 @@ def _electronic_equipment_detail_value(
             amount = 0.0
             rows: list[int] = []
             record_rows: list[int] = []
+            physical_quantity = 0.0
+            quantity_units: set[str] = set()
             for row_number in range(first_data_row, sheet.max_row + 1):
                 category = (
                     "电子设备"
@@ -528,6 +601,14 @@ def _electronic_equipment_detail_value(
                 ):
                     continue
                 record_rows.append(row_number)
+                if quantity_column is not None:
+                    quantity = _number(sheet.cell(row_number, quantity_column).value)
+                    if quantity is not None and quantity >= 0:
+                        physical_quantity += quantity
+                        if unit_column is not None:
+                            unit = str(sheet.cell(row_number, unit_column).value or "").strip()
+                            if unit:
+                                quantity_units.add(unit)
                 value = _number(sheet.cell(row_number, amount_column).value)
                 if value is None:
                     continue
@@ -536,10 +617,15 @@ def _electronic_equipment_detail_value(
             if not rows:
                 continue
             locator = _detail_locator(sheet.title, amount_column, rows)
-            # The Word column asks for the number of asset records ("项"),
-            # not the sum of physical units. One inventory record can carry
-            # multiple units, so summing “实际数量” changes the reviewed table.
-            quantity_text = f"{len(record_rows)}项"
+            # Prefer the explicit physical-quantity column.  It is the
+            # auditable quantity intended by reports such as "73台、套".
+            # When a sheet has no usable quantity field, retain the safe
+            # record-count fallback rather than inventing a unit.
+            quantity_text = (
+                _format_quantity(physical_quantity, quantity_units)
+                if quantity_column is not None and physical_quantity > 0
+                else f"{len(record_rows)}项"
+            )
             candidate = (len(record_rows), amount, locator, quantity_text)
             if best is None or candidate[0] > best[0]:
                 best = candidate

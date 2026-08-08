@@ -120,9 +120,26 @@ def derive_system_fields(
     if final_value_field and result.get(final_value_field) not in (None, "", []):
         put_default("final_appraisal_value", result[final_value_field])
         final_value = _decimal(result[final_value_field])
+        final_value_yuan = final_value * Decimal("10000")
+        # Assessment conclusions are stored in 万元, while one template
+        # location asks for a Chinese RMB amount in 元.  A decimal 万元 value
+        # can still be an exact integer yuan amount (e.g. 10023.56 万元).
+        if final_value_yuan == final_value_yuan.to_integral():
+            put_default(
+                "final_value_chinese",
+                chinese_upper_integer(int(final_value_yuan)),
+            )
         if final_value == final_value.to_integral():
             put_default("final_value_chinese_wan", chinese_upper_integer(int(final_value)))
-            put_default("final_value_chinese", chinese_upper_integer(int(final_value * 10000)))
+        elif final_value_yuan == final_value_yuan.to_integral():
+            # The template labels this location as 万元, but a decimal 万元
+            # conclusion is an exact integer amount in 元.  Mark the unit in
+            # the value so the Word adapter can switch the nearby suffix to
+            # 元整 instead of producing the misleading 万元整.
+            put_default(
+                "final_value_chinese_wan",
+                f"{chinese_upper_integer(int(final_value_yuan))}元",
+            )
         if book not in (None, "", []):
             difference = _decimal(result[final_value_field]) - _decimal(book)
             put_default("appraisal_increment", float(difference))
