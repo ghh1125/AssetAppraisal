@@ -87,6 +87,8 @@ def detail_header_role(value: object) -> str | None:
         return "asset_name"
     if label in {"资产类别", "固定资产类别", "设备类别", "资产分类", "分类"}:
         return "category"
+    if label in {"数量", "实际数量", "账面数量", "实物数量"}:
+        return "quantity"
     if "评估" in label and ("价值" in label or label.endswith("值")):
         return "appraised"
     if "账面" in label and any(token in label for token in ("净值", "净额")):

@@ -276,6 +276,56 @@ def test_run_project_prefers_complete_dated_history_from_later_workbook(tmp_path
     ]
 
 
+def test_run_project_prefers_prepared_history_sheet_over_raw_audited_sheet(tmp_path: Path):
+    """A complete 历资表/历利表 is the prepared report history source.
+
+    The old logic always overwrote it with any audited_financials worksheet,
+    which changed the figures in the generated report despite an uploaded
+    收益法 workbook containing the reviewed historical table.
+    """
+    audited = tmp_path / "审计财务.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "资产负债表"
+    sheet.append(["金额单位：人民币元"])
+    sheet.append(["项目", "2023年度", "2024年度", "2025年1-6月"])
+    sheet.append(["资产总计", 1, 2, 3])
+    sheet.append(["负债合计", 1, 1, 1])
+    sheet.append(["所有者权益合计", 0, 1, 2])
+    workbook.save(audited)
+
+    income = tmp_path / "收益法.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "历资表"
+    sheet.append(["金额单位：人民币元"])
+    sheet.append(["项目", "2023年度", "2024年度", "2025年1-6月"])
+    sheet.append(["资产总计", 100, 200, 300])
+    sheet.append(["负债合计", 40, 70, 90])
+    sheet.append(["所有者权益合计", 60, 130, 210])
+    workbook.save(income)
+
+    output = tmp_path / "run"
+    run_project(
+        Path("demo/projects/tongfu.yaml"),
+        output_dir=output,
+        offline=True,
+        manual_inputs_override={"target_company_name": "示例公司"},
+        source_overrides={
+            "audit_pdf": None,
+            "reference_report": None,
+            "audited_financials": audited,
+            "reporting_workbook": None,
+            "income_workbook": income,
+        },
+    )
+
+    fields = json.loads((output / "normalized_fields.json").read_text(encoding="utf-8"))
+    assert fields["historical_balance_sheet_table"]["rows"][1] == [
+        "总资产", "100.00", "200.00", "300.00"
+    ]
+
+
 def test_semantic_scope_table_replaces_readable_legacy_coordinates(tmp_path: Path):
     reporting = tmp_path / "新格式资产表.xlsx"
     workbook = Workbook()

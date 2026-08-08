@@ -35,6 +35,38 @@ def test_asset_summary_is_matched_by_labels_and_normalized_to_wan(tmp_path: Path
     assert facts["evidence"]["asset_approach_value"]["locator"].endswith("!D3")
 
 
+def test_asset_scope_uses_summary_title_inside_a_generic_sheet_name(tmp_path: Path):
+    """Asset-cleanup workbooks commonly name sheets 表1 rather than 汇总表."""
+    path = _save_workbook(
+        tmp_path / "uploaded-asset-inventory.xlsx",
+        {
+            "表1": [
+                ["资产评估结果--汇总表"],
+                ["金额单位：人民币万元"],
+                ["序号", "项目", "账面价值", "评估价值"],
+                [1, "流动资产", 14853.73, 14853.73],
+                [2, "非流动资产", 1518.19, 3285.07],
+                [3, "其中：固定资产净额", 499.36, 856.24],
+                [4, "无形资产净额", 0, 500],
+                [5, "长期待摊费用", 178.83, 178.83],
+                [6, "资产总计", 16371.92, 18138.8],
+                [7, "流动负债", 11773.76, 11773.76],
+                [8, "非流动负债", 0, 0],
+                [9, "负债总计", 11773.76, 11773.76],
+                [10, "净资产（所有者权益）", 4598.16, 6365.04],
+            ]
+        },
+    )
+
+    facts = extract_workbook_facts(path, "reporting_workbook")
+
+    rows = facts["fields"]["asset_scope_summary_table"]["rows"]
+    assert rows[0] == ["流动资产账面金额：", "148,537,300.00"]
+    assert rows[2] == ["其中：固定资产账面金额：", "4,993,600.00"]
+    assert rows[8] == ["资产合计账面金额：", "163,719,200.00"]
+    assert facts["evidence"]["asset_scope_summary_table"]["locator"].startswith("表1!")
+
+
 def test_all_zero_appraisal_column_keeps_asset_result_unresolved(tmp_path: Path):
     path = _save_workbook(
         tmp_path / "unfinished-appraisal.xlsx",

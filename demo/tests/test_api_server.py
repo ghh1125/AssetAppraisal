@@ -99,6 +99,40 @@ def test_typed_workbook_slots_keep_roles_when_filenames_are_arbitrary(monkeypatc
     assert (tmp_path / run_id / "input" / "income_workbook.xlsx").is_file()
 
 
+def test_api_disables_the_hidden_legacy_audited_workbook(monkeypatch, tmp_path):
+    """Web uploads must be the only financial sources used by a run."""
+    monkeypatch.setattr(api_server, "RUNS_ROOT", tmp_path)
+    captured = {}
+    monkeypatch.setattr(
+        api_server,
+        "_execute_run",
+        lambda _run_id, _pdf, source_overrides, *_args: captured.update(
+            source_overrides=source_overrides
+        ),
+    )
+    response = TestClient(api_server.app).post(
+        "/api/v1/asset-appraisal/runs",
+        data={"inputs": json.dumps({
+            "commissioning_party_name": "委托方有限公司",
+            "commissioning_party_short_name": "委托方",
+            "transaction_type": "收购",
+            "target_company_name": "示例有限公司",
+            "target_company_short_name": "示例",
+            "valuation_subject_type": "股东全部权益价值",
+            "selected_valuation_method": ["收益法"],
+            "final_valuation_method": "收益法",
+            "report_serial": 1,
+        })},
+        files=[
+            ("reporting_workbook", ("资产清查.xlsx", b"one", "application/octet-stream")),
+            ("income_workbook", ("收益法.xlsx", b"two", "application/octet-stream")),
+        ],
+    )
+
+    assert response.status_code == 202
+    assert captured["source_overrides"]["audited_financials"] is None
+
+
 def test_api_accepts_generic_multi_file_materials(monkeypatch, tmp_path):
     monkeypatch.setattr(api_server, "RUNS_ROOT", tmp_path)
     monkeypatch.setattr(api_server, "_execute_run", lambda *args, **kwargs: None)

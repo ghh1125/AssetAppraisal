@@ -49,6 +49,23 @@ def _unit_scale_to_wan(sheet) -> float:
     return 1.0
 
 
+def _sheet_context(sheet, *, max_rows: int = 12) -> str:
+    """Return a lightweight semantic title for sheets named 表1/Sheet1/etc."""
+    values = [str(sheet.title or "")]
+    for row in sheet.iter_rows(
+        min_row=1,
+        max_row=min(sheet.max_row, max_rows),
+        values_only=True,
+    ):
+        values.extend(str(value) for value in row if value not in (None, ""))
+    return " ".join(values)
+
+
+def _sheet_has_terms(sheet, *terms: str) -> bool:
+    context = _sheet_context(sheet)
+    return all(term in context for term in terms)
+
+
 def _header_columns(sheet, row_number: int) -> tuple[int | None, int | None]:
     def scores(value: Any) -> tuple[int, int]:
         label = _text(str(value or "").replace("帐", "账"))
@@ -311,7 +328,12 @@ def _summary_book_values(workbook) -> tuple[dict[str, float], dict[str, str]]:
     best_locators: dict[str, str] = {}
     best_score = -1
     for sheet in workbook.worksheets:
-        if "汇总" not in sheet.title:
+        # Exported asset-cleanup workbooks frequently use generic tab names
+        # such as "表1" while the first rows say "资产评估结果--汇总表".
+        # Match the table meaning, never a project-specific sheet coordinate.
+        title_area = _sheet_context(sheet, max_rows=10)
+        is_summary = "汇总" in title_area
+        if not is_summary:
             continue
         values: dict[str, float] = {}
         locators: dict[str, str] = {}
@@ -333,6 +355,8 @@ def _summary_book_values(workbook) -> tuple[dict[str, float], dict[str, str]]:
                 )
         score = len(values) * 10
         if sheet.title in {"汇总表", "1-汇总表", "结果汇总"}:
+            score += 5
+        elif "资产评估结果" in title_area:
             score += 5
         if any(name in sheet.title for name in ("固定资产", "流动负债", "非流动负债")):
             score -= 20
@@ -411,11 +435,11 @@ def _electronic_equipment_detail_value(
     best: tuple[int, float, str, str] | None = None
     ambiguous = False
     for sheet in workbook.worksheets:
-        if not any(token in sheet.title for token in ("固定资产", "设备", "资产明细")):
+        if not any(token in _sheet_context(sheet) for token in ("固定资产", "设备", "资产明细")):
             continue
         scale_to_yuan = _unit_scale_to_wan(sheet) * 10_000
         whole_sheet_is_electronic = (
-            canonical_long_term_asset_category(sheet.title) == "电子设备"
+            canonical_long_term_asset_category(_sheet_context(sheet)) == "电子设备"
             or any(
                 canonical_long_term_asset_category(
                     sheet.cell(row, 1).value
@@ -450,6 +474,7 @@ def _electronic_equipment_detail_value(
                 continue
             amount = 0.0
             rows: list[int] = []
+            record_rows: list[int] = []
             for row_number in range(first_data_row, sheet.max_row + 1):
                 category = (
                     "电子设备"
@@ -472,6 +497,7 @@ def _electronic_equipment_detail_value(
                     str(value or "").strip() for value in identity_values
                 ):
                     continue
+                record_rows.append(row_number)
                 value = _number(sheet.cell(row_number, amount_column).value)
                 if value is None:
                     continue
@@ -480,7 +506,11 @@ def _electronic_equipment_detail_value(
             if not rows:
                 continue
             locator = _detail_locator(sheet.title, amount_column, rows)
-            candidate = (len(rows), amount, locator, f"{len(rows)}项")
+            # The Word column asks for the number of asset records ("项"),
+            # not the sum of physical units. One inventory record can carry
+            # multiple units, so summing “实际数量” changes the reviewed table.
+            quantity_text = f"{len(record_rows)}项"
+            candidate = (len(record_rows), amount, locator, quantity_text)
             if best is None or candidate[0] > best[0]:
                 best = candidate
     if best is None:
@@ -499,7 +529,7 @@ def _electronic_equipment_value(
 ) -> tuple[float | None, str, str, str]:
     summary_best: tuple[int, float, str] | None = None
     for sheet in workbook.worksheets:
-        if "汇总" not in sheet.title:
+        if not _sheet_has_terms(sheet, "汇总"):
             continue
         scale_to_yuan = _unit_scale_to_wan(sheet) * 10_000
         for row in sheet.iter_rows():

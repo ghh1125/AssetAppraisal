@@ -520,6 +520,11 @@ class QichachaApiAdapter:
         ))[:3]
         evidence: list[dict[str, str]] = []
         issues: list[str] = []
+        # ApiCode 699 is billed per detail/indicator request. Keep one
+        # run within the purchased trial quota even when several keywords
+        # return overlapping companies (at most 5 peers × 2 calls = 10).
+        inspected_key_nos: set[str] = set()
+        max_detailed_peers = 5
         for keyword in keywords:
             fuzzy_payload, fuzzy_issue = self._get("886", keyword)
             if fuzzy_issue:
@@ -544,11 +549,17 @@ class QichachaApiAdapter:
                     "text": f"关键词“{keyword}”命中的上市公司公告候选：{text}",
                 })
             for candidate in _listed_candidate_rows(ipo_payload)[:5]:
+                key_no = str(candidate.get("key_no") or "")
+                if not key_no or key_no in inspected_key_nos:
+                    continue
+                if len(inspected_key_nos) >= max_detailed_peers:
+                    break
+                inspected_key_nos.add(key_no)
                 detail_payload, detail_issue = self._get(
-                    "699_detail", candidate["name"], key_no=candidate["key_no"]
+                    "699_detail", candidate["name"], key_no=key_no
                 )
                 indicator_payload, indicator_issue = self._get(
-                    "699_indicator", candidate["name"], key_no=candidate["key_no"]
+                    "699_indicator", candidate["name"], key_no=key_no
                 )
                 if detail_issue:
                     issues.append(f"上市候选“{candidate['name']}”简介查询：{detail_issue}")
@@ -558,7 +569,7 @@ class QichachaApiAdapter:
                 indicator_text = _json_text(indicator_payload, 2500)
                 if detail_text or indicator_text:
                     evidence.append({
-                        "evidence_id": f"api:qichacha:699:peer:{candidate['key_no']}",
+                        "evidence_id": f"api:qichacha:699:peer:{key_no}",
                         "api_code": "699",
                         "topic": "comparable_list",
                         "source_kind": "qichacha_api",

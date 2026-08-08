@@ -305,10 +305,11 @@ def _execute_run(
             )
             return
         candidate_items = []
+        automatic_fields = {}
         if result.candidate_path and result.candidate_path.is_file():
-            candidate_items = json.loads(
-                result.candidate_path.read_text(encoding="utf-8")
-            ).get("candidates", [])
+            candidate_payload = json.loads(result.candidate_path.read_text(encoding="utf-8"))
+            candidate_items = candidate_payload.get("candidates", [])
+            automatic_fields = candidate_payload.get("automatic_fields", {})
         _set_node(
             run_id,
             "ocr_llm_candidates",
@@ -332,6 +333,7 @@ def _execute_run(
                 "inputs": inputs,
                 "use_glm": use_glm,
                 "use_qichacha": use_qichacha,
+                "automatic_fields": automatic_fields,
             },
             completed_at=datetime.now(timezone.utc).isoformat(),
         )
@@ -563,6 +565,9 @@ async def create_run(
     pdf_path = stored_files.get("pdf")
     source_overrides = {
         "audit_pdf": pdf_path,
+        # Do not fall back to the developer's hidden local audited workbook.
+        # Web uploads are the authoritative material set for this run.
+        "audited_financials": None,
         "income_workbook": stored_files.get("income_workbook"),
         "reporting_workbook": stored_files.get("reporting_workbook"),
         "reference_report": stored_files.get("reference_report"),
@@ -622,6 +627,16 @@ async def select_run_candidates(
     # Values always come from the generated candidate set.  This prevents a
     # client from turning the selection endpoint into an arbitrary text writer.
     selected = {key: allowed[key] for key in selected}
+    automatic = (job.get("selection_context", {}) or {}).get("automatic_fields", {})
+    if isinstance(automatic, dict):
+        selected = {
+            **{
+                key: value
+                for key, value in automatic.items()
+                if key == "company_profile_section" and value not in (None, "", [], {})
+            },
+            **selected,
+        }
     _set_job(run_id, status="queued", progress=70, message="已确认候选内容，开始填充 Word")
     background_tasks.add_task(_execute_fill, run_id, selected)
     return JOBS[run_id]

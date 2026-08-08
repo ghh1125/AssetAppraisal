@@ -45,6 +45,20 @@ from .domain.field_validation import (
 from .domain.replacement import build_replacements
 from .domain.financial_matching import blank_configured_table
 from .domain.historical_table_merge import merge_historical_tables
+
+
+_PREPARED_HISTORY_SHEET_MARKERS = ("历资表", "历利表")
+
+
+def _history_source_priority(evidence: dict[str, Any]) -> int:
+    """Prefer a prepared history table to a raw audited worksheet.
+
+    A valuation workbook can contain the three-period ``历资表``/``历利表``
+    explicitly prepared for the report. It must not be overwritten just
+    because another workbook role happens to be named audited_financials.
+    """
+    locator = str(evidence.get("locator", ""))
+    return 2 if any(marker in locator for marker in _PREPARED_HISTORY_SHEET_MARKERS) else 1
 from .domain.source_precedence import prefer_semantic_result
 from .domain.generation_issues import (
     apply_page_locations,
@@ -446,6 +460,7 @@ def run_project(
         "historical_income_statement_table",
     }
     semantic_history_roles: dict[str, str] = {}
+    semantic_history_priorities: dict[str, int] = {}
     for source_name in (
         "reporting_workbook",
         "audited_financials",
@@ -494,13 +509,15 @@ def run_project(
                 "historical_balance_sheet_table",
                 "historical_income_statement_table",
             }:
-                existing_history_role = semantic_history_roles.get(field_key)
-                if source_name == "audited_financials":
+                candidate_history_priority = _history_source_priority(semantic_source)
+                existing_history_priority = semantic_history_priorities.get(field_key, 0)
+                if existing_is_semantic and candidate_history_priority > existing_history_priority:
                     fields[field_key] = value
                     evidence[field_key] = semantic_source
                     semantic_history_roles[field_key] = source_name
+                    semantic_history_priorities[field_key] = candidate_history_priority
                     continue
-                if existing_history_role == "audited_financials":
+                if existing_is_semantic and candidate_history_priority < existing_history_priority:
                     continue
             if (
                 field_key
@@ -519,6 +536,7 @@ def run_project(
                     if merged == value:
                         evidence[field_key] = semantic_source
                         semantic_history_roles[field_key] = source_name
+                        semantic_history_priorities[field_key] = _history_source_priority(semantic_source)
                     else:
                         evidence[field_key] = {
                             "kind": "semantic_excel_merged",
@@ -563,6 +581,7 @@ def run_project(
                 "historical_income_statement_table",
             }:
                 semantic_history_roles[field_key] = source_name
+                semantic_history_priorities[field_key] = _history_source_priority(semantic_source)
 
     unfinished_asset_source = evidence.get("asset_approach_value", {})
     result_section_source = evidence.get(

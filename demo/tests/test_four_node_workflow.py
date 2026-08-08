@@ -100,6 +100,53 @@ def test_generate_all_candidate_node_requests_every_fixed_llm_slot(tmp_path: Pat
     assert set(result.candidate_fields) == set(LLM_TEMPLATE_FIELDS)
 
 
+def test_candidate_file_always_exposes_the_six_selectable_report_modules(tmp_path: Path) -> None:
+    """The UI must show every report module, even when an LLM lacks evidence.
+
+    Company profile is a deterministic Word field and is deliberately not a
+    checkbox.  The six user-facing choices must keep their fixed order so the
+    reviewer understands exactly which Word sections can be accepted.
+    """
+
+    class SparseAdapter:
+        prompt_version = "yellow_narratives.test"
+
+        def generate(self, evidence):
+            return {
+                "company_profile_section": "公司概况自动填充",
+                "main_products": "主要产品候选",
+            }, []
+
+    result = run_pipeline(
+        project_config=ROOT / "projects/tongfu.yaml",
+        pdf_path=None,
+        output_dir=tmp_path,
+        ocr_adapter=None,
+        llm_adapter=SparseAdapter(),
+        prepare_only=True,
+        generate_all_narratives=True,
+        manual_inputs_override={
+            "commissioning_party_name": "委托方有限公司",
+            "target_company_name": "被评估单位有限公司",
+        },
+    )
+
+    payload = json.loads(result.candidate_path.read_text(encoding="utf-8"))
+    assert [item["field_key"] for item in payload["candidates"]] == [
+        "industry_overview",
+        "business_and_segments",
+        "main_products",
+        "customers_suppliers",
+        "profit_model_swot",
+        "comparable_list",
+    ]
+    assert payload["candidates"][2]["value"] == "主要产品候选"
+    assert all(isinstance(item["available"], bool) for item in payload["candidates"])
+    assert payload["automatic_fields"] == {
+        "company_profile_section": "公司概况自动填充"
+    }
+
+
 def test_qichacha_evidence_ids_are_unique_between_company_roles(tmp_path: Path) -> None:
     class SameIdQichachaAdapter:
         def fetch(self, company_name):

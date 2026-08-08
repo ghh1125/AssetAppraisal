@@ -293,6 +293,11 @@ class NarrativeCandidate(DemoModel):
     field_name: str = Field(description="Word固定LLM位置的中文名称", examples=["行业情况"])
     value: str = Field(description="LLM生成的候选文本", examples=["行业候选内容"])
     location_ids: list[str] = Field(description="该候选文本对应的Word位置编号", examples=[["DOCUMENT-P0003-X01"]])
+    available: bool = Field(
+        default=True,
+        description="是否已有可供人工选择的候选内容；否时保留黄色XXX",
+        examples=[True],
+    )
     selected: bool = Field(description="用户是否选择写入Word", examples=[False])
 
 

@@ -5,8 +5,8 @@ const sharedModulesZh = {
   business: '业务内容及细分市场',
   products: '主要产品',
   customers: '主要客户及供应商',
-  swot: '盈利模式和 SWOT 分析',
-  comparable: '对标上市公司',
+  swot: '盈利模式和SWOT分析',
+  comparable: '对标上市公司（列表多维度展示）',
 }
 
 const sharedModulesEn = {
@@ -83,7 +83,7 @@ const messages = {
       completeMessage: '评估报告 Word 已生成',
       cannotStatus: '无法获取任务状态',
       createFailed: '创建评估任务失败',
-      candidateHint: 'LLM 已针对 Word 中的固定位置生成候选内容，请逐项选择要写入的内容：公司概况、行业介绍、业务及细分市场、主要产品、客户与供应商、盈利模式及 SWOT、可比上市公司。',
+      candidateHint: '请选择需要加入报告的内容：1、所处行业及行业介绍；2、业务内容及细分市场；3、主要产品；4、主要客户及供应商；5、盈利模式和SWOT分析；6、对标上市公司（列表多维度展示）。',
       candidateEmpty: '本次没有生成可供选择的 LLM 内容，请查看下方原因；仍可跳过 LLM 内容并继续生成 Word。',
       candidateIssues: '候选生成提示',
       confirmCandidates: '确认选择并填充 Word',

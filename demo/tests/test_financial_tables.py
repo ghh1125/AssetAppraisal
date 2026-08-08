@@ -34,7 +34,7 @@ def test_real_run_populates_balance_and_income_tables(tmp_path: Path):
     assert _rows(generated.tables[5]) == _rows(expected.tables[5])
     fields = json.loads((tmp_path / "normalized_fields.json").read_text(encoding="utf-8"))
     assert fields["historical_income_statement_table"]["rows"][-1] == [
-        "四、净利润", "14,357,065.14", "2,600,607.69", "10,028,484.84"
+        "四、净利润", "17,606,935.99", "3,295,756.89", "10,626,065.33"
     ]
     assert fields["book_net_assets"] == 4598.16
     assert fields["income_approach_value"] == 8500

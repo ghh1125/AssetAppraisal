@@ -14,6 +14,19 @@ LLM_TEMPLATE_FIELDS = (
     "comparable_list",
 )
 
+# Company profile is filled automatically when deterministic/API evidence is
+# available. These are the six report sections the reviewer chooses in node 2.
+SELECTABLE_LLM_TEMPLATE_FIELDS = LLM_TEMPLATE_FIELDS[1:]
+
+NARRATIVE_MODULE_LABELS = {
+    "industry_overview": "所处行业及行业介绍",
+    "business_and_segments": "业务内容及细分市场",
+    "main_products": "主要产品",
+    "customers_suppliers": "主要客户及供应商",
+    "profit_model_swot": "盈利模式和SWOT分析",
+    "comparable_list": "对标上市公司（列表多维度展示）",
+}
+
 
 def select_narrative_fields(
     routed_fields: set[str],

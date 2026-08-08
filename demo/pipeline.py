@@ -53,7 +53,12 @@ from demo.domain.field_validation import (
 from demo.domain.field_validation import validate_valuation_subject_type
 from demo.domain.financial_matching import blank_configured_table
 from demo.domain.mapping import validate_mapping
-from demo.domain.narrative_policy import select_narrative_fields, select_llm_candidates
+from demo.domain.narrative_policy import (
+    NARRATIVE_MODULE_LABELS,
+    SELECTABLE_LLM_TEMPLATE_FIELDS,
+    select_narrative_fields,
+    select_llm_candidates,
+)
 from demo.domain.ocr_normalization import normalize_ocr_pages
 from demo.domain.pdf_ocr_fields import find_ocr_table, resolve_configured_ocr_fields, resolve_ocr_aux_fields
 from demo.domain.replacement import build_replacements
@@ -873,7 +878,14 @@ def run_pipeline(
     ocr_allowed = fields_for_route(routes, RouteKind.PDF_OCR_XLSX)
     ocr_values = _filter_provider(resolved_ocr, ocr_allowed, "PDF OCR/XLSX 解析器", issues)
     ocr_aux_values = resolve_ocr_aux_fields(normalized, config)
-    if isinstance(scope_table, dict) and scope_table.get("field_key") in fields:
+    scope_is_semantic_excel = str(
+        evidence.get(scope_table.get("field_key", ""), {}).get("kind", "")
+    ).startswith("semantic_excel") if isinstance(scope_table, dict) else False
+    if (
+        isinstance(scope_table, dict)
+        and scope_table.get("field_key") in fields
+        and not scope_is_semantic_excel
+    ):
         scope_rows = fields[scope_table["field_key"]].get("rows", [])
         fields[scope_table["field_key"]]["rows"] = _apply_ocr_overrides_to_table(
             scope_rows, scope_table, ocr_aux_values
@@ -1421,20 +1433,27 @@ def run_pipeline(
             for key, value in llm_values.items()
             if key in all_llm_allowed and value not in (None, "", [], {})
         }
+        automatic_fields = (
+            {"company_profile_section": str(candidate_fields["company_profile_section"])}
+            if candidate_fields.get("company_profile_section") not in (None, "", [], {})
+            else {}
+        )
         candidate_payload = {
             "workflow_stage": "ocr_llm_candidates",
             "selection_required": True,
             "prompt_version": str(narrative_prompt_version),
             "model": str(getattr(llm_adapter, "model", "")),
+            "automatic_fields": automatic_fields,
             "candidates": [
                 {
                     "field_key": key,
-                    "field_name": field_names.get(key, key),
-                    "value": str(value),
+                    "field_name": NARRATIVE_MODULE_LABELS[key],
+                    "value": str(candidate_fields.get(key, "")),
                     "location_ids": candidate_locations.get(key, []),
+                    "available": key in candidate_fields,
                     "selected": False,
                 }
-                for key, value in candidate_fields.items()
+                for key in SELECTABLE_LLM_TEMPLATE_FIELDS
             ],
         }
         candidate_path = write_json(output_dir / "llm候选内容.json", candidate_payload)
@@ -1619,11 +1638,7 @@ def run_pipeline(
         if isinstance(semantic_long_term, dict) and isinstance(
             semantic_long_term.get("rows"), list
         ):
-            long_term_rows = _apply_ocr_overrides_to_table(
-                semantic_long_term["rows"],
-                long_term_table,
-                ocr_aux_values,
-            )
+            long_term_rows = semantic_long_term["rows"]
         else:
             long_term_rows = _configured_cross_source_table(
                 base,

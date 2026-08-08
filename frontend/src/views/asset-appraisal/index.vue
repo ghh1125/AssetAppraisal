@@ -65,7 +65,9 @@ async function refreshRun(runId) {
     if (['queued', 'running'].includes(run.value.status)) {
       pollTimer = window.setTimeout(() => refreshRun(runId), 1500)
     } else if (run.value.status === 'awaiting_selection') {
-      selectedCandidateKeys.value = (run.value.candidates || []).map(item => item.field_key)
+      selectedCandidateKeys.value = (run.value.candidates || [])
+        .filter(item => item.available !== false)
+        .map(item => item.field_key)
     } else if (run.value.status === 'completed') {
     message.success(t('asset.completeMessage'))
     }
@@ -209,9 +211,9 @@ onBeforeUnmount(clearPoll)
         </div>
         <a-checkbox-group v-model:value="selectedCandidateKeys" class="candidate-list">
           <div v-for="candidate in run.candidates" :key="candidate.field_key" class="candidate-item">
-            <a-checkbox :value="candidate.field_key">{{ candidate.field_name || candidate.field_key }}</a-checkbox>
+            <a-checkbox :value="candidate.field_key" :disabled="candidate.available === false">{{ candidate.field_name || candidate.field_key }}</a-checkbox>
             <span v-if="candidate.location_ids?.length" class="candidate-location">{{ candidate.location_ids.join('、') }}</span>
-            <div class="candidate-value">{{ candidate.value }}</div>
+            <div class="candidate-value">{{ candidate.available === false ? '暂无可用证据；不写入时将保留黄色 XXX。' : candidate.value }}</div>
           </div>
         </a-checkbox-group>
         <a-button type="primary" :loading="submitting" @click="confirmCandidates">{{ t('asset.confirmCandidates') }}</a-button>
