@@ -271,36 +271,16 @@ def _company_profile_table(profile: dict[str, Any], fallback_name: Any = "", fal
     ]
 
 
-def _amount_text(value: Any) -> str:
-    if value in (None, ""):
-        return ""
-    try:
-        return f"{float(value):,.2f}"
-    except (TypeError, ValueError):
-        return str(value).strip()
-
-
-def _configured_cross_source_table(
-    base: Path,
-    config: dict[str, Any],
-    rows: list[dict[str, Any]],
-    ocr_overrides: dict[str, str] | None = None,
-    source_overrides: dict[str, Path | None] | None = None,
-) -> list[list[str]]:
+def _blank_cross_source_table(rows: list[dict[str, Any]]) -> list[list[str]]:
+    """Build an unresolved long-term-assets table without reading old cells."""
     matrix = [["项目", "账面金额（元）", "数量", "现状、特点"]]
     for row in rows:
-        source_name = row["source"]
-        source_path = _source_path(
-            base,
-            config,
-            source_overrides,
-            source_name,
-        )
-        value = (ocr_overrides or {}).get(str(row.get("ocr_field_key")))
-        if value in (None, ""):
-            values, _ = try_read_cells(source_path, [row["locator"]])
-            value = values.get(row["locator"], "XXX")
-        matrix.append([str(row["label"]), _amount_text(value), str(row.get("quantity", "")), str(row.get("condition", ""))])
+        matrix.append([
+            str(row["label"]),
+            "XXX",
+            str(row.get("quantity", "")),
+            str(row.get("condition", "")),
+        ])
     return matrix
 
 
@@ -747,15 +727,12 @@ def run_pipeline(
             scope_rows = semantic_scope["rows"]
             scope_issues = []
         else:
-            scope_rows, scope_issues = try_read_configured_table(
-                source_path,
-                scope_table,
-            )
-            if scope_rows is None:
-                scope_rows = blank_configured_table(
-                    scope_table,
-                    placeholder="XXX",
-                )
+            # A configured source locator is only metadata for the template;
+            # it must never become a fallback reader for an arbitrary upload.
+            # When semantic matching has no unique result, leave the cells
+            # unresolved instead of reading a previous project's coordinates.
+            scope_rows = blank_configured_table(scope_table, placeholder="XXX")
+            scope_issues = ["未找到唯一的语义财务表，未读取配置坐标"]
         issues.extend(
             f"{scope_table['field_key']}：{message}"
             for message in scope_issues
@@ -1692,13 +1669,7 @@ def run_pipeline(
         ):
             long_term_rows = semantic_long_term["rows"]
         else:
-            long_term_rows = _configured_cross_source_table(
-                base,
-                config,
-                long_term_table.get("rows", []),
-                ocr_aux_values,
-                source_overrides,
-            )
+            long_term_rows = _blank_cross_source_table(long_term_table.get("rows", []))
         table_replacements[int(long_term_table["target_table_index"])] = long_term_rows
     trademark_rows = _qcc_table_rows(qcc_payloads.get("target", {}), "trademark_rows", 7)
     software_rows = _qcc_table_rows(qcc_payloads.get("target", {}), "software_rows", 5)

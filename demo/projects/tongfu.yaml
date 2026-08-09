@@ -5,7 +5,6 @@
   "annotation_template": "../../templates/评估报告版式-沟通标注版_批注版.docx",
   "mapping": "../mappings/appraisal_report_v1.yaml",
   "manual_inputs": "tongfu.manual.example.yaml",
-  "legacy_coordinate_fallback": false,
   "llm": {
     "default_model": "deepseek-v4-flash-0731",
     "fallback_model": "qwen3.8-max",

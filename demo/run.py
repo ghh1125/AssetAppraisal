@@ -5,22 +5,17 @@ import hashlib
 import json
 import os
 import re
-from collections import defaultdict
 from copy import deepcopy
 from zipfile import BadZipFile
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import Decimal
 from pathlib import Path
 from typing import Any, Mapping
 
 from .adapters.json_io import write_json
 from .adapters.excel import (
     read_cells,
-    try_read_cells,
-    try_read_configured_table,
 )
-from .adapters.materials import resolve_material_field
 from .adapters.ocr_factory import create_ocr_adapter
 from .adapters.semantic_excel import extract_workbook_facts
 from .adapters.word import (
@@ -44,7 +39,6 @@ from .domain.field_validation import (
     validate_valuation_subject_type,
 )
 from .domain.replacement import build_replacements
-from .domain.financial_matching import blank_configured_table
 from .domain.historical_table_merge import merge_historical_tables
 
 
@@ -286,32 +280,6 @@ def _excel_value(
     return None, None
 
 
-def _read_long_term_assets_table(
-    config: dict[str, Any],
-    sources: dict[str, Path],
-    issues: list[str],
-) -> list[list[str]]:
-    matrix = [["项目", "账面金额（元）", "数量", "现状、特点"]]
-    for row in config.get("long_term_assets_table", {}).get("rows", []):
-        locator = str(row["locator"])
-        source_name = str(row["source"])
-        values, read_issues = try_read_cells(sources.get(source_name), [locator])
-        value = values.get(locator, "XXX")
-        issues.extend(
-            f"{row.get('label', source_name)}：{message}"
-            for message in read_issues
-        )
-        if isinstance(value, (int, float)):
-            value = f"{value:,.2f}"
-        matrix.append([
-            str(row.get("label", "")),
-            str(value if value not in (None, "") else "XXX"),
-            str(row.get("quantity", "")),
-            str(row.get("condition", "")),
-        ])
-    return matrix
-
-
 def _provider_values(payload: Any) -> dict[str, Any]:
     if isinstance(payload, dict):
         nested = payload.get("fields")
@@ -453,87 +421,6 @@ def run_project(
             fields[field_key] = financial_source_name
             evidence[field_key] = dict(financial_source_evidence)
     fields["asset_approach_method_label"] = _asset_method_label(fields.get("selected_valuation_method"))
-    # A reusable run must not depend on the sheet names and coordinates of a
-    # previous client.  Kept only for explicitly opted-in legacy projects;
-    # the standard workflow resolves uploaded materials semantically below.
-    use_legacy_coordinate_fallback = bool(
-        config.get("legacy_coordinate_fallback", False)
-    )
-
-    for spec in (
-        config.get("financial_tables", [])
-        if use_legacy_coordinate_fallback
-        else []
-    ):
-        source_name = spec["source"]
-        matrix, read_issues = try_read_configured_table(
-            sources.get(source_name),
-            spec,
-        )
-        if matrix is None:
-            matrix = blank_configured_table(spec, placeholder="XXX")
-        issues.extend(
-            f"{spec['field_key']}：{message}" for message in read_issues
-        )
-        key = spec["field_key"]
-        fields[key] = {"caption": spec["caption"], "rows": matrix}
-        evidence[key] = (
-            _source_evidence(
-                source_name,
-                sources,
-                spec["source_locator"],
-                source_lineage,
-            )
-            if source_name in sources and not read_issues
-            else {
-                "kind": "missing",
-                "file": "",
-                "locator": spec["source_locator"],
-            }
-        )
-        table_replacements[int(spec["target_table_index"])] = matrix
-
-    # The balance-sheet overview is a real table under its lead-in paragraph,
-    # not a prose field.  Fill it in every run mode so the CLI cannot leave
-    # the template's default numbers behind.
-    scope_table = config.get("asset_scope_summary_table")
-    if use_legacy_coordinate_fallback and isinstance(scope_table, dict):
-        source_name = str(scope_table["source"])
-        matrix, read_issues = try_read_configured_table(
-            sources.get(source_name),
-            scope_table,
-        )
-        if matrix is None:
-            matrix = blank_configured_table(
-                scope_table,
-                placeholder="XXX",
-            )
-        issues.extend(
-            f"{scope_table['field_key']}：{message}"
-            for message in read_issues
-        )
-        key = str(scope_table["field_key"])
-        fields[key] = {"caption": scope_table.get("caption", ""), "rows": matrix}
-        evidence[key] = (
-            _source_evidence(
-                source_name,
-                sources,
-                scope_table.get("source_locator", ""),
-                source_lineage,
-            )
-            if source_name in sources and not read_issues
-            else {
-                "kind": "missing",
-                "file": "",
-                "locator": scope_table.get("source_locator", ""),
-            }
-        )
-        table_replacements[int(scope_table["target_table_index"])] = matrix
-
-    long_term_table = config.get("long_term_assets_table")
-    if use_legacy_coordinate_fallback and isinstance(long_term_table, dict):
-        matrix = _read_long_term_assets_table(config, sources, issues)
-        table_replacements[int(long_term_table["target_table_index"])] = matrix
 
     # The communication template's second IP table is software copyright,
     # although its legacy header says patent.  Normalize the header even when
@@ -545,57 +432,8 @@ def run_project(
             ["", "", "", "", ""],
         ]
 
-    for spec in (
-        config.get("financial_fields", [])
-        if use_legacy_coordinate_fallback
-        else []
-    ):
-        source_name = spec["source"]
-        locator = spec["locator"]
-        values, read_issues = try_read_cells(
-            sources.get(source_name),
-            [locator],
-        )
-        issues.extend(
-            f"{spec['field_key']}：{message}" for message in read_issues
-        )
-        raw = values.get(locator)
-        if raw in (None, ""):
-            issues.append(f"{spec['field_key']}：来源单元格 {locator} 为空")
-            continue
-        value = Decimal(str(raw)) * Decimal(str(spec.get("scale", 1)))
-        fields[spec["field_key"]] = int(value) if value == value.to_integral() else float(value)
-        evidence[spec["field_key"]] = _source_evidence(
-            source_name, sources, locator, source_lineage
-        )
-
-    for spec in (
-        config.get("material_fields", [])
-        if use_legacy_coordinate_fallback
-        else []
-    ):
-        try:
-            value, source = resolve_material_field(
-                spec,
-                sources,
-                source_lineage,
-            )
-        except (KeyError, OSError, ValueError, BadZipFile) as exc:
-            value = ""
-            source = {
-                "kind": "missing",
-                "file": "",
-                "locator": "",
-            }
-            issues.append(f"{spec['field_key']}：材料无法读取：{exc}")
-        fields[spec["field_key"]] = value
-        evidence[spec["field_key"]] = source
-
     # Project workbooks evolve and frequently rename sheets or move cells.
-    # Apply the deterministic semantic reader after fixed project locators so
-    # an exact row/column-header match can replace an accidental value read
-    # from a legacy coordinate (for example a zero that is no longer the
-    # equity-value cell).
+    # Apply deterministic semantic reading to the uploaded workbooks.
     semantic_primary_fields = {
         "book_net_assets",
         "asset_approach_value",
@@ -761,6 +599,8 @@ def run_project(
     # The template table identity is stable, but its source data is not.
     # Write tables from semantic evidence directly so an old workbook cell
     # map can never leak values into a new client's report.
+    scope_table = config.get("asset_scope_summary_table")
+    long_term_table = config.get("long_term_assets_table")
     target_table_by_field: dict[str, int] = {
         str(spec["field_key"]): int(spec["target_table_index"])
         for spec in config.get("financial_tables", [])
@@ -943,25 +783,6 @@ def run_project(
                 issues.append(f"{key}：无可用值，已按规则留空")
     replacements = build_replacements(locations, fields)
     paragraph_replacements: dict[tuple[str, int], str] = {}
-    for spec in (
-        config.get("paragraph_replacements", [])
-        if use_legacy_coordinate_fallback
-        else []
-    ):
-        if "field_key" in spec:
-            value = str(fields.get(spec["field_key"], ""))
-        elif "template" in spec:
-            if spec.get("blank_if_empty") and not str(fields.get(spec["blank_if_empty"], "") or "").strip():
-                value = ""
-            else:
-                values = defaultdict(
-                    lambda: "XXX",
-                    {key: str(value) for key, value in fields.items()},
-                )
-                value = spec["template"].format_map(values)
-        else:
-            value = str(spec.get("value", ""))
-        paragraph_replacements[(spec["part"], int(spec["paragraph_index"]))] = value
     run_dir = output_dir.resolve() if output_dir else (base / "../../runs" / config["project_id"] / datetime.now().strftime("%Y%m%d_%H%M%S")).resolve()
     run_dir.mkdir(parents=True, exist_ok=True)
     # Keep Word comments as internal lineage metadata.  They are not exposed

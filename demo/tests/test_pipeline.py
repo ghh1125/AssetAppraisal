@@ -603,6 +603,51 @@ def test_pipeline_keeps_semantically_matched_scope_table(tmp_path):
     assert "320,000.00" in long_term_text
 
 
+def test_pipeline_does_not_read_legacy_coordinates_without_semantic_evidence(tmp_path):
+    """A workbook without semantic tables must not fall back to old cells."""
+    workbook_path = tmp_path / "arbitrary-layout.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "06N_资产负债表"
+    # Populate the coordinates used by the old Tongfu configuration with a
+    # deliberately misleading value.  No semantic financial table is present.
+    sheet["F28"] = 999
+    sheet["F49"] = 999
+    sheet["F76"] = 999
+    sheet["L32"] = 999
+    sheet["L46"] = 999
+    sheet["L75"] = 999
+    detail = workbook.create_sheet("表4-6")
+    detail["E15"] = 999
+    workbook.save(workbook_path)
+
+    output = tmp_path / "run"
+    run_pipeline(
+        project_config=Path("demo/projects/tongfu.yaml"),
+        pdf_path=None,
+        output_dir=output,
+        ocr_adapter=None,
+        source_overrides={
+            "audit_pdf": None,
+            "reference_report": None,
+            "audited_financials": workbook_path,
+            "income_workbook": None,
+            "reporting_workbook": workbook_path,
+        },
+        manual_inputs_override={"target_company_name": "示例有限公司"},
+    )
+
+    fields = json.loads((output / "normalized_fields.json").read_text(encoding="utf-8"))
+    scope_rows = fields["asset_scope_summary_table"]["rows"]
+    assert all(row[1] == "XXX" for row in scope_rows)
+    generated = Document(output / "资产评估报告_待复核.docx")
+    long_term_rows = [
+        [cell.text.strip() for cell in row.cells]
+        for row in generated.tables[7].rows
+    ]
+    assert all(row[1] == "XXX" for row in long_term_rows[1:])
+
+
 def test_pipeline_rejects_invalid_workflow_before_ocr(tmp_path):
     invalid_workflow = tmp_path / "invalid-workflow.json"
     invalid_workflow.write_text(
