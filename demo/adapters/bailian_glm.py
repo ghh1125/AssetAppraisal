@@ -68,7 +68,7 @@ SWOT_FALLBACKS = (
 
 
 OUTPUT_SCHEMA = json.loads(
-    (Path(__file__).resolve().parents[1] / "prompts/yellow_narratives_output.v2.json").read_text(
+    (Path(__file__).resolve().parents[1] / "prompts/yellow_narratives_output.v3.json").read_text(
         encoding="utf-8"
     )
 )
@@ -86,7 +86,7 @@ class BailianYellowNarrativeAdapter:
         base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1",
         model: str = DEFAULT_LLM_MODEL,
         fallback_model: str = DEFAULT_LLM_FALLBACK_MODEL,
-        prompt_version: str = "yellow_narratives.v2",
+        prompt_version: str = "yellow_narratives.v3",
     ):
         self.client = client
         self.api_key = api_key
@@ -151,6 +151,31 @@ class BailianYellowNarrativeAdapter:
                 ) from fallback_error
 
     @staticmethod
+    def _target_context(evidence: list[dict[str, Any]]) -> dict[str, str]:
+        """Keep the report subject and valuation-date scope visible to every module."""
+        values: dict[str, str] = {}
+        evidence_keys = {
+            "field:target_company_name": "target_company_name",
+            "field:target_company_short_name": "target_company_short_name",
+            "field:registered_capital": "registered_capital",
+            "field:valuation_date_year": "valuation_date_year",
+            "field:valuation_date_month": "valuation_date_month",
+            "field:valuation_date_day": "valuation_date_day",
+        }
+        for item in evidence:
+            key = evidence_keys.get(str(item.get("evidence_id", "")))
+            if not key:
+                continue
+            text = str(item.get("text", "")).strip()
+            values[key] = text.split("：", 1)[-1].strip()
+        year = values.pop("valuation_date_year", "")
+        month = values.pop("valuation_date_month", "")
+        day = values.pop("valuation_date_day", "")
+        if year and month and day:
+            values["valuation_date"] = f"{year}年{month}月{day}日"
+        return {key: value for key, value in values.items() if value}
+
+    @staticmethod
     def _relevant_evidence(
         field_key: str,
         evidence: list[dict[str, Any]],
@@ -174,12 +199,22 @@ class BailianYellowNarrativeAdapter:
             if target_profile_present
             else evidence
         )
+        if field_key == "company_profile_section" and target_profile_present:
+            eligible_evidence = [
+                item
+                for item in eligible_evidence
+                if not str(item.get("evidence_id", "")).startswith(
+                    "api:qichacha:target:"
+                )
+                or str(item.get("evidence_id", "")).endswith(":735:profile")
+            ]
         if field_key == "comparable_list":
             # A target-company profile can be evidence about the target's
             # industry, but it can never be evidence that the target is its
             # own comparable.  Permit only actual API peer candidates or an
             # uploaded material explicitly labelled as a comparable list.
             peer_evidence = []
+            verified_identities: set[tuple[str, str]] = set()
             for item in eligible_evidence:
                 evidence_id = str(item.get("evidence_id", ""))
                 text = str(item.get("text", ""))
@@ -195,16 +230,56 @@ class BailianYellowNarrativeAdapter:
                 )
                 if announcement or uploaded_list:
                     peer_evidence.append(item)
+                    for name, code in re.findall(
+                        r"([^；：]+)；股票代码：([^；]+)；(?:公告类别：[^；]+；)?公告：[^；]+；日期：[^；]+",
+                        text,
+                    ):
+                        verified_identities.add((name.strip(), code.strip()))
+            for item in eligible_evidence:
+                evidence_id = str(item.get("evidence_id", ""))
+                text = str(item.get("text", ""))
+                if ":699:peer:" not in evidence_id:
+                    continue
+                identity_match = re.search(r"企业名称：([^；]+)；股票代码：([^；]+)", text)
+                if identity_match and (
+                    identity_match.group(1).strip(), identity_match.group(2).strip()
+                ) in verified_identities:
+                    peer_evidence.append(item)
             return peer_evidence[:limit]
+        if field_key in {"business_and_segments", "profit_model_swot"}:
+            authoritative_financial = any(
+                str(item.get("evidence_id", "")).startswith(
+                    "field:historical_income_statement_table"
+                )
+                for item in eligible_evidence
+            )
+            if authoritative_financial:
+                financial_tokens = ("营业收入", "营业成本", "净利润", "利润总额")
+                eligible_evidence = [
+                    item
+                    for item in eligible_evidence
+                    if str(item.get("evidence_id", "")).startswith("field:")
+                    or not any(
+                        token in str(item.get("text", ""))
+                        for token in financial_tokens
+                    )
+                ]
         keywords = FIELD_KEYWORDS[field_key]
         scored: list[tuple[int, int, dict[str, Any]]] = []
         for index, item in enumerate(eligible_evidence):
             text = str(item.get("text", ""))
             score = sum(1 for keyword in keywords if keyword.lower() in text.lower())
+            evidence_id = str(item.get("evidence_id", ""))
+            # The pipeline has already reconciled these field-level facts
+            # across uploaded Excel/PDF sources.  They must outrank raw OCR
+            # fragments that may belong to a consolidated or related-company
+            # statement elsewhere in the same PDF.
+            if evidence_id.startswith("field:"):
+                score += 100
             if field_key == "company_profile_section" and str(
                 item.get("evidence_id", "")
-            ).startswith("api:qichacha:"):
-                score += 20
+            ).endswith(":735:profile"):
+                score += 200
             if score:
                 scored.append((score, index, item))
         if not scored:
@@ -232,7 +307,15 @@ class BailianYellowNarrativeAdapter:
                 issues.append(f"GLM 字段 {field_key} 结构无效，已丢弃")
                 continue
             value = str(generated.get("value", "")).strip()
-            evidence_ids = [str(item) for item in generated.get("evidence_ids", [])]
+            # ``target_context`` is request metadata derived from field-level
+            # evidence, not an independent source. Some models echo it as a
+            # pseudo citation. Ignore that token while still requiring at
+            # least one real, known evidence id for every non-empty result.
+            evidence_ids = [
+                str(item)
+                for item in generated.get("evidence_ids", [])
+                if str(item) != "field:target_context"
+            ]
             unknown = sorted(set(evidence_ids) - known_evidence)
             if unknown:
                 issues.append(f"GLM 字段 {field_key} 引用了未知证据：{'、'.join(unknown)}")
@@ -262,6 +345,36 @@ class BailianYellowNarrativeAdapter:
         return "".join([text, *sections]), True
 
     @staticmethod
+    def _sanitize_profit_model_swot(value: str) -> tuple[str, bool]:
+        """Remove common unsupported causal claims from model SWOT prose."""
+        changed = False
+        kept: list[str] = []
+        for clause in re.split(r"(?<=[。！？；])", str(value or "")):
+            if not clause:
+                continue
+            has_method = any(name in clause for name in ("收益法", "市场法", "资产基础法"))
+            claims_outlook = any(
+                marker in clause
+                for marker in ("表明", "说明", "意味着", "体现", "证明", "认可")
+            )
+            if has_method and claims_outlook:
+                changed = True
+                continue
+            if "财务费用为负" in clause and any(
+                marker in clause
+                for marker in ("利息收入", "资金状况良好", "财务风险较低")
+            ):
+                punctuation = "；" if clause.endswith("；") else "。"
+                kept.append(
+                    "财务费用为负，对利润形成正向影响，具体原因现有材料未披露"
+                    + punctuation
+                )
+                changed = True
+                continue
+            kept.append(clause)
+        return "".join(kept).strip(), changed
+
+    @staticmethod
     def _industry_fallback(field_evidence: list[dict[str, Any]]) -> str:
         """Render a direct industry field from target API evidence only."""
         patterns = (
@@ -280,10 +393,77 @@ class BailianYellowNarrativeAdapter:
 
     @staticmethod
     def _comparable_fallback(field_evidence: list[dict[str, Any]]) -> str:
-        records = [str(item.get("text", "")).strip() for item in field_evidence]
-        if not records:
+        announcements: list[dict[str, str]] = []
+        details: dict[tuple[str, str], dict[str, str]] = {}
+        announcement_pattern = re.compile(
+            r"([^；]+)；股票代码：([^；]+)；公告类别：([^；]*)；"
+            r"公告：(.+?)；日期：(\d{4}-\d{2}-\d{2})"
+        )
+        for item in field_evidence:
+            evidence_id = str(item.get("evidence_id", ""))
+            text = str(item.get("text", "")).strip()
+            if ":915:" in evidence_id:
+                for match in announcement_pattern.finditer(text):
+                    raw_name, code, category, title, date = match.groups()
+                    name = raw_name.rsplit("：", 1)[-1].strip()
+                    announcements.append(
+                        {
+                            "name": name,
+                            "code": code.strip(),
+                            "category": category.strip(),
+                            "title": title.strip(),
+                            "date": date.strip(),
+                        }
+                    )
+            if ":699:peer:" not in evidence_id:
+                continue
+            name_match = re.search(r"企业名称：([^；]+)", text)
+            code_match = re.search(r"股票代码：([^；]+)", text)
+            if not name_match or not code_match:
+                continue
+            record: dict[str, str] = {}
+            for key in (
+                "所属行业",
+                "证券类别",
+                "上市日期",
+                "注册地址",
+                "市盈率",
+                "市净率",
+            ):
+                match = re.search(rf"{key}：([^；\n]+)", text)
+                if match:
+                    record[key] = match.group(1).strip()
+            details[(name_match.group(1).strip(), code_match.group(1).strip())] = record
+        if not announcements:
             return NO_EVIDENCE_STATEMENTS["comparable_list"]
-        return "以下为按经营关键词命中的上市公司公告候选，不等于可比性最终认定。" + "\n".join(records)
+        lines = ["对标上市公司候选如下："]
+        seen: set[tuple[str, str]] = set()
+        for announcement in announcements:
+            identity = (announcement["name"], announcement["code"])
+            if identity in seen:
+                continue
+            seen.add(identity)
+            detail = details.get(identity, {})
+            listing = (
+                f"证券类别：{detail.get('证券类别', '未披露')}；"
+                f"上市日期：{detail.get('上市日期', '未披露')}"
+            )
+            metrics = (
+                f"市盈率{detail.get('市盈率', '未披露')}；"
+                f"市净率{detail.get('市净率', '未披露')}"
+            )
+            lines.append(
+                f"{len(seen)}. {announcement['name']}｜股票代码：{announcement['code']}｜"
+                f"所属行业：{detail.get('所属行业', '未披露')}｜"
+                f"上市信息：{listing}｜"
+                f"公告依据：{announcement['title']}（{announcement['date']}）｜"
+                f"估值指标：{metrics}"
+            )
+        lines.append(
+            "以上为基于业务关键词及公告信息形成的上市公司候选，最终可比性仍需结合"
+            "业务结构、规模、盈利能力和风险特征进一步判断。"
+        )
+        return "\n".join(lines)
 
     @staticmethod
     def _normalize_selected_value(
@@ -302,7 +482,10 @@ class BailianYellowNarrativeAdapter:
                 return BailianYellowNarrativeAdapter._comparable_fallback(field_evidence), "未返回内容，已按企查查公告证据生成候选说明"
             return NO_EVIDENCE_STATEMENTS.get(field_key, ""), "未返回内容，已写入材料未披露说明"
         if field_key == "profit_model_swot":
+            value, sanitized = BailianYellowNarrativeAdapter._sanitize_profit_model_swot(value)
             normalized, changed = BailianYellowNarrativeAdapter._normalize_profit_model_swot(value)
+            if sanitized:
+                return normalized, "已移除缺少事实依据的评估方法或财务费用推断"
             return normalized, "未覆盖盈利模式及 SWOT 五个维度，已补充可核验缺失说明" if changed else None
         if field_key == "comparable_list" and not all(
             marker in value for marker in ("股票代码", "公告", "日期")
@@ -322,6 +505,7 @@ class BailianYellowNarrativeAdapter:
             values: dict[str, str] = {}
             issues: list[str] = []
             all_evidence = list(evidence.get("evidence", []))
+            target_context = self._target_context(all_evidence)
             for field_key in requested:
                 field_evidence = self._relevant_evidence(field_key, all_evidence)
                 if not field_evidence:
@@ -334,6 +518,7 @@ class BailianYellowNarrativeAdapter:
                     continue
                 field_payload = {
                     "requested_field": field_key,
+                    "target_context": target_context,
                     "evidence": field_evidence,
                 }
                 try:

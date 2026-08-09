@@ -401,6 +401,7 @@
     },
   "historical_ownership_table": {
       "target_table_index": 2,
+      "valuation_date_target_table_index": 3,
       "header": ["序号", "股东名称", "总出资（元）", "股权比例"],
       "source_locator": "OCR_表格：按‘出资方/余额’表头自动识别",
       "table_markers": ["出资方", "余额"],

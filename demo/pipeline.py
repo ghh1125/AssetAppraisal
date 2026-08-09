@@ -256,15 +256,26 @@ def _company_profile_table(profile: dict[str, Any], fallback_name: Any = "", fal
     """Render the backend-provided company profile into the template's 2-cell table."""
     profile = profile if isinstance(profile, dict) else {}
     present = lambda value: str(value) if value not in (None, "") else "XXX"
+    def present_date(value: Any) -> str:
+        text = present(value)
+        match = re.match(r"^(\d{4})[-/](\d{1,2})[-/](\d{1,2})", text)
+        if not match:
+            return text
+        year, month, day = (int(part) for part in match.groups())
+        return f"{year:04d}年{month:02d}月{day:02d}日"
+
     credit_code = present(profile.get("credit_code"))
     name = present(profile.get("name") or fallback_name)
-    capital = present(profile.get("registered_capital") or fallback_capital)
+    # The workbook/PDF value represents the valuation-date financial state;
+    # QCC's business profile represents the current registration state.  When
+    # both exist, the valuation-date material must win in an appraisal report.
+    capital = present(fallback_capital or profile.get("registered_capital"))
     return [
         [f"统一社会信用代码：{credit_code}", f"企业名称：{name}"],
         [f"类型：{present(profile.get('company_type'))}", f"法定代表人：{present(profile.get('legal_representative'))}"],
-        [f"注册资本：{capital}", f"成立日期：{present(profile.get('establish_date'))}"],
-        [f"营业期限自：{present(profile.get('term_start'))}", f"营业期限至：{present(profile.get('term_end'))}"],
-        [f"登记机关：{present(profile.get('registration_authority'))}", f"核准日期：{present(profile.get('approval_date'))}"],
+        [f"注册资本：{capital}", f"成立日期：{present_date(profile.get('establish_date'))}"],
+        [f"营业期限自：{present_date(profile.get('term_start'))}", f"营业期限至：{present_date(profile.get('term_end'))}"],
+        [f"登记机关：{present(profile.get('registration_authority'))}", f"核准日期：{present_date(profile.get('approval_date'))}"],
         [f"登记状态：{present(profile.get('status'))}"],
         [f"注册地址：{present(profile.get('address'))}"],
         [f"许可项目：{present(profile.get('business_scope'))}"],
@@ -360,6 +371,36 @@ def _equity_matrix_from_partners(rows: list[dict[str, Any]]) -> list[list[str]]:
             matrix.append(["", "", "", ""])
         matrix.append(["合计", "合计", f"{total:,.2f}" if total else "", "100%"])
     return matrix
+
+
+def _valuation_date_ownership_matrix(
+    audited_matrix: list[list[str]] | None,
+    current_partner_rows: list[dict[str, Any]],
+) -> list[list[str]]:
+    """Prefer dated audit evidence over a current company-registry snapshot."""
+    if audited_matrix and len(audited_matrix) > 1:
+        return audited_matrix
+    if current_partner_rows:
+        return _equity_matrix_from_partners(current_partner_rows)
+    return [
+        ["序号", "股东名称", "总出资（元）", "股权比例"],
+        ["XXX", "XXX", "XXX", "XXX"],
+    ]
+
+
+def _ownership_matrix_summary(matrix: list[list[str]] | None) -> str:
+    """Render audited ownership rows as a compact valuation-date fact."""
+    if not matrix or len(matrix) < 2:
+        return ""
+    parts = []
+    for row in matrix[1:]:
+        values = [str(value).strip() for value in row]
+        if not values or values[0] in {"", "合计"} or len(values) < 4:
+            continue
+        name, capital, percent = values[1], values[2], values[3]
+        if name:
+            parts.append(f"{name}：出资额{capital}元，股权比例{percent}")
+    return "；".join(parts)
 
 
 def _ocr_ownership_matrix(
@@ -1203,11 +1244,37 @@ def run_pipeline(
             except (OSError, ValueError, KeyError) as exc:
                 issues.append(f"参考 Word 叙述证据读取失败：{exc}")
         if target_profile:
+            # QCC 735 is a current registry snapshot.  Only stable identity
+            # facts are supplied to the valuation-date narrative; dynamic
+            # capital, ownership, company type and personnel must come from
+            # dated uploaded material when the report describes the base date.
+            stable_profile = {
+                key: target_profile.get(key)
+                for key in (
+                    "name",
+                    "credit_code",
+                    "establish_date",
+                    "address",
+                    "business_scope",
+                )
+                if target_profile.get(key) not in (None, "")
+            }
             structured_evidence.append(
                 {
                     "evidence_id": "api:qichacha:target:735:profile",
                     "text": "被评估单位工商信息："
-                    + json.dumps(target_profile, ensure_ascii=False, default=str),
+                    + json.dumps(stable_profile, ensure_ascii=False, default=str),
+                }
+            )
+        audited_ownership_summary = _ownership_matrix_summary(historical_ownership_matrix)
+        if audited_ownership_summary:
+            structured_evidence.append(
+                {
+                    "evidence_id": "field:ownership_at_valuation_date_audited",
+                    "text": (
+                        "评估基准日审计材料股权结构（优先于企查查当前工商快照）："
+                        + audited_ownership_summary
+                    ),
                 }
             )
         # Optional QCC business APIs contribute facts to the LLM evidence
@@ -1219,6 +1286,11 @@ def run_pipeline(
                 if not isinstance(item, dict) or not item.get("evidence_id") or not item.get("text"):
                     continue
                 raw_evidence_id = str(item["evidence_id"])
+                if role == "target" and raw_evidence_id.endswith(":735:profile"):
+                    # The sanitized stable profile above is the sole 735 input
+                    # to LLM narratives. Keep the full live profile for the
+                    # deterministic registry table, not for base-date prose.
+                    continue
                 qcc_prefix = "api:qichacha:"
                 evidence_suffix = (
                     raw_evidence_id[len(qcc_prefix):]
@@ -1320,6 +1392,21 @@ def run_pipeline(
         }
         if value in (None, "", []):
             issues.append(f"{route.field_key}：指定来源无可用值，已留空")
+
+    audited_ownership_summary = _ownership_matrix_summary(historical_ownership_matrix)
+    if audited_ownership_summary:
+        fields["ownership_at_valuation_date"] = audited_ownership_summary
+        evidence["ownership_at_valuation_date"] = {
+            "kind": "pdf_ocr_xlsx",
+            "file": (
+                ocr_workbook_path.name
+                if ocr_workbook_path
+                else pdf.name
+                if pdf is not None
+                else ""
+            ),
+            "locator": f"OCR_表格!{ownership_table_spec.get('table_id', '')}",
+        }
 
     # The template has one body placeholder below “3、被评估单位概述”. Its
     # comment lists the six optional node-2 modules; it does not provide six
@@ -1652,15 +1739,20 @@ def run_pipeline(
     table_replacements[1] = _company_profile_table(
         qcc_profiles.get("target", {}),
         fields.get("target_company_name", ""),
+        fields.get("registered_capital", ""),
     )
     partner_rows = qcc_payloads.get("target", {}).get("partner_rows", [])
-    if partner_rows:
-        table_replacements[3] = _equity_matrix_from_partners(partner_rows)
-    else:
-        table_replacements[3] = [
-            ["序号", "股东名称", "总出资（元）", "股权比例"],
-            ["XXX", "XXX", "XXX", "XXX"],
-        ]
+    valuation_date_table_index = int(
+        ownership_table_spec.get("valuation_date_target_table_index", 3)
+        if isinstance(ownership_table_spec, dict)
+        else 3
+    )
+    table_replacements[valuation_date_table_index] = (
+        _valuation_date_ownership_matrix(
+            historical_ownership_matrix,
+            partner_rows,
+        )
+    )
     long_term_table = config.get("long_term_assets_table")
     if isinstance(long_term_table, dict):
         semantic_long_term = fields.get("long_term_assets_table")

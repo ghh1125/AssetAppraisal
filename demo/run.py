@@ -435,6 +435,7 @@ def run_project(
     # Project workbooks evolve and frequently rename sheets or move cells.
     # Apply deterministic semantic reading to the uploaded workbooks.
     semantic_primary_fields = {
+        "registered_capital",
         "book_net_assets",
         "asset_approach_value",
         "income_approach_value",
@@ -1002,6 +1003,7 @@ def main(argv: list[str] | None = None) -> int:
                     "213": "QICHACHA_ENDPOINT_213",
                     "886": "QICHACHA_ENDPOINT_886",
                     "915": "QICHACHA_ENDPOINT_915",
+                    "699": "QICHACHA_ENDPOINT_699",
                 }.items()
                 if os.environ.get(name)
             }

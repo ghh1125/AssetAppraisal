@@ -20,7 +20,7 @@ def build_bailian_adapters(
     prompt_dir = root / "prompts"
     models = resolve_llm_models(config, env or {})
     fallback_model = resolve_llm_fallback_model(config, env or {})
-    narrative_prompt = (prompt_dir / "yellow_narratives.v2.txt").read_text(encoding="utf-8")
+    narrative_prompt = (prompt_dir / "yellow_narratives.v3.txt").read_text(encoding="utf-8")
     return {
         "narrative": BailianYellowNarrativeAdapter(
             client,

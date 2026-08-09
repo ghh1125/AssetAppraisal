@@ -975,6 +975,69 @@ def _historical_statement_signal(sheet, *, kind: str, label_row: int) -> int:
     return score
 
 
+def _registered_capital_candidate(workbook) -> dict[str, Any] | None:
+    """Find paid-in/share capital at the latest audited balance-sheet period.
+
+    The audited statement may move between sheets and columns, so the match is
+    based on the account label, a nearby balance-sheet heading, and canonical
+    period headers.  A bare number elsewhere in a workbook is intentionally
+    ignored.
+    """
+    best: tuple[tuple[int, int, int, int], dict[str, Any]] | None = None
+    aliases = {"注册资本", "实收资本", "股本", "实收资本或股本"}
+    for sheet in workbook.worksheets:
+        scale_to_wan = _unit_scale_to_wan(sheet, max_rows=120)
+        for row in sheet.iter_rows():
+            for label_cell in row:
+                label = _text(label_cell.value)
+                if label not in aliases:
+                    continue
+                statement_signal = _historical_statement_signal(
+                    sheet,
+                    kind="balance",
+                    label_row=label_cell.row,
+                )
+                if not statement_signal:
+                    continue
+                period_columns = _period_columns_for_label(sheet, label_cell)
+                numeric_periods = [
+                    (column, period, _number(sheet.cell(label_cell.row, column).value))
+                    for column, period in period_columns
+                ]
+                numeric_periods = [item for item in numeric_periods if item[2] is not None]
+                if not numeric_periods:
+                    continue
+                column, period, amount = max(
+                    numeric_periods,
+                    key=lambda item: (
+                        item[1][0] or 0,
+                        item[1][1] or 0,
+                        item[1][2] or 0,
+                    ),
+                )
+                period_rank = (
+                    period[0] or 0,
+                    period[1] or 0,
+                    period[2] or 0,
+                )
+                candidate = {
+                    "value": float(amount) * scale_to_wan,
+                    "locator": (
+                        f"{sheet.title}!{get_column_letter(column)}{label_cell.row}"
+                    ),
+                }
+                rank = (statement_signal, *period_rank)
+                if best is None or rank > best[0]:
+                    best = (rank, candidate)
+    return best[1] if best else None
+
+
+def _format_wan(value: float) -> str:
+    if value.is_integer():
+        return f"{value:,.0f}万元"
+    return f"{value:,.2f}万元".replace(".00万元", "万元")
+
+
 def _historical_table(
     workbook,
     *,
@@ -1218,6 +1281,15 @@ def extract_workbook_facts(path: Path, role: str) -> dict[str, Any]:
                     "所在评估列为空或全零，已保留 XXX"
                 )
         if role in {"reporting_workbook", "audited_financials"}:
+            if role == "audited_financials":
+                capital = _registered_capital_candidate(workbook)
+                if capital:
+                    fields["registered_capital"] = _format_wan(capital["value"])
+                    evidence["registered_capital"] = {
+                        "kind": "semantic_excel",
+                        "file": path.name,
+                        "locator": capital["locator"],
+                    }
             table_fields, table_evidence, table_issues = _asset_tables(workbook)
             fields.update(table_fields)
             issues.extend(table_issues)

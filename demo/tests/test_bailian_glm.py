@@ -126,6 +126,39 @@ def test_glm_accepts_flat_json_object_used_by_qwen_flash():
     assert issues == []
 
 
+def test_glm_ignores_target_context_pseudo_citation_when_real_evidence_remains():
+    values, issues = BailianYellowNarrativeAdapter._validated_values(
+        {
+            "profit_model_swot": {
+                "value": "盈利模式：以加工服务费取得收入。",
+                "evidence_ids": [
+                    "field:target_context",
+                    "field:historical_income_statement_table",
+                ],
+            }
+        },
+        {"field:historical_income_statement_table"},
+    )
+
+    assert values == {"profit_model_swot": "盈利模式：以加工服务费取得收入。"}
+    assert issues == []
+
+
+def test_glm_rejects_target_context_as_the_only_substantive_evidence():
+    values, issues = BailianYellowNarrativeAdapter._validated_values(
+        {
+            "profit_model_swot": {
+                "value": "无材料支持的具体结论。",
+                "evidence_ids": ["field:target_context"],
+            }
+        },
+        set(),
+    )
+
+    assert values == {}
+    assert any("没有证据编号" in issue for issue in issues)
+
+
 def test_hybrid_model_explicitly_disables_thinking_for_short_narrative_calls():
     client = FakeClient(
         json.dumps(
@@ -224,6 +257,55 @@ def test_glm_generates_selected_modules_field_by_field():
     }
     assert issues == []
     assert len(client.requests) == 2
+
+
+def test_glm_sends_target_context_with_each_selected_module():
+    client = FieldwiseClient()
+    adapter = BailianYellowNarrativeAdapter(
+        client=client,
+        api_key="test-key",
+        prompt="规则",
+    )
+
+    adapter.generate(
+        {
+            "selected_modules": ["main_products"],
+            "evidence": [
+                {
+                    "evidence_id": "field:target_company_name",
+                    "text": "被评估单位名称：通富热处理（昆山）有限公司",
+                },
+                {
+                    "evidence_id": "field:valuation_date_year",
+                    "text": "评估基准日年：2025",
+                },
+                {
+                    "evidence_id": "field:valuation_date_month",
+                    "text": "评估基准日月：6",
+                },
+                {
+                    "evidence_id": "field:valuation_date_day",
+                    "text": "评估基准日日：30",
+                },
+                {
+                    "evidence_id": "field:registered_capital",
+                    "text": "注册资本：1,000万元",
+                },
+                {
+                    "evidence_id": "field:main_products",
+                    "text": "主要产品：汽车零部件热处理加工服务",
+                },
+            ],
+        }
+    )
+
+    for request in client.requests:
+        payload = json.loads(request["json"]["messages"][-1]["content"])
+        assert payload["target_context"] == {
+            "target_company_name": "通富热处理（昆山）有限公司",
+            "registered_capital": "1,000万元",
+            "valuation_date": "2025年6月30日",
+        }
 
 
 def test_glm_uses_a_factual_no_disclosure_statement_for_missing_customer_supplier_evidence():
@@ -370,6 +452,25 @@ def test_glm_normalizes_profit_model_swot_to_all_required_dimensions():
 
     assert all(label in values["profit_model_swot"] for label in ("盈利模式：", "优势：", "劣势：", "机会：", "风险："))
     assert any("profit_model_swot" in issue for issue in issues)
+
+
+def test_glm_removes_unsupported_valuation_method_and_finance_inferences():
+    value, issue = BailianYellowNarrativeAdapter._normalize_selected_value(
+        "profit_model_swot",
+        (
+            "盈利模式：公司通过加工服务取得收入。"
+            "优势：财务费用为负，说明公司资金状况良好，利息收入较多；"
+            "劣势：收入存在波动。"
+            "机会：采用收益法表明公司未来盈利能力受到认可。"
+            "风险：客户集中度未披露。"
+        ),
+        [],
+    )
+
+    assert "盈利能力受到认可" not in value
+    assert "资金状况良好" not in value
+    assert "具体原因现有材料未披露" in value
+    assert issue == "已移除缺少事实依据的评估方法或财务费用推断"
 
 
 def test_glm_generates_all_seven_fixed_word_candidates():

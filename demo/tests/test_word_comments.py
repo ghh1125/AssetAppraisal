@@ -63,6 +63,7 @@ def test_comment_template_maps_repeated_placeholders_in_order() -> None:
         "report_date_year", "report_date_month", "report_date_day",
     ]
     assert mapped["DOCUMENT-P0473-X01"] == "target_company_name"
+    assert mapped["DOCUMENT-P0084-X01"] == "valuation_subject_type"
     assert mapped["DOCUMENT-P0476-X01"] == "selected_valuation_method"
     assert mapped["DOCUMENT-P0489-X01"] == "valuation_subject_type"
     assert mapped["DOCUMENT-P0490-X01"] == "valuation_subject_type"
@@ -93,3 +94,30 @@ def test_latest_comments_drive_source_classification_and_explicit_unresolved_slo
         [locations["DOCUMENT-P0469-X01"]],
         {"valuation_subject_type": "股东全部权益价值"},
     )["DOCUMENT-P0469-X01"] == "XXX"
+
+
+def test_valuation_object_sentence_cannot_be_remapped_to_transaction_type() -> None:
+    template = [
+        {
+            "location_id": "DOCUMENT-P0001-X01",
+            "context": "七、评估对象：被评估单位截至评估基准日的XXX价值",
+            "marker": "XXX",
+            "record_type": "占位符",
+            "paragraph_index": 1,
+            "occurrence_index": 1,
+            "comment_texts": ["数据来源：人工基础信息位置：委托类型"],
+        }
+    ]
+    base = [
+        {
+            "location_id": "DOCUMENT-P0001-X01",
+            "context": "七、评估对象：被评估单位截至评估基准日的XXX价值",
+            "marker": "XXX",
+            "field_key": "valuation_subject_type",
+            "record_type": "占位符",
+        }
+    ]
+
+    mapped = build_comment_aware_locations(template, base)
+
+    assert mapped[0]["field_key"] == "valuation_subject_type"

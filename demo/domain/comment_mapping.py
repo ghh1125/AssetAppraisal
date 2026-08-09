@@ -344,5 +344,14 @@ def build_comment_aware_locations(
             selected["field_key"] = contextual_key
         elif not selected.get("field_key") and contextual_key:
             selected["field_key"] = contextual_key
+        # A transaction type (收购/转让/增资/减资) cannot grammatically or
+        # legally be the value object in a sentence headed “评估对象”.  Keep
+        # this semantic invariant even if an individual Word comment was
+        # accidentally anchored to the wrong manual-input label.
+        if (
+            item.get("record_type") == "占位符"
+            and re.search(r"评估对象[^X]*X{2,}价值", str(item.get("context", "")))
+        ):
+            selected["field_key"] = "valuation_subject_type"
         result.append(selected)
     return result

@@ -39,6 +39,31 @@ def test_asset_summary_is_matched_by_labels_and_normalized_to_wan(tmp_path: Path
     assert facts["evidence"]["asset_approach_value"]["locator"].endswith("!D3")
 
 
+def test_audited_balance_sheet_extracts_valuation_date_registered_capital_by_semantics(
+    tmp_path: Path,
+):
+    path = _save_workbook(
+        tmp_path / "renamed-audit-workbook.xlsx",
+        {
+            "任意财务表名称": [
+                ["资产负债表"],
+                ["金额单位：人民币元"],
+                ["项目", "行次", "2023年12月31日", "2024年12月31日", "2025年6月30日"],
+                ["实收资本（或股本）", 118, 8_000_000, 9_000_000, 10_000_000],
+            ]
+        },
+    )
+
+    facts = extract_workbook_facts(path, "audited_financials")
+
+    assert facts["fields"]["registered_capital"] == "1,000万元"
+    assert facts["evidence"]["registered_capital"] == {
+        "kind": "semantic_excel",
+        "file": path.name,
+        "locator": "任意财务表名称!E4",
+    }
+
+
 def test_asset_scope_uses_summary_title_inside_a_generic_sheet_name(tmp_path: Path):
     """Asset-cleanup workbooks commonly name sheets 表1 rather than 汇总表."""
     path = _save_workbook(

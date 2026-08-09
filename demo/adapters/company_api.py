@@ -306,7 +306,21 @@ def _fuzzy_candidates_text(payload: Any) -> str:
 
 
 def _listed_announcements_text(payload: Any) -> str:
-    result = []
+    return "；".join(
+        _join([
+            str(row["name"]),
+            f"股票代码：{row['code']}" if row["code"] else "",
+            f"公告类别：{row['category']}" if row["category"] else "",
+            f"公告：{row['title']}" if row["title"] else "",
+            f"日期：{row['date']}" if row["date"] else "",
+        ])
+        for row in _listed_announcement_rows(payload)
+    )
+
+
+def _listed_announcement_rows(payload: Any) -> list[dict[str, str]]:
+    """Return only announcement candidates with the identifiers needed for verification."""
+    result: list[dict[str, str]] = []
     seen: set[tuple[str, str]] = set()
     for row in _records(payload):
         name = _first(row, "CompanyName", "Name", "StockName")
@@ -317,16 +331,53 @@ def _listed_announcements_text(payload: Any) -> str:
         identity = (str(name or ""), str(code or ""))
         if name and identity not in seen:
             seen.add(identity)
-            result.append(_join([
-                str(name),
-                f"股票代码：{code}" if code else "",
-                f"公告类别：{category}" if category else "",
-                f"公告：{title}" if title else "",
-                f"日期：{date}" if date else "",
-            ]))
+            result.append({
+                "name": str(name),
+                "code": str(code or ""),
+                "title": str(title or ""),
+                "category": str(category or ""),
+                "date": str(date or ""),
+            })
         if len(result) >= 5:
             break
-    return "；".join(result)
+    return result
+
+
+def _listed_company_detail_text(payload: Any, *, expected_name: str, expected_code: str) -> str:
+    """Return only identity-matching ApiCode 699 facts for an announced peer."""
+    root = _objects(payload)
+    if not isinstance(root, dict):
+        return ""
+    base_info = root.get("BaseInfo")
+    publish_info = root.get("IPOPublishInfo", root.get("IpoPublishInfo"))
+    # Retain the earlier flat shape for tenants that expose the same ApiCode
+    # without the official Result.BaseInfo wrapper.
+    row = base_info if isinstance(base_info, dict) else root
+    ipo = publish_info if isinstance(publish_info, dict) else {}
+    name = str(_first(row, "Companyname", "CompanyName", "Name"))
+    code = str(_first(row, "ACode", "StockCode", "StockNumber", "Code"))
+    if expected_name and name and name != expected_name:
+        return ""
+    if expected_code and code and code != expected_code:
+        return ""
+    details = [
+        f"股票简称：{_first(row, 'AShortName', 'StockName', 'ShortName')}" if _first(row, "AShortName", "StockName", "ShortName") else "",
+        f"所属行业：{_first(row, 'Industry', 'QccIndustry', 'Category')}" if _first(row, "Industry", "QccIndustry", "Category") else "",
+        f"证券类别：{_first(row, 'StockCategory')}" if _first(row, "StockCategory") else "",
+        f"上市日期：{_first(row, 'MarketDate', 'ListingDate', 'ListDate')}" if _first(row, "MarketDate", "ListingDate", "ListDate") else "",
+        f"注册地址：{_first(row, 'RegAddress')}" if _first(row, "RegAddress") else "",
+        f"市净率：{_first(row, 'PBR')}" if _first(row, "PBR") else "",
+        f"市盈率：{_first(row, 'PER')}" if _first(row, "PER") else "",
+        f"成立日期：{_first(ipo, 'EstablishDate')}" if _first(ipo, "EstablishDate") else "",
+        f"发行方式：{_first(ipo, 'ReleasesType')}" if _first(ipo, "ReleasesType") else "",
+    ]
+    if not any(details):
+        return ""
+    return _join([
+        f"企业名称：{name or expected_name}" if (name or expected_name) else "",
+        f"股票代码：{code or expected_code}" if (code or expected_code) else "",
+        *details,
+    ])
 
 
 def comparable_search_terms(business_scope: str, *, limit: int = 3) -> list[str]:
@@ -388,6 +439,7 @@ class QichachaApiAdapter:
         # for the target company's business keywords, never for the client.
         "886": "/FuzzySearch/GetList",
         "915": "/IPOAnnouncement/GetList",
+        "699": "/IPO/GetIPODetail",
     }
 
     def __init__(
@@ -438,6 +490,8 @@ class QichachaApiAdapter:
             # Annual-report API officially uses keyNo. Some QCC tenants also
             # accept searchKey, so retain a safe fallback for name-only calls.
             params["keyNo"] = key_no or company_name
+        elif code == "699":
+            params["stockCode"] = key_no or company_name
         else:
             params["searchKey"] = company_name
             if code in {"514", "233", "886", "915"}:
@@ -569,6 +623,35 @@ class QichachaApiAdapter:
                     "source_kind": "qichacha_api",
                     "text": f"关键词“{keyword}”命中的上市公司公告候选：{text}",
                 })
+                for candidate in _listed_announcement_rows(ipo_payload):
+                    # ApiCode 699 is deliberately never used as a search
+                    # source.  It only enriches a candidate whose identity
+                    # (company, code, title, date) already exists in 915.
+                    detail_payload, detail_issue = self._get(
+                        "699",
+                        candidate["name"],
+                        key_no=candidate["code"],
+                    )
+                    if detail_issue:
+                        issues.append(
+                            f"对标上市公司“{candidate['name']}”基础信息：{detail_issue}"
+                        )
+                        continue
+                    detail = _listed_company_detail_text(
+                        detail_payload,
+                        expected_name=candidate["name"],
+                        expected_code=candidate["code"],
+                    )
+                    if detail:
+                        evidence.append({
+                            "evidence_id": (
+                                f"api:qichacha:699:peer:{candidate['name']}:{candidate['code']}"
+                            ),
+                            "api_code": "699",
+                            "topic": "comparable_list",
+                            "source_kind": "qichacha_api",
+                            "text": f"上市公司补充信息（已由公告候选核验）：{detail}",
+                        })
         return evidence, issues
 
 

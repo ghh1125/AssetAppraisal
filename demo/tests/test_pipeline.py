@@ -9,7 +9,7 @@ from docx import Document
 from openpyxl import Workbook, load_workbook
 
 import demo.pipeline as pipeline_module
-from demo.pipeline import _apply_ocr_overrides_to_table, _company_profile_table, _ocr_ownership_matrix, _validated_qcc_payload, run_pipeline
+from demo.pipeline import _apply_ocr_overrides_to_table, _company_profile_table, _ocr_ownership_matrix, _ownership_matrix_summary, _validated_qcc_payload, _valuation_date_ownership_matrix, run_pipeline
 
 
 def test_company_profile_table_writes_credit_code_and_profile_values():
@@ -28,6 +28,32 @@ def test_company_profile_table_writes_credit_code_and_profile_values():
     ]
     assert rows[1][0] == "类型：有限责任公司"
     assert rows[2][0] == "注册资本：1,000万元"
+
+
+def test_company_profile_table_prefers_valuation_date_material_capital():
+    rows = _company_profile_table(
+        {
+            "name": "示例有限公司",
+            "registered_capital": "500万元",
+        },
+        fallback_capital="1,000万元",
+    )
+
+    assert rows[2][0] == "注册资本：1,000万元"
+
+
+def test_company_profile_table_formats_qcc_dates_for_word():
+    rows = _company_profile_table(
+        {
+            "establish_date": "2011-02-25 00:00:00",
+            "term_start": "2011-02-25",
+            "approval_date": "2025/06/30",
+        }
+    )
+
+    assert rows[2][1] == "成立日期：2011年02月25日"
+    assert rows[3][0] == "营业期限自：2011年02月25日"
+    assert rows[4][1] == "核准日期：2025年06月30日"
 
 
 def test_qcc_identity_mismatch_is_rejected_instead_of_filling_wrong_profile():
@@ -64,6 +90,34 @@ def test_ocr_ownership_matrix_joins_split_shareholder_names():
     )
     assert names == ["上海上大热处理有限公司", "富士和机械工业（昆山）有限公司"]
     assert matrix[-1] == ["合计", "合计", "10,000,000.00", "100%"]
+
+
+def test_valuation_date_ownership_prefers_audit_material_over_current_api():
+    historical = [
+        ["序号", "股东名称", "总出资（元）", "股权比例"],
+        ["1", "股东甲", "5,000,000.00", "50%"],
+        ["2", "股东乙", "5,000,000.00", "50%"],
+        ["合计", "合计", "10,000,000.00", "100%"],
+    ]
+    current_api = [
+        {"name": "现股东丙", "capital": "500万元", "percent": "100%"},
+    ]
+
+    assert _valuation_date_ownership_matrix(historical, current_api) == historical
+
+
+def test_ownership_summary_keeps_audited_shareholders_and_ignores_total_row():
+    matrix = [
+        ["序号", "股东名称", "总出资（元）", "股权比例"],
+        ["1", "甲公司", "5,000,000.00", "50%"],
+        ["2", "乙公司", "5,000,000.00", "50%"],
+        ["合计", "合计", "10,000,000.00", "100%"],
+    ]
+
+    assert _ownership_matrix_summary(matrix) == (
+        "甲公司：出资额5,000,000.00元，股权比例50%；"
+        "乙公司：出资额5,000,000.00元，股权比例50%"
+    )
 
 
 def test_ocr_amount_overrides_keep_word_table_in_sync():

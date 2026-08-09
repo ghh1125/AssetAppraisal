@@ -201,6 +201,7 @@ def _build_external_adapters(use_glm: bool, use_qichacha: bool) -> tuple[Any, An
                     "213": "QICHACHA_ENDPOINT_213",
                     "886": "QICHACHA_ENDPOINT_886",
                     "915": "QICHACHA_ENDPOINT_915",
+                    "699": "QICHACHA_ENDPOINT_699",
                 }.items()
                 if os.environ.get(name)
             },

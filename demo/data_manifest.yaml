@@ -11,8 +11,8 @@
     "optional_sources": "optional_sources.v1",
     "generation_issues": "generation_issues.v2",
     "placeholder_policy": "placeholder_policy.v1",
-    "prompt": "yellow_narratives.v2",
-    "output_schema": "yellow_narratives_output.v2"
+    "prompt": "yellow_narratives.v3",
+    "output_schema": "yellow_narratives_output.v3"
   },
   "sources": [
     {"name":"评估报告版式-沟通标注版.docx","purpose":"只读资产评估报告模板","version":"当前留存版","update_method":"项目负责人替换模板并重新生成映射","missing_behavior":"终止运行，无法生成 Word"},
@@ -40,7 +40,7 @@
       "kind": "external_api",
       "api_codes": ["735", "231", "514", "233"],
       "narrative_evidence_api_codes": ["2001", "213", "886", "915", "699"],
-      "api_codes_default_behavior": "启用企查查时默认调用 735/231/514/233/2001/213；被评估主体按经营范围原文调用 886→915→699 形成上市候选证据",
+      "api_codes_default_behavior": "启用企查查时默认调用 735/231/514/233/2001/213；被评估主体按经营范围调用 886→915 检索上市候选，并默认使用股票代码调用 699 /IPO/GetIPODetail 补充上市信息",
       "optional_api_codes_env": "QICHACHA_EXTRA_API_CODES",
       "base_url_env": "QICHACHA_API_BASE_URL",
       "credential_env": ["QICHACHA_APP_KEY", "QICHACHA_SECRET_KEY"],
@@ -54,8 +54,8 @@
       "fallback_model": "qwen3.8-max",
       "base_url_env": "APPRAISAL_LLM_BASE_URL",
       "credential_env": ["DASHSCOPE_API_KEY"],
-      "prompt_version": "yellow_narratives.v2",
-      "output_schema_version": "yellow_narratives_output.v2",
+      "prompt_version": "yellow_narratives.v3",
+      "output_schema_version": "yellow_narratives_output.v3",
       "update_method": "模型或 Prompt 变更时同步结构化输出契约和样例",
       "missing_behavior": "叙述字段保留黄色占位符"
     }

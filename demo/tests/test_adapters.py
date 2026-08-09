@@ -151,7 +151,35 @@ def test_qichacha_does_not_register_review_only_apis():
     assert "962" not in QichachaApiAdapter.DEFAULT_ENDPOINTS
 
 
-def test_qichacha_discovers_listed_comparable_candidates_from_announcements_without_unverified_detail_calls():
+def test_qichacha_699_default_endpoint_uses_stock_code_query():
+    class ComparableClient(_Client):
+        def get(self, url, **kwargs):
+            self.calls.append((url, kwargs))
+            if url.endswith("FuzzySearch/GetList"):
+                return _Response({"Status": "200", "Result": []})
+            if url.endswith("IPOAnnouncement/GetList"):
+                return _Response({"Status": "200", "Result": {"Data": [{
+                    "CompanyName": "上市公司甲",
+                    "StockCode": "600001",
+                    "Title": "热处理业务公告",
+                    "PublishDate": "2026-01-01",
+                }]}})
+            if url.endswith("IPO/GetIPODetail"):
+                return _Response({"Status": "200", "Result": {}})
+            return super().get(url, **kwargs)
+
+    adapter = QichachaApiAdapter(ComparableClient(), "app", "secret")
+    adapter.discover_listed_comparables(["汽车零部件热处理"])
+
+    assert QichachaApiAdapter.DEFAULT_ENDPOINTS["699"] == "/IPO/GetIPODetail"
+    detail_call = next(
+        kwargs for url, kwargs in adapter.client.calls if url.endswith("IPO/GetIPODetail")
+    )
+    assert detail_call["params"]["stockCode"] == "600001"
+    assert "searchKey" not in detail_call["params"]
+
+
+def test_qichacha_discovers_listed_comparable_candidates_when_api_699_has_no_detail():
     class ComparableClient(_Client):
         def get(self, url, **kwargs):
             self.calls.append((url, kwargs))
@@ -159,6 +187,8 @@ def test_qichacha_discovers_listed_comparable_candidates_from_announcements_with
                 return _Response({"Status": "200", "Result": [{"Name": "同行企业甲", "Industry": "汽车零部件"}]})
             if url.endswith("IPOAnnouncement/GetList"):
                 return _Response({"Status": "200", "Result": {"Data": [{"CompanyName": "上市公司甲", "KeyNo": "peer-key", "StockCode": "600001", "Title": "热处理业务公告", "PublishDate": "2026-01-01"}]}})
+            if url.endswith("IPO/GetIPODetail"):
+                return _Response({"Status": "200", "Result": {}})
             return super().get(url, **kwargs)
 
     adapter = QichachaApiAdapter(ComparableClient(), "app", "secret")
@@ -168,7 +198,108 @@ def test_qichacha_discovers_listed_comparable_candidates_from_announcements_with
     assert {item["api_code"] for item in evidence} == {"886", "915"}
     assert "上市公司甲" in next(item["text"] for item in evidence if item["api_code"] == "915")
     assert "600001" in next(item["text"] for item in evidence if item["api_code"] == "915")
-    assert all("IPO/GetIPO" not in url for url, _ in adapter.client.calls)
+    assert any("IPO/GetIPODetail" in url for url, _ in adapter.client.calls)
+
+
+def test_qichacha_enriches_verified_listed_candidates_with_flat_api_699_response():
+    class ComparableClient(_Client):
+        def get(self, url, **kwargs):
+            self.calls.append((url, kwargs))
+            if url.endswith("FuzzySearch/GetList"):
+                return _Response({"Status": "200", "Result": [{"Name": "同行企业甲", "Industry": "汽车零部件"}]})
+            if url.endswith("IPOAnnouncement/GetList"):
+                return _Response({"Status": "200", "Result": {"Data": [{
+                    "CompanyName": "上市公司甲", "StockCode": "600001", "Title": "热处理业务公告", "PublishDate": "2026-01-01"
+                }]}})
+            if url.endswith("IPO/GetIPODetail"):
+                return _Response({"Status": "200", "Result": {
+                    "CompanyName": "上市公司甲", "StockCode": "600001", "Industry": "汽车零部件制造",
+                    "MainBusiness": "汽车零部件热处理"
+                }})
+            return super().get(url, **kwargs)
+
+    adapter = QichachaApiAdapter(ComparableClient(), "app", "secret")
+    evidence, issues = adapter.discover_listed_comparables(["汽车零部件热处理"])
+
+    assert issues == []
+    listed_detail = next(item for item in evidence if item["api_code"] == "699")
+    assert "上市公司甲" in listed_detail["text"]
+    assert "600001" in listed_detail["text"]
+    assert "汽车零部件制造" in listed_detail["text"]
+    assert "IPO/GetIPODetail" in {url.split("api.qichacha.com/", 1)[-1] for url, _ in adapter.client.calls}
+
+
+def test_qichacha_699_nested_response_enriches_verified_candidate():
+    class ComparableClient(_Client):
+        def get(self, url, **kwargs):
+            self.calls.append((url, kwargs))
+            if url.endswith("FuzzySearch/GetList"):
+                return _Response({"Status": "200", "Result": []})
+            if url.endswith("IPOAnnouncement/GetList"):
+                return _Response({"Status": "200", "Result": {"Data": [{
+                    "CompanyName": "上市公司甲",
+                    "StockCode": "600001",
+                    "Title": "热处理业务公告",
+                    "PublishDate": "2026-01-01",
+                }]}})
+            if url.endswith("IPO/GetIPODetail"):
+                return _Response({"Status": "200", "Result": {
+                    "BaseInfo": {
+                        "Companyname": "上市公司甲",
+                        "ACode": "600001",
+                        "AShortName": "公司甲",
+                        "Industry": "汽车制造业",
+                        "StockCategory": "上交所主板",
+                        "MarketDate": "2011-06-30",
+                        "RegAddress": "上海市示例路1号",
+                        "PBR": "4.05",
+                        "PER": "28.64",
+                    },
+                    "IPOPublishInfo": {
+                        "EstablishDate": "1995-02-10",
+                        "ReleasesType": "网下询价配售",
+                    },
+                }})
+            return super().get(url, **kwargs)
+
+    evidence, issues = QichachaApiAdapter(
+        ComparableClient(), "app", "secret"
+    ).discover_listed_comparables(["汽车零部件热处理"])
+
+    assert issues == []
+    detail = next(item["text"] for item in evidence if item["api_code"] == "699")
+    for expected in (
+        "企业名称：上市公司甲",
+        "股票代码：600001",
+        "股票简称：公司甲",
+        "所属行业：汽车制造业",
+        "证券类别：上交所主板",
+        "上市日期：2011-06-30",
+        "注册地址：上海市示例路1号",
+        "市净率：4.05",
+        "市盈率：28.64",
+        "成立日期：1995-02-10",
+        "发行方式：网下询价配售",
+    ):
+        assert expected in detail
+
+
+def test_qichacha_699_does_not_treat_business_scope_as_main_business():
+    from demo.adapters.company_api import _listed_company_detail_text
+
+    detail = _listed_company_detail_text(
+        {"Status": "200", "Result": {"BaseInfo": {
+            "Companyname": "上市公司甲",
+            "ACode": "600001",
+            "Industry": "汽车制造业",
+            "BusinessScope": "汽车零部件制造及销售",
+        }}},
+        expected_name="上市公司甲",
+        expected_code="600001",
+    )
+
+    assert "所属行业：汽车制造业" in detail
+    assert "主营业务" not in detail
 
 
 def test_listed_announcements_are_deduplicated_by_company_and_stock_code():
@@ -225,6 +356,23 @@ def test_comparable_narrative_evidence_requires_an_announcement_with_multiple_di
     assert selected == [evidence[1]]
 
 
+def test_comparable_narrative_evidence_allows_api_699_only_as_verified_915_enrichment():
+    announcement = {
+        "evidence_id": "api:qichacha:target:915:peer:热处理",
+        "text": "上市公司公告候选：上市公司甲；股票代码：600001；公告：热处理业务公告；日期：2026-01-01",
+    }
+    listed_detail = {
+        "evidence_id": "api:qichacha:target:699:peer:上市公司甲:600001",
+        "text": "上市公司补充信息（已由公告候选核验）：企业名称：上市公司甲；股票代码：600001；所属行业：汽车零部件制造；主营业务：汽车零部件热处理",
+    }
+
+    selected = BailianYellowNarrativeAdapter._relevant_evidence(
+        "comparable_list", [announcement, listed_detail]
+    )
+
+    assert selected == [announcement, listed_detail]
+
+
 def test_comparable_narrative_evidence_rejects_a_name_only_candidate():
     evidence = [
         {
@@ -240,8 +388,170 @@ def test_comparable_narrative_evidence_rejects_a_name_only_candidate():
     assert selected == []
 
 
+def test_resolved_structured_financial_evidence_outranks_conflicting_raw_ocr():
+    raw_ocr = {
+        "evidence_id": "pdf:p12:b3",
+        "text": "利润表营业收入65,506,460.03元，净利润20,869,022.09元",
+    }
+    resolved_table = {
+        "evidence_id": "field:historical_income_statement_table",
+        "text": "历史利润表：营业收入46,186,357.24元，净利润14,357,065.14元",
+    }
+
+    selected = BailianYellowNarrativeAdapter._relevant_evidence(
+        "profit_model_swot",
+        [raw_ocr, resolved_table],
+        limit=1,
+    )
+
+    assert selected == [resolved_table]
+
+
+def test_company_profile_always_keeps_target_qcc_profile_with_many_fields():
+    target_profile = {
+        "evidence_id": "api:qichacha:target:735:profile",
+        "text": "被评估单位工商信息：统一社会信用代码91320000123456789X；经营范围：热处理加工",
+    }
+    field_evidence = [
+        {
+            "evidence_id": f"field:business_fact_{index}",
+            "text": f"公司业务事实{index}",
+        }
+        for index in range(20)
+    ]
+
+    selected = BailianYellowNarrativeAdapter._relevant_evidence(
+        "company_profile_section",
+        [*field_evidence, target_profile],
+    )
+
+    assert target_profile in selected
+
+
+def test_company_profile_excludes_current_qcc_shareholders_from_historical_narrative():
+    profile = {
+        "evidence_id": "api:qichacha:target:735:profile",
+        "text": "被评估单位工商信息：统一社会信用代码91320000123456789X；经营范围：热处理加工",
+    }
+    current_partner = {
+        "evidence_id": "api:qichacha:target:735:partner:1",
+        "text": "当前股东：示例投资有限公司，持股100%",
+    }
+
+    selected = BailianYellowNarrativeAdapter._relevant_evidence(
+        "company_profile_section",
+        [profile, current_partner],
+    )
+
+    assert profile in selected
+    assert current_partner not in selected
+
+
+def test_comparable_fallback_formats_verified_915_and_699_records():
+    evidence = [
+        {
+            "evidence_id": "api:qichacha:target:915:peer:汽车零部件",
+            "text": (
+                "关键词“汽车零部件”命中的上市公司公告候选："
+                "宁波继峰汽车零部件股份有限公司；股票代码：603997；"
+                "公告类别：股权质押；公告：股份质押公告；日期：2026-08-08"
+            ),
+        },
+        {
+            "evidence_id": "api:qichacha:target:699:peer:603997",
+            "text": (
+                "上市公司补充信息（已由公告候选核验）："
+                "企业名称：宁波继峰汽车零部件股份有限公司；股票代码：603997；"
+                "所属行业：汽车制造业；证券类别：上交所主板；"
+                "上市日期：2015-03-02；市净率：3.08；市盈率：30.81"
+            ),
+        },
+    ]
+
+    value = BailianYellowNarrativeAdapter._comparable_fallback(evidence)
+
+    assert "宁波继峰汽车零部件股份有限公司｜股票代码：603997" in value
+    assert "所属行业：汽车制造业" in value
+    assert "证券类别：上交所主板；上市日期：2015-03-02" in value
+    assert "公告依据：股份质押公告（2026-08-08）" in value
+    assert "估值指标：市盈率30.81；市净率3.08" in value
+    assert "ApiCode" not in value
+
+
+def test_narrative_target_context_keeps_subject_and_valuation_date_together():
+    context = BailianYellowNarrativeAdapter._target_context(
+        [
+            {
+                "evidence_id": "field:target_company_name",
+                "text": "被评估单位名称：通富热处理（昆山）有限公司",
+            },
+            {
+                "evidence_id": "field:target_company_short_name",
+                "text": "被评估单位简称：通富昆山",
+            },
+            {
+                "evidence_id": "field:valuation_date_year",
+                "text": "评估基准日年：2025",
+            },
+            {
+                "evidence_id": "field:valuation_date_month",
+                "text": "评估基准日月：6",
+            },
+            {
+                "evidence_id": "field:valuation_date_day",
+                "text": "评估基准日日：30",
+            },
+            {
+                "evidence_id": "field:registered_capital",
+                "text": "注册资本：1,000万元",
+            },
+            {
+                "evidence_id": "field:main_products",
+                "text": "主要产品：通富新材料科技（仙桃）有限公司从事热处理加工",
+            },
+        ]
+    )
+
+    assert context == {
+        "target_company_name": "通富热处理（昆山）有限公司",
+        "target_company_short_name": "通富昆山",
+        "registered_capital": "1,000万元",
+        "valuation_date": "2025年6月30日",
+    }
+
+
 def test_narrative_prompt_forbids_model_world_knowledge():
     prompt = Path("demo/prompts/yellow_narratives.v2.txt").read_text(encoding="utf-8")
     assert "不得使用模型自身知识" in prompt
     assert "未披露主要客户及供应商" in prompt
     assert "不等于可比性最终认定" in prompt
+
+
+def test_narrative_v3_prompt_requires_six_module_evidence_boundaries():
+    prompt = Path("demo/prompts/yellow_narratives.v3.txt").read_text(encoding="utf-8")
+
+    assert "699" in prompt
+    assert "客户及供应商" in prompt
+    assert "不得编造" in prompt
+    assert "公告标题" in prompt
+
+
+def test_narrative_v3_prompt_guides_professional_evidence_grounded_analysis():
+    prompt = Path("demo/prompts/yellow_narratives.v3.txt").read_text(encoding="utf-8")
+
+    assert "专业综合" in prompt
+    assert "审慎分析" in prompt
+    assert "自然、连贯" in prompt
+    assert "不得虚构" in prompt
+    assert "逐句复制" in prompt
+    assert "target_context" in prompt
+    assert "评估基准日之后" in prompt
+    assert "其他公司" in prompt
+
+
+def test_qichacha_699_needs_no_endpoint_setting_in_env_example():
+    env_example = Path(".env.example").read_text(encoding="utf-8")
+
+    assert "QICHACHA_APP_KEY=" in env_example
+    assert "QICHACHA_SECRET_KEY=" in env_example
+    assert "QICHACHA_ENDPOINT_699" not in env_example
