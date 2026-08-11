@@ -36,6 +36,7 @@ from demo.adapters.word import (
     inventory_template,
     replace_image_markers,
     replace_report_number_year,
+    replace_transaction_type_literals,
 )
 from demo.domain.generation_issues import (
     apply_page_locations,
@@ -143,14 +144,61 @@ def _legacy_evidence(path: Path) -> dict[str, dict[str, str]]:
 def _default_ocr_field_resolver(
     normalized: dict[str, list[dict[str, Any]]], config: dict[str, Any]
 ) -> tuple[dict[str, Any], list[str]]:
-    values = {}
+    values: dict[str, Any] = {}
+    history_keys = {
+        "historical_balance_sheet_table",
+        "historical_income_statement_table",
+    }
+    history_priorities: dict[str, int] = {}
     for record in normalized.get("financial_data", []):
         field_key = record.get("field_key")
         if field_key and record.get("value") not in (None, "", []):
-            values[str(field_key)] = record["value"]
+            field_key = str(field_key)
+            if field_key not in history_keys:
+                values[field_key] = record["value"]
+                continue
+            priority = _ocr_history_record_priority(record)
+            if field_key not in values or priority > history_priorities.get(field_key, -1):
+                values[field_key] = record["value"]
+                history_priorities[field_key] = priority
     configured, issues = resolve_configured_ocr_fields(normalized, config)
-    values.update(configured)
+    for field_key, value in configured.items():
+        # Configured semantic rules are still allowed to fill ordinary OCR
+        # fields, but they must not overwrite a formal financial statement
+        # selected from the OCR workbook's standard-financial-data records.
+        if field_key in history_keys and field_key in values:
+            continue
+        values[field_key] = value
     return values, issues
+
+
+def _ocr_history_record_priority(record: dict[str, Any]) -> int:
+    """Rank OCR history tables by the semantic source represented by them.
+
+    A single OCR workbook can contain both the formal audit statement and a
+    prepared ``历资表``/``历利表`` copied into a valuation workbook.  The
+    formal statement is the authoritative source for historical book values;
+    the prepared table remains a fallback when no formal statement exists.
+    This uses semantic sheet/table labels, never project-specific cells.
+    """
+    evidence_id = str(record.get("evidence_id", ""))
+    if any(marker in evidence_id for marker in ("历资表", "历利表")):
+        return 10
+    if any(marker in evidence_id for marker in ("资产负债表", "利润表")):
+        return 30
+    return 0
+
+
+def _ocr_has_formal_history(
+    normalized: dict[str, list[dict[str, Any]]],
+    field_key: str,
+) -> bool:
+    return any(
+        str(record.get("field_key", "")) == field_key
+        and record.get("value") not in (None, "", [])
+        and _ocr_history_record_priority(record) >= 30
+        for record in normalized.get("financial_data", [])
+    )
 
 
 def _provider_fields(payload: Any) -> dict[str, Any]:
@@ -940,8 +988,20 @@ def run_pipeline(
             }
     ocr_fallback_fields = set(config.get("ocr_fallback_fields", []))
     ocr_prefer_material_fields = set(config.get("ocr_prefer_material_fields", []))
+    formal_ocr_history_fields = {
+        field_key
+        for field_key in (
+            "historical_balance_sheet_table",
+            "historical_income_statement_table",
+        )
+        if _ocr_has_formal_history(normalized, field_key)
+    }
     for field_key in ocr_allowed:
-        if field_key in ocr_prefer_material_fields and fields.get(field_key) not in (None, "", []):
+        if (
+            field_key in ocr_prefer_material_fields
+            and field_key not in formal_ocr_history_fields
+            and fields.get(field_key) not in (None, "", [])
+        ):
             ocr_values[field_key] = fields[field_key]
         if field_key in ocr_fallback_fields and field_key not in ocr_values and fields.get(field_key) not in (None, "", []):
             ocr_values[field_key] = fields[field_key]
@@ -1794,6 +1854,7 @@ def run_pipeline(
         paragraph_replacements=_paragraph_replacements(config, fields),
         replacement_modes={route.location_id: route.replacement_mode for route in routes},
     )
+    replace_transaction_type_literals(report, fields.get("transaction_type"))
     replace_image_markers(report)
     replace_report_number_year(report, fields.get("report_number_year"))
     unresolved_findings = highlight_unresolved_placeholders(report)

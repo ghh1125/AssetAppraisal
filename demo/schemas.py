@@ -128,6 +128,11 @@ class WordLocation(DemoModel):
     location_id: str = Field(description="Word 稳定位置编号", examples=["DOCUMENT-P0001-X01"])
     record_type: str = Field(description="占位符或黄色说明类型", examples=["占位符"])
     context: str = Field(description="Word 原文上下文", examples=["XXX有限公司"])
+    word_search_text: str = Field(
+        default="",
+        description="可直接在当前 Word 模板中搜索的原文定位词，不使用业务概括名称",
+        examples=["被评估单位名称：XXX有限责任公司（简称：XXX）"],
+    )
     marker: str = Field(description="原占位符或黄色标记", examples=["XXX"])
     comment_source_kind: str | None = Field(
         default=None,
@@ -150,6 +155,11 @@ class LocationMapping(DemoModel):
     location_id: str = Field(description="Word 稳定位置编号", examples=["DOCUMENT-P0001-X01"])
     field_key: str = Field(description="位置对应标准字段键", examples=["assessed_entity.legal_name"])
     field_name: str = Field(description="位置对应字段中文名称", examples=["被评估单位全称"])
+    word_search_text: str = Field(
+        default="",
+        description="可直接在 Word 模板中搜索的原文定位词",
+        examples=["四、被评估单位：XXX有限责任公司"],
+    )
     record_type: str = Field(description="占位符或黄色说明类型", examples=["占位符"])
     source_priority: list[str] = Field(default_factory=list, description="固定来源优先级", examples=[["income_workbook", "manual"]])
     comment_source_kind: str | None = Field(default=None, description="Word 批注声明的来源类别", examples=["bailian_glm"])

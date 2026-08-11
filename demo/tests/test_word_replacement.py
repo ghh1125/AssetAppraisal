@@ -10,6 +10,7 @@ from demo.adapters.word import (
     fill_template,
     highlight_unresolved_placeholders,
     inventory_template,
+    replace_transaction_type_literals,
     replace_report_number_year,
     unresolved_placeholders,
 )
@@ -78,7 +79,41 @@ def test_formats_financial_values_by_mapping_unit():
         {"location_id": "P-X02", "field_key": "income_increment_rate", "field_name": "收益法增值率", "context": "增值率XX%", "marker": "XX", "unit_scope": "%"},
     ]
     fields = {"income_approach_value": 8500, "income_increment_rate": 84.85664514836581}
+    # The template already contains the literal percent sign after XX; the
+    # replacement value must not introduce a second one.
     assert build_replacements(locations, fields) == {"P-X01": "8,500.00", "P-X02": "84.86"}
+
+
+def test_percent_mapping_appends_percent_sign_even_when_template_marker_has_no_suffix():
+    locations = [
+        {
+            "location_id": "P-X01",
+            "field_key": "appraisal_increment_rate",
+            "field_name": "评估增值率",
+            "context": "评估增值率XX",
+            "marker": "XX",
+            "unit_scope": "%",
+        }
+    ]
+    assert build_replacements(locations, {"appraisal_increment_rate": 38.43}) == {
+        "P-X01": "38.43%"
+    }
+
+
+def test_replaces_literal_transaction_type_markers_from_review_comments(tmp_path: Path):
+    template = tmp_path / "transaction-template.docx"
+    doc = Document()
+    doc.add_paragraph("甲公司拟收购乙公司股权")
+    doc.add_paragraph("本项目拟收购乙公司股权")
+    doc.add_paragraph("不涉及委托类型的收购案例说明")
+    doc.save(template)
+
+    replace_transaction_type_literals(template, "减资")
+
+    text = "\n".join(p.text for p in Document(template).paragraphs)
+    assert "拟减资" in text
+    assert "拟收购" not in text
+    assert "收购案例说明" in text
 
 
 def test_decimal_wan_amount_replaces_wan_suffix_with_yuan_suffix(tmp_path: Path):

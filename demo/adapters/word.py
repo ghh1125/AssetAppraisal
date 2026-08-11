@@ -591,6 +591,64 @@ def replace_report_number_year(path: Path, year: Any) -> None:
             zout.writestr(info, contents[info.filename])
 
 
+def replace_transaction_type_literals(path: Path, transaction_type: Any) -> None:
+    """Replace literal ``拟收购`` text annotated as a transaction-type slot.
+
+    The communication template has several legacy title/prose occurrences
+    where the transaction type is literal text rather than an ``XXX``
+    placeholder.  The review comments identify those occurrences as manual
+    transaction-type fields.  Replace only the grammatical ``拟收购`` phrase;
+    ordinary explanatory uses of the word ``收购`` are left unchanged.
+    """
+    value = str(transaction_type or "").strip()
+    if value not in {"转让", "收购", "增资", "减资"}:
+        return
+    old = "拟收购"
+    new = f"拟{value}"
+    if old == new:
+        return
+    with zipfile.ZipFile(path) as zin:
+        items = zin.infolist()
+        contents = {info.filename: zin.read(info.filename) for info in items}
+    changed = False
+    for name, data in list(contents.items()):
+        if not PART_RE.fullmatch(name):
+            continue
+        root = etree.fromstring(data)
+        part_changed = False
+        for paragraph in root.xpath(".//w:p", namespaces=NS):
+            text = _paragraph_text(paragraph)
+            if old not in text:
+                continue
+            # In the supplied templates the phrase is normally in one run,
+            # so this preserves every other run's font and paragraph layout.
+            for node in paragraph.xpath(".//w:t|.//w:delText", namespaces=NS):
+                if node.text and old in node.text:
+                    node.text = node.text.replace(old, new)
+                    part_changed = True
+            # Handle a phrase split across runs without silently leaving it
+            # unchanged.  This fallback uses the first run's formatting.
+            if old in _paragraph_text(paragraph):
+                updated = _paragraph_text(paragraph).replace(old, new)
+                runs = paragraph.xpath("./w:r", namespaces=NS)
+                if runs:
+                    _set_paragraph_text(paragraph, updated, False, style_run=runs[0])
+                    part_changed = True
+        if part_changed:
+            contents[name] = etree.tostring(
+                root,
+                xml_declaration=True,
+                encoding="UTF-8",
+                standalone=True,
+            )
+            changed = True
+    if not changed:
+        return
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zout:
+        for info in items:
+            zout.writestr(info, contents[info.filename])
+
+
 def _fill_tables(root, table_replacements: dict[int, list[list[str]]]) -> None:
     tables = root.xpath(".//w:tbl", namespaces=NS)
     for table_index, matrix in table_replacements.items():

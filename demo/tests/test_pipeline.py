@@ -9,7 +9,53 @@ from docx import Document
 from openpyxl import Workbook, load_workbook
 
 import demo.pipeline as pipeline_module
-from demo.pipeline import _apply_ocr_overrides_to_table, _company_profile_table, _ocr_ownership_matrix, _ownership_matrix_summary, _validated_qcc_payload, _valuation_date_ownership_matrix, run_pipeline
+from demo.pipeline import _apply_ocr_overrides_to_table, _company_profile_table, _default_ocr_field_resolver, _ocr_ownership_matrix, _ownership_matrix_summary, _validated_qcc_payload, _valuation_date_ownership_matrix, run_pipeline
+
+
+def test_ocr_financial_history_prefers_formal_statement_over_prepared_history_table():
+    formal_balance = {
+        "caption": "通富热处理（昆山）有限公司近年资产负债状况见下表：",
+        "rows": [
+            ["项目\\报表日", "2023年12月31日", "2024年12月31日", "2025年6月30日"],
+            ["总资产", "182,941,174.94", "180,824,246.17", "163,719,131.79"],
+            ["负债", "10,043,136.64", "4,871,154.35", "117,737,555.13"],
+            ["所有者权益", "172,898,038.30", "175,953,091.82", "45,981,576.66"],
+        ],
+    }
+    prepared_balance = {
+        "caption": "被评估单位近年资产负债状况见下表：",
+        "rows": [
+            ["项目\\报表日", "2023年度", "2024年度", "2025年1-6月"],
+            ["总资产", "187,407,553.39", "185,985,773.82", "169,478,239.93"],
+            ["负债", "10,043,136.64", "4,871,154.35", "117,737,555.13"],
+            ["所有者权益", "177,364,416.75", "181,114,619.47", "51,740,684.80"],
+        ],
+    }
+
+    values, issues = _default_ocr_field_resolver(
+        {
+            "financial_data": [
+                {
+                    "field_key": "historical_balance_sheet_table",
+                    "value": formal_balance,
+                    "evidence_id": "06N_资产负债表!D3:F3、D76:F76",
+                },
+                {
+                    "field_key": "historical_balance_sheet_table",
+                    "value": prepared_balance,
+                    "evidence_id": "历资表!A47；历资表!C47:E47",
+                },
+            ]
+        },
+        {},
+    )
+
+    assert issues == []
+    assert values["historical_balance_sheet_table"]["rows"][1][1:] == [
+        "182,941,174.94",
+        "180,824,246.17",
+        "163,719,131.79",
+    ]
 
 
 def test_company_profile_table_writes_credit_code_and_profile_values():

@@ -36,6 +36,11 @@ def test_comment_template_maps_all_placeholder_locations_to_business_fields() ->
     mapped = build_comment_aware_locations(inventory_template(template), base)
     assert len(mapped) == 143
     assert not [item for item in mapped if not item.get("field_key")]
+    # The user-facing locator must be the literal Word text, not the
+    # internal business label such as “历史资产负债表年份1”.
+    item = next(item for item in mapped if item["location_id"] == "DOCUMENT-P0323-X01")
+    assert item["word_search_text"] == item["context"]
+    assert "项目名称" in item["word_search_text"]
 
 
 def test_comment_template_maps_repeated_placeholders_in_order() -> None:

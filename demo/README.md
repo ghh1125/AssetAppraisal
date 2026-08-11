@@ -63,6 +63,8 @@ uv run --python 3.11 python -m demo.run demo/projects/tongfu.yaml \
 
 `templates/评估报告版式-沟通标注版_批注版.docx` 是批注规则版，包含 100 条 Word 批注、131 个占位符和 11 个无占位符的批注锚点；`templates/评估报告版式_v2.docx` 是实际复制填充的干净模板。批注优先于旧的黄色坐标映射，运行时逐占位符写入 `template_comments.json` 和 `workflow_trace.json`，保留批注原文、字段键和来源类别。
 
+审计清单中的 `word_search_text` 始终保存模板正文的原文定位词（例如“二、委托人：XXX有限责任公司”“上述数据摘自XX”“被评估单位XXX账面值为XXX万元……”）。`field_name` 只是程序内部的标准字段名称，不能代替 Word 原文；人工复核时应直接复制 `word_search_text` 在 Word 中搜索。
+
 批注来源类别如下：
 
 这里的 `PDF OCR/XLSX` 表示审计 PDF 经 OCR 后的结构化结果，以及用户上传的资产基础法/收益法工作簿。

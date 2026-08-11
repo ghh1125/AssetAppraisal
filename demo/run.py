@@ -799,6 +799,9 @@ def run_project(
         {
             "location_id": item["location_id"],
             "context": item.get("context", ""),
+            "word_search_text": item.get(
+                "word_search_text", item.get("context", "")
+            ),
             "comment_ids": item.get("comment_ids", []),
             "comment_texts": item.get("comment_texts", []),
             "field_key": item.get("field_key", ""),

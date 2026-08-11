@@ -49,7 +49,17 @@ def _display_value(item: dict[str, Any], value: Any) -> Any:
                 number = Decimal(str(value).replace(",", ""))
             except InvalidOperation:
                 return value
-            return f"{number:,.2f}" if item.get("unit_scope") == "万元" else f"{number:.2f}"
+            if item.get("unit_scope") == "万元":
+                return f"{number:,.2f}"
+            formatted = f"{number:.2f}"
+            # Some annotated templates put the percent sign after the
+            # placeholder, while newer review comments require the mapper to
+            # supply it.  Keep exactly one sign in the final document.
+            marker = str(item.get("marker", ""))
+            context = str(item.get("context", ""))
+            marker_pos = context.find(marker) if marker else -1
+            suffix = context[marker_pos + len(marker):] if marker_pos >= 0 else ""
+            return formatted if suffix.lstrip().startswith("%") else f"{formatted}%"
         return value
     parts = flexible_date_parts(value)
     if parts:

@@ -267,6 +267,13 @@ def build_comment_aware_locations(
         selected.update({
             "location_id": item["location_id"],
             "context": item.get("context", selected.get("context", "")),
+            # Keep the exact template text as a user-searchable anchor.  The
+            # business field_name remains an internal label and must not be
+            # used as a substitute for text appearing in Word.
+            "word_search_text": item.get(
+                "word_search_text",
+                item.get("context", selected.get("context", "")),
+            ),
             "marker": item.get("marker", selected.get("marker", "XXX")),
             "record_type": item.get("record_type", selected.get("record_type", "占位符")),
             "part": item.get("part", selected.get("part", "word/document.xml")),
