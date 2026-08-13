@@ -1,8 +1,38 @@
 import { createApp } from 'vue'
-import Antd from 'ant-design-vue'
+import {
+  Alert,
+  Button,
+  Card,
+  Checkbox,
+  Form,
+  Input,
+  InputNumber,
+  Progress,
+  Select,
+  Tag,
+  Upload,
+} from 'ant-design-vue'
 import 'ant-design-vue/dist/reset.css'
 import App from './App.vue'
 import './style.css'
 import { i18n } from './i18n'
 
-createApp(App).use(Antd).use(i18n).mount('#app')
+const app = createApp(App)
+
+// Register only the components used by this single-page application. Registering
+// the complete Ant Design Vue plugin pulls every component into the initial bundle.
+;[
+  Alert,
+  Button,
+  Card,
+  Checkbox,
+  Form,
+  Input,
+  InputNumber,
+  Progress,
+  Select,
+  Tag,
+  Upload,
+].forEach(component => app.use(component))
+
+app.use(i18n).mount('#app')

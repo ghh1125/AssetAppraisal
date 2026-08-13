@@ -267,3 +267,20 @@ Word 模板由后端固定提供，不需要用户上传。参考评估报告 DO
 cd frontend
 npm run build
 ```
+
+### ECS 生产部署（公网 8003）
+
+不要在公网使用 `npm run dev`。Vite 开发服务器会把依赖拆成大量未做生产优化的模块请求，网络延迟会显著放大首屏时间。构建后使用 Nginx 提供静态文件：
+
+```bash
+cd /opt/AssetAppraisal/frontend
+npm ci
+npm run build
+
+# 若仓库不在 /opt/AssetAppraisal，先修改配置中的 root 路径。
+sudo cp nginx.conf.example /etc/nginx/conf.d/asset-appraisal.conf
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+示例配置监听公网 `8003`、将 `/api/` 反向代理至本机后端 `127.0.0.1:8000`，并为带内容哈希的 `/assets/` 开启长期缓存和 gzip。阿里云安全组只需向可信来源开放 `8003`；后端 `8000` 建议仅监听本机，不直接暴露公网。以后每次更新前端，只需重新执行 `npm ci && npm run build`，无需运行 Vite 开发服务器。
