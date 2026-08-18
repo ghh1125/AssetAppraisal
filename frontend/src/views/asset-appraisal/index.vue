@@ -36,8 +36,21 @@ const run = ref(null)
 const selectedCandidateKeys = ref([])
 const manualModalOpen = ref(false)
 const materialsModalOpen = ref(false)
+const manualDraft = ref(null)
 const RUN_STATUS_REFRESH_MS = 800
 let pollTimer = null
+
+const DEFAULT_MANUAL_INPUTS = Object.freeze({
+  commissioning_party_name: '上海上大热处理有限公司',
+  commissioning_party_short_name: '上海上大热处理',
+  transaction_type: '收购',
+  target_company_name: '通富热处理（昆山）有限公司',
+  target_company_short_name: '通富昆山',
+  valuation_subject_type: '股东全部权益价值',
+  selected_valuation_method: ['收益法', '资产基础法'],
+  final_valuation_method: '收益法',
+  valuation_base_date: '2025-06-30',
+})
 
 const canSubmit = computed(() => canSubmitPartial(files, form))
 const publicArtifacts = computed(() => (
@@ -80,11 +93,41 @@ function showUploadField(field) {
 }
 
 function openNode1Section(section) {
-  if (section === 'manual') manualModalOpen.value = true
+  if (section === 'manual') {
+    manualDraft.value = snapshotManualInputs()
+    manualModalOpen.value = true
+  }
   if (section === 'materials') materialsModalOpen.value = true
 }
 
+function snapshotManualInputs() {
+  return {
+    ...form,
+    selected_valuation_method: [...(form.selected_valuation_method || [])],
+  }
+}
+
+function loadManualDefaults() {
+  Object.assign(form, {
+    ...DEFAULT_MANUAL_INPUTS,
+    selected_valuation_method: [...DEFAULT_MANUAL_INPUTS.selected_valuation_method],
+  })
+  message.success(t('asset.manualDefaultsLoaded'))
+}
+
 function saveManualSection() {
+  manualModalOpen.value = false
+  manualDraft.value = null
+}
+
+function cancelManualSection() {
+  if (manualDraft.value) {
+    Object.assign(form, {
+      ...manualDraft.value,
+      selected_valuation_method: [...(manualDraft.value.selected_valuation_method || [])],
+    })
+  }
+  manualDraft.value = null
   manualModalOpen.value = false
 }
 
@@ -208,7 +251,11 @@ onBeforeUnmount(clearPoll)
           </div>
         </div>
 
-        <a-modal v-model:open="manualModalOpen" :title="t('asset.manualSection')" :ok-text="t('asset.saveSection')" :cancel-text="t('asset.closeSection')" :width="760" @ok="saveManualSection">
+        <a-modal v-model:open="manualModalOpen" :title="t('asset.manualSection')" :ok-text="t('asset.saveSection')" :cancel-text="t('asset.closeSection')" :width="760" @ok="saveManualSection" @cancel="cancelManualSection">
+          <div class="manual-default-bar">
+            <span>{{ t('asset.manualDefaultsHint') }}</span>
+            <a-button size="small" @click="loadManualDefaults">{{ t('asset.manualDefaultsButton') }}</a-button>
+          </div>
           <a-form layout="vertical">
           <div class="form-row">
             <a-form-item :label="t('asset.commissioningName')"><a-input v-model:value="form.commissioning_party_name" :maxlength="50" /></a-form-item>
@@ -331,6 +378,7 @@ h1 { margin:8px 0 8px; font-size:34px; color:var(--c2m-text-primary); }
 .node1-entry-arrow { color:#8b98a8; font-size:24px; line-height:1; }
 .node1-section { min-width:0; }
 .section-heading { margin-bottom:14px; color:var(--c2m-text-primary); font-size:16px; font-weight:700; }
+.manual-default-bar { display:flex; align-items:center; justify-content:space-between; gap:14px; margin-bottom:18px; padding:10px 12px; border-radius:10px; background:#f8fbff; color:var(--c2m-text-secondary); font-size:12px; }
 .source-strategy-grid { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); column-gap:18px; }
 .upload-grid { display:grid; grid-template-columns:1fr; gap:14px; margin-top:18px; }
 .ocr-cache-status { margin-top:14px; }
