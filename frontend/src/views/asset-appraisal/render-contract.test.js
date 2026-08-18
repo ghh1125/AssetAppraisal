@@ -24,3 +24,11 @@ test('shows one current progress summary instead of duplicating the active step 
   assert.match(source, /class="progress-overview-label"/)
   assert.doesNotMatch(source, /progress-strip/)
 })
+
+test('merges node one input sections and hides file-only sources when API is selected', () => {
+  assert.match(source, /node1-card/)
+  assert.match(source, /v-model:value="node1Sections"/)
+  assert.match(source, /v-if="showMaterialsSection" class="node1-section"/)
+  assert.match(source, /v-if="showUploadField\(field\)"/)
+  assert.match(source, /form\.registry_info_strategy/)
+})

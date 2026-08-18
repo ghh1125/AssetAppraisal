@@ -34,6 +34,7 @@ const ocrCache = ref({ checking: false, hit: false, source: '' })
 const submitting = ref(false)
 const run = ref(null)
 const selectedCandidateKeys = ref([])
+const node1Sections = ref(['manual', 'materials'])
 const RUN_STATUS_REFRESH_MS = 800
 let pollTimer = null
 
@@ -46,6 +47,8 @@ const progressSummary = computed(() => currentRunProgress(run.value))
 const statusText = computed(() => t(`asset.${run.value?.status || 'queued'}`))
 const nodeStatusText = (status) => t(`asset.nodeStatus.${status || 'pending'}`)
 const stepStatusText = (status) => t(`asset.nodeStatus.${status || 'pending'}`)
+const showManualSection = computed(() => node1Sections.value.includes('manual'))
+const showMaterialsSection = computed(() => node1Sections.value.includes('materials'))
 
 function setFile(type, event) {
   const field = uploadFields.find(item => item.key === type)
@@ -162,32 +165,18 @@ onBeforeUnmount(clearPoll)
     </header>
 
     <section class="workspace-grid">
-      <a-card class="panel" :title="t('asset.uploadTitle')" :bordered="false">
-        <a-alert :message="t('asset.uploadInfo')" type="info" show-icon />
-        <div class="upload-grid">
-          <template v-for="field in uploadFields" :key="field.key">
-            <a-upload-dragger
-              v-if="showUploadField(field)"
-              :multiple="field.multiple"
-              :max-count="field.multiple ? 20 : 1"
-              :accept="field.accept"
-              :before-upload="() => false"
-              @change="setFile(field.key, $event)"
-            >
-              <p :class="['upload-icon', field.icon.toLowerCase()]">{{ field.icon }}</p>
-              <p class="upload-title">{{ t(`asset.${field.titleKey}`) }}</p>
-              <p class="upload-hint">{{ t(`asset.${field.hintKey}`) }}</p>
-            </a-upload-dragger>
-          </template>
+      <a-card class="panel node1-card" :title="t('asset.node1Title')" :bordered="false">
+        <div class="node1-section-switch">
+          <span class="node1-section-switch-label">{{ t('asset.node1SwitchHint') }}</span>
+          <a-checkbox-group v-model:value="node1Sections">
+            <a-checkbox value="manual">{{ t('asset.manualSection') }}</a-checkbox>
+            <a-checkbox value="materials">{{ t('asset.materialSection') }}</a-checkbox>
+          </a-checkbox-group>
         </div>
-        <a-alert class="template-source" :message="t('asset.templateSource')" type="success" show-icon />
-        <a-alert v-if="ocrCache.checking" class="ocr-cache-status" :message="t('asset.ocrCacheChecking')" type="info" show-icon />
-        <a-alert v-else-if="ocrCache.hit" class="ocr-cache-status" :message="t('asset.ocrCacheHit', { source: ocrCache.source })" type="success" show-icon />
-        <a-alert v-else-if="files.auditMaterials?.some(file => file?.name?.toLowerCase().endsWith('.pdf'))" class="ocr-cache-status" :message="t('asset.ocrCacheMiss')" type="warning" show-icon />
-      </a-card>
 
-      <a-card class="panel" :title="t('asset.inputTitle')" :bordered="false">
         <a-form layout="vertical">
+          <div v-if="showManualSection" class="node1-section">
+            <div class="section-heading">{{ t('asset.manualSection') }}</div>
           <div class="form-row">
             <a-form-item :label="t('asset.commissioningName')"><a-input v-model:value="form.commissioning_party_name" :maxlength="50" /></a-form-item>
             <a-form-item :label="t('asset.commissioningShortName')"><a-input v-model:value="form.commissioning_party_short_name" :maxlength="20" /></a-form-item>
@@ -201,11 +190,40 @@ onBeforeUnmount(clearPoll)
           <a-form-item :label="t('asset.method')"><a-select v-model:value="form.selected_valuation_method" mode="multiple" :max-tag-count="3"><a-select-option value="资产基础法">{{ t('asset.methodOptions.asset') }}</a-select-option><a-select-option value="收益法">{{ t('asset.methodOptions.income') }}</a-select-option><a-select-option value="市场法">{{ t('asset.methodOptions.market') }}</a-select-option></a-select></a-form-item>
           <a-form-item :label="t('asset.finalMethod')"><a-select v-model:value="form.final_valuation_method"><a-select-option value="资产基础法">{{ t('asset.methodOptions.asset') }}</a-select-option><a-select-option value="收益法">{{ t('asset.methodOptions.income') }}</a-select-option><a-select-option value="市场法">{{ t('asset.methodOptions.market') }}</a-select-option></a-select></a-form-item>
           <a-form-item :label="t('asset.valuationBaseDate')"><a-date-picker v-model:value="form.valuation_base_date" value-format="YYYY-MM-DD" style="width: 100%" /></a-form-item>
-          <a-divider>{{ t('asset.sourceStrategyTitle') }}</a-divider>
-          <a-form-item :label="t('asset.registryStrategy')"><a-radio-group v-model:value="form.registry_info_strategy"><a-radio value="file">{{ t('asset.sourceFile') }}</a-radio><a-radio value="qichacha">{{ t('asset.sourceQichacha') }}</a-radio></a-radio-group></a-form-item>
-          <a-form-item :label="t('asset.ownershipStrategy')"><a-radio-group v-model:value="form.ownership_history_strategy"><a-radio value="file">{{ t('asset.sourceFile') }}</a-radio><a-radio value="qichacha">{{ t('asset.sourceQichacha') }}</a-radio></a-radio-group></a-form-item>
-          <a-form-item :label="t('asset.intangiblesStrategy')"><a-radio-group v-model:value="form.unrecorded_intangibles_strategy"><a-radio value="file">{{ t('asset.sourceFile') }}</a-radio><a-radio value="qichacha">{{ t('asset.sourceQichacha') }}</a-radio></a-radio-group></a-form-item>
-          <a-form-item :label="t('asset.profileStrategy')"><a-radio-group v-model:value="form.company_profile_strategy"><a-radio value="file">{{ t('asset.sourceFile') }}</a-radio><a-radio value="qichacha">{{ t('asset.sourceQichacha') }}</a-radio></a-radio-group></a-form-item>
+          </div>
+
+          <a-divider v-if="showManualSection && showMaterialsSection" />
+
+          <div v-if="showMaterialsSection" class="node1-section">
+            <div class="section-heading">{{ t('asset.materialSection') }}</div>
+            <a-alert :message="t('asset.uploadInfo')" type="info" show-icon />
+            <div class="source-strategy-grid">
+              <a-form-item :label="t('asset.registryStrategy')"><a-radio-group v-model:value="form.registry_info_strategy"><a-radio value="file">{{ t('asset.sourceFile') }}</a-radio><a-radio value="qichacha">{{ t('asset.sourceQichacha') }}</a-radio></a-radio-group></a-form-item>
+              <a-form-item :label="t('asset.ownershipStrategy')"><a-radio-group v-model:value="form.ownership_history_strategy"><a-radio value="file">{{ t('asset.sourceFile') }}</a-radio><a-radio value="qichacha">{{ t('asset.sourceQichacha') }}</a-radio></a-radio-group></a-form-item>
+              <a-form-item :label="t('asset.intangiblesStrategy')"><a-radio-group v-model:value="form.unrecorded_intangibles_strategy"><a-radio value="file">{{ t('asset.sourceFile') }}</a-radio><a-radio value="qichacha">{{ t('asset.sourceQichacha') }}</a-radio></a-radio-group></a-form-item>
+              <a-form-item :label="t('asset.profileStrategy')"><a-radio-group v-model:value="form.company_profile_strategy"><a-radio value="file">{{ t('asset.sourceFile') }}</a-radio><a-radio value="qichacha">{{ t('asset.sourceQichacha') }}</a-radio></a-radio-group></a-form-item>
+            </div>
+            <div class="upload-grid">
+              <template v-for="field in uploadFields" :key="field.key">
+                <a-upload-dragger
+                  v-if="showUploadField(field)"
+                  :multiple="field.multiple"
+                  :max-count="field.multiple ? 20 : 1"
+                  :accept="field.accept"
+                  :before-upload="() => false"
+                  @change="setFile(field.key, $event)"
+                >
+                  <p :class="['upload-icon', field.icon.toLowerCase()]">{{ field.icon }}</p>
+                  <p class="upload-title">{{ t(`asset.${field.titleKey}`) }}</p>
+                  <p class="upload-hint">{{ t(`asset.${field.hintKey}`) }}</p>
+                </a-upload-dragger>
+              </template>
+            </div>
+            <a-alert class="template-source" :message="t('asset.templateSource')" type="success" show-icon />
+            <a-alert v-if="ocrCache.checking" class="ocr-cache-status" :message="t('asset.ocrCacheChecking')" type="info" show-icon />
+            <a-alert v-else-if="ocrCache.hit" class="ocr-cache-status" :message="t('asset.ocrCacheHit', { source: ocrCache.source })" type="success" show-icon />
+            <a-alert v-else-if="files.auditMaterials?.some(file => file?.name?.toLowerCase().endsWith('.pdf'))" class="ocr-cache-status" :message="t('asset.ocrCacheMiss')" type="warning" show-icon />
+          </div>
         </a-form>
       </a-card>
     </section>
@@ -267,7 +285,13 @@ onBeforeUnmount(clearPoll)
 h1 { margin:8px 0 8px; font-size:34px; color:var(--c2m-text-primary); }
 .topbar p { margin:0; color:var(--c2m-text-secondary); }
 .workspace-grid { display:grid; grid-template-columns: .92fr 1.4fr; gap:20px; }
+.node1-card { grid-column:1 / -1; }
 .panel { border-radius:18px; box-shadow:0 8px 30px rgba(31,53,81,.07); }
+.node1-section-switch { display:flex; align-items:center; gap:18px; margin-bottom:20px; padding:12px 14px; border:1px solid #e5edf7; border-radius:12px; background:#f8fbff; }
+.node1-section-switch-label { color:var(--c2m-text-secondary); font-size:13px; }
+.node1-section { min-width:0; }
+.section-heading { margin-bottom:14px; color:var(--c2m-text-primary); font-size:16px; font-weight:700; }
+.source-strategy-grid { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); column-gap:18px; }
 .upload-grid { display:grid; grid-template-columns:1fr; gap:14px; margin-top:18px; }
 .ocr-cache-status { margin-top:14px; }
 .template-source { margin-top:14px; }
@@ -321,5 +345,5 @@ h1 { margin:8px 0 8px; font-size:34px; color:var(--c2m-text-primary); }
 .substep-failed .substep-icon { background:#fff1f0; color:#cf1322; }
 .substep-failed .substep-status { color:#cf1322; }
 @keyframes substep-pulse { 50% { opacity:.45; transform:scale(.85); } }
-@media (max-width: 900px) { .workspace-grid { grid-template-columns:1fr; } .topbar, .run-bar { flex-direction:column; } .form-row, .form-row.three, .upload-grid { grid-template-columns:1fr; } }
+@media (max-width: 900px) { .workspace-grid { grid-template-columns:1fr; } .topbar, .run-bar { flex-direction:column; } .form-row, .form-row.three, .source-strategy-grid, .upload-grid { grid-template-columns:1fr; } .node1-section-switch { align-items:flex-start; flex-direction:column; gap:8px; } }
 </style>
