@@ -74,6 +74,13 @@ SWOT_FALLBACKS = (
     ("机会：", "现有材料未提供可直接核验的发展机会证据。"),
     ("风险：", "现有材料未提供可直接核验的主要风险证据。"),
 )
+SWOT_MARKERS = {
+    "盈利模式：": ("盈利模式：", "盈利模式:"),
+    "优势：": ("优势：", "优势:", "优势方面", "优势方面："),
+    "劣势：": ("劣势：", "劣势:", "劣势方面", "劣势方面："),
+    "机会：": ("机会：", "机会:", "机会方面", "机会方面："),
+    "风险：": ("风险：", "风险:", "风险方面", "风险方面："),
+}
 
 
 OUTPUT_SCHEMA = json.loads(
@@ -515,18 +522,26 @@ class BailianYellowNarrativeAdapter:
     def _normalize_profit_model_swot(value: str) -> tuple[str, bool]:
         """Require the five report headings without inferring missing facts."""
         text = str(value or "").strip()
-        if all(label in text for label, _ in SWOT_FALLBACKS):
+        present = {
+            label: any(marker in text for marker in SWOT_MARKERS[label])
+            for label, _ in SWOT_FALLBACKS
+        }
+        if all(present.values()):
             return text, False
+        # Models often write the first dimension as ordinary prose and use
+        # “优势方面/劣势方面/机会方面/风险方面” for the remaining sections.
+        # Add the missing heading in place instead of appending the entire
+        # prose a second time (which used to duplicate a complete SWOT block).
+        if text and not present["盈利模式："]:
+            text = f"盈利模式：{text}"
+            present["盈利模式："] = True
         sections: list[str] = []
         for label, fallback in SWOT_FALLBACKS:
-            if label in text:
+            if present[label]:
                 # Preserve the model's evidence-backed wording as-is.  The
                 # report only needs labels absent from a sparse response.
                 continue
-            if label == "盈利模式：" and text:
-                sections.append(f"{label}{text.rstrip('。')}。")
-            else:
-                sections.append(f"{label}{fallback}")
+            sections.append(f"{label}{fallback}")
         return "".join([text, *sections]), True
 
     @staticmethod

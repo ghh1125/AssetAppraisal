@@ -661,6 +661,23 @@ def test_glm_removes_unsupported_valuation_method_and_finance_inferences():
     assert issue == "已移除缺少事实依据的评估方法或财务费用推断"
 
 
+def test_glm_does_not_duplicate_complete_swot_when_model_uses_aspect_headings():
+    value, changed = BailianYellowNarrativeAdapter._normalize_profit_model_swot(
+        (
+            "公司通过加工服务取得收入。"
+            "优势方面，公司保持持续经营。"
+            "劣势方面，收入存在波动。"
+            "机会方面，业务仍有拓展空间。"
+            "风险方面，客户结构尚未披露。"
+        )
+    )
+
+    assert changed is True
+    assert value.startswith("盈利模式：公司通过加工服务取得收入。")
+    assert value.count("公司通过加工服务取得收入。") == 1
+    assert "优势：现有材料未提供" not in value
+
+
 def test_glm_generates_all_seven_fixed_word_candidates():
     client = FieldwiseClient()
     adapter = BailianYellowNarrativeAdapter(
