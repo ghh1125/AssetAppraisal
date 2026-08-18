@@ -23,6 +23,20 @@ def test_node_progress_has_user_readable_substeps_and_updates_active_step():
     assert step["status"] == "running"
     assert step["message"] == "企查查 API 正在搜索企业信息"
     assert node["active_step"] == "query_qichacha"
+    api_server._set_step(
+        "progress-test",
+        "ocr_llm_candidates",
+        "query_qichacha",
+        "completed",
+        "企查查 API 查询完成，正在整理返回证据",
+    )
+    assert step["status"] == "completed"
+    assert node["active_step"] == ""
+
+
+def test_progress_completion_messages_close_the_active_step():
+    assert api_server._progress_step_status("企查查 API 查询完成，正在整理返回证据") == "completed"
+    assert api_server._progress_step_status("企查查 API 正在搜索企业信息") == "running"
 
 
 def test_second_node_substeps_follow_the_actual_parse_review_and_candidate_order():

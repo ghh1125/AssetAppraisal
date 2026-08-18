@@ -19,3 +19,8 @@ test('all Ant Design controls used by the template are registered', () => {
     assert.match(main, new RegExp(`\\b${component}\\b`), `${component} must be imported and registered`)
   }
 })
+
+test('shows one current progress summary instead of duplicating the active step below it', () => {
+  assert.match(source, /class="progress-overview-label"/)
+  assert.doesNotMatch(source, /progress-strip/)
+})

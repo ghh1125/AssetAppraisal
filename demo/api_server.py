@@ -159,7 +159,10 @@ def _set_step(
                 step = {"key": step_key, "name": step_key, "description": "", "status": "pending", "message": "等待执行"}
                 steps.append(step)
             step.update({"status": status, "message": message})
-            node["active_step"] = step_key if status == "running" else node.get("active_step", "")
+            if status == "running":
+                node["active_step"] = step_key
+            elif node.get("active_step") == step_key:
+                node["active_step"] = ""
             if status == "running":
                 for other in steps:
                     if other is not step and other.get("status") == "running":
@@ -167,6 +170,24 @@ def _set_step(
             if message:
                 node["message"] = message
             break
+
+
+def _progress_step_status(message: str) -> str:
+    """Map a pipeline progress message to a visible step state."""
+    text = str(message or "")
+    completion_markers = (
+        "已完成",
+        "完成，",
+        "完成：",
+        "已返回",
+        "已生成",
+        "已保存",
+        "已写入",
+        "已校验",
+        "已整理",
+        "跳过",
+    )
+    return "completed" if any(marker in text for marker in completion_markers) else "running"
 
 
 def _run_id_for_pdf(filename: str) -> str:
@@ -345,7 +366,7 @@ def _execute_run(
             "准备 OCR、Excel/API 解析和 LLM 候选",
         )
         def report_progress(node: str, step: str, message: str, percent: int | None = None) -> None:
-            _set_step(run_id, node, step, "running", message)
+            _set_step(run_id, node, step, _progress_step_status(message), message)
             if percent is not None:
                 _set_job(run_id, progress=percent, message=message)
 

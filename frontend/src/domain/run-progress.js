@@ -22,17 +22,3 @@ export function currentRunProgress(run) {
   }
   return { label: '准备执行', detail: run?.message || '正在等待工作流状态' }
 }
-
-export function flattenRunSteps(run) {
-  const nodes = Array.isArray(run?.nodes) ? run.nodes : []
-  return nodes.flatMap((node) => (
-    (Array.isArray(node.steps) ? node.steps : []).map((step) => ({
-      key: `${node.key || node.name || 'node'}:${step.key || step.name}`,
-      name: step.name || '',
-      status: step.status || 'pending',
-      message: step.status === 'running'
-        ? (step.message || step.description || node.message || '')
-        : (step.message || step.description || ''),
-    }))
-  ))
-}

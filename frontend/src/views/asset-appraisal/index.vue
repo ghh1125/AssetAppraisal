@@ -6,7 +6,7 @@ import { artifactUrl } from '../../api/request'
 import { checkAssetAppraisalOcrCache, createAssetAppraisalRun, getAssetAppraisalRun, selectAssetAppraisalCandidates } from '../../api/asset-appraisal'
 import { canSubmitPartial } from '../../domain/submission'
 import { summarizeRunIssues } from '../../domain/run-issues'
-import { currentRunProgress, flattenRunSteps } from '../../domain/run-progress'
+import { currentRunProgress } from '../../domain/run-progress'
 import { createUploadState, uploadFields } from '../../domain/upload-fields'
 
 const { t } = useI18n()
@@ -43,7 +43,6 @@ const publicArtifacts = computed(() => (
 ))
 const readableIssues = computed(() => summarizeRunIssues(run.value?.issues || []))
 const progressSummary = computed(() => currentRunProgress(run.value))
-const progressSteps = computed(() => flattenRunSteps(run.value))
 const statusText = computed(() => t(`asset.${run.value?.status || 'queued'}`))
 const nodeStatusText = (status) => t(`asset.nodeStatus.${status || 'pending'}`)
 const stepStatusText = (status) => t(`asset.nodeStatus.${status || 'pending'}`)
@@ -222,15 +221,6 @@ onBeforeUnmount(clearPoll)
         <div class="progress-overview-head"><span>当前工作流进度</span><strong>{{ run.progress || 0 }}%</strong></div>
         <div class="progress-overview-label">{{ progressSummary.label }}</div>
         <div class="progress-overview-detail">{{ progressSummary.detail }}</div>
-        <div v-if="progressSteps.length" class="progress-strip" aria-label="workflow live steps">
-          <div v-for="step in progressSteps" :key="step.key" :class="['progress-strip-step', `strip-${step.status}`]">
-            <span class="progress-strip-dot">{{ step.status === 'completed' ? '✓' : step.status === 'failed' ? '!' : step.status === 'running' ? '●' : '○' }}</span>
-            <div>
-              <span>{{ step.name }}</span>
-              <small>{{ step.message }}</small>
-            </div>
-          </div>
-        </div>
       </div>
       <a-progress v-if="['queued', 'running'].includes(run.status)" :percent="run.progress || 0" status="active" />
       <div v-if="run.status === 'completed' && publicArtifacts.length" class="artifact-list result-artifact">
@@ -296,15 +286,6 @@ h1 { margin:8px 0 8px; font-size:34px; color:var(--c2m-text-primary); }
 .progress-overview-head strong { color:var(--c2m-color-primary); font-size:14px; }
 .progress-overview-label { margin-top:6px; color:var(--c2m-text-primary); font-weight:650; }
 .progress-overview-detail { margin-top:3px; color:var(--c2m-text-secondary); font-size:12px; white-space:pre-wrap; }
-.progress-strip { margin-top:12px; display:grid; grid-template-columns:repeat(auto-fit, minmax(190px, 1fr)); gap:8px; }
-.progress-strip-step { display:flex; gap:8px; align-items:flex-start; min-width:0; padding:8px 9px; border:1px solid #e9eff7; border-radius:10px; background:#fff; color:var(--c2m-text-secondary); }
-.progress-strip-dot { width:18px; height:18px; border-radius:50%; display:grid; place-items:center; flex:none; font-size:11px; font-weight:700; background:#edf1f6; color:#8b98a8; }
-.progress-strip-step span:last-child { display:block; color:var(--c2m-text-primary); font-size:12px; font-weight:650; }
-.progress-strip-step small { display:block; margin-top:2px; color:#8b98a8; font-size:11px; line-height:1.35; white-space:normal; }
-.strip-completed .progress-strip-dot { background:#e6f7ee; color:#16834b; }
-.strip-running { border-color:#b7dcff; background:#f7fbff; }
-.strip-running .progress-strip-dot { background:#e6f4ff; color:#1677ff; animation:substep-pulse 1.2s infinite; }
-.strip-failed .progress-strip-dot { background:#fff1f0; color:#cf1322; }
 .artifact-list { display:flex; flex-wrap:wrap; gap:12px; }
 .artifact-list a { padding:10px 14px; border:1px solid var(--c2m-border-light); border-radius:10px; color:var(--c2m-color-primary); background:#f8fbff; }
 .result-artifact { margin-bottom:20px; }
