@@ -15,7 +15,7 @@ test('upload controls keep v-for scope available to the conditional renderer', (
 test('all Ant Design controls used by the template are registered', () => {
   const imports = source.match(/from 'ant-design-vue'/)?.[0] || ''
   const main = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../../main.js'), 'utf8')
-  for (const component of ['DatePicker', 'Divider', 'Radio']) {
+  for (const component of ['DatePicker', 'Divider', 'Modal', 'Radio']) {
     assert.match(main, new RegExp(`\\b${component}\\b`), `${component} must be imported and registered`)
   }
 })
@@ -25,10 +25,13 @@ test('shows one current progress summary instead of duplicating the active step 
   assert.doesNotMatch(source, /progress-strip/)
 })
 
-test('merges node one input sections and hides file-only sources when API is selected', () => {
+test('opens node one input sections in compact dialogs and hides file-only sources when API is selected', () => {
   assert.match(source, /node1-card/)
-  assert.match(source, /v-model:value="node1Sections"/)
-  assert.match(source, /v-if="showMaterialsSection" class="node1-section"/)
+  assert.match(source, /v-model:open="manualModalOpen"/)
+  assert.match(source, /v-model:open="materialsModalOpen"/)
+  assert.match(source, /openNode1Section\('manual'\)/)
+  assert.match(source, /openNode1Section\('materials'\)/)
+  assert.doesNotMatch(source, /v-model:value="node1Sections"/)
   assert.match(source, /v-if="showUploadField\(field\)"/)
   assert.match(source, /form\.registry_info_strategy/)
 })

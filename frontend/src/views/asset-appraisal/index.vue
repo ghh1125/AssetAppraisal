@@ -34,7 +34,8 @@ const ocrCache = ref({ checking: false, hit: false, source: '' })
 const submitting = ref(false)
 const run = ref(null)
 const selectedCandidateKeys = ref([])
-const node1Sections = ref(['manual', 'materials'])
+const manualModalOpen = ref(false)
+const materialsModalOpen = ref(false)
 const RUN_STATUS_REFRESH_MS = 800
 let pollTimer = null
 
@@ -47,8 +48,20 @@ const progressSummary = computed(() => currentRunProgress(run.value))
 const statusText = computed(() => t(`asset.${run.value?.status || 'queued'}`))
 const nodeStatusText = (status) => t(`asset.nodeStatus.${status || 'pending'}`)
 const stepStatusText = (status) => t(`asset.nodeStatus.${status || 'pending'}`)
-const showManualSection = computed(() => node1Sections.value.includes('manual'))
-const showMaterialsSection = computed(() => node1Sections.value.includes('materials'))
+const manualFieldCount = computed(() => [
+  form.commissioning_party_name,
+  form.commissioning_party_short_name,
+  form.transaction_type,
+  form.target_company_name,
+  form.target_company_short_name,
+  form.valuation_subject_type,
+  form.selected_valuation_method?.length,
+  form.final_valuation_method,
+  form.valuation_base_date,
+].filter(Boolean).length)
+const uploadedFileCount = computed(() => Object.values(files).reduce((count, value) => (
+  count + (Array.isArray(value) ? value.length : value ? 1 : 0)
+), 0))
 
 function setFile(type, event) {
   const field = uploadFields.find(item => item.key === type)
@@ -64,6 +77,19 @@ function setFile(type, event) {
 
 function showUploadField(field) {
   return !field.sourceStrategy || form[field.sourceStrategy] === 'file'
+}
+
+function openNode1Section(section) {
+  if (section === 'manual') manualModalOpen.value = true
+  if (section === 'materials') materialsModalOpen.value = true
+}
+
+function saveManualSection() {
+  manualModalOpen.value = false
+}
+
+function saveMaterialsSection() {
+  materialsModalOpen.value = false
 }
 
 async function checkOcrCache(file) {
@@ -168,15 +194,22 @@ onBeforeUnmount(clearPoll)
       <a-card class="panel node1-card" :title="t('asset.node1Title')" :bordered="false">
         <div class="node1-section-switch">
           <span class="node1-section-switch-label">{{ t('asset.node1SwitchHint') }}</span>
-          <a-checkbox-group v-model:value="node1Sections">
-            <a-checkbox value="manual">{{ t('asset.manualSection') }}</a-checkbox>
-            <a-checkbox value="materials">{{ t('asset.materialSection') }}</a-checkbox>
-          </a-checkbox-group>
+          <div class="node1-entry-grid">
+            <button type="button" class="node1-entry" @click="openNode1Section('manual')">
+              <span class="node1-entry-icon">✓</span>
+              <span class="node1-entry-copy"><strong>{{ t('asset.manualSection') }}</strong><small>{{ manualFieldCount }}/9 项已填写</small></span>
+              <span class="node1-entry-arrow">›</span>
+            </button>
+            <button type="button" class="node1-entry" @click="openNode1Section('materials')">
+              <span class="node1-entry-icon">✓</span>
+              <span class="node1-entry-copy"><strong>{{ t('asset.materialSection') }}</strong><small>{{ uploadedFileCount }} 个文件已选择</small></span>
+              <span class="node1-entry-arrow">›</span>
+            </button>
+          </div>
         </div>
 
-        <a-form layout="vertical">
-          <div v-if="showManualSection" class="node1-section">
-            <div class="section-heading">{{ t('asset.manualSection') }}</div>
+        <a-modal v-model:open="manualModalOpen" :title="t('asset.manualSection')" :ok-text="t('asset.saveSection')" :cancel-text="t('asset.closeSection')" :width="760" @ok="saveManualSection">
+          <a-form layout="vertical">
           <div class="form-row">
             <a-form-item :label="t('asset.commissioningName')"><a-input v-model:value="form.commissioning_party_name" :maxlength="50" /></a-form-item>
             <a-form-item :label="t('asset.commissioningShortName')"><a-input v-model:value="form.commissioning_party_short_name" :maxlength="20" /></a-form-item>
@@ -190,12 +223,11 @@ onBeforeUnmount(clearPoll)
           <a-form-item :label="t('asset.method')"><a-select v-model:value="form.selected_valuation_method" mode="multiple" :max-tag-count="3"><a-select-option value="资产基础法">{{ t('asset.methodOptions.asset') }}</a-select-option><a-select-option value="收益法">{{ t('asset.methodOptions.income') }}</a-select-option><a-select-option value="市场法">{{ t('asset.methodOptions.market') }}</a-select-option></a-select></a-form-item>
           <a-form-item :label="t('asset.finalMethod')"><a-select v-model:value="form.final_valuation_method"><a-select-option value="资产基础法">{{ t('asset.methodOptions.asset') }}</a-select-option><a-select-option value="收益法">{{ t('asset.methodOptions.income') }}</a-select-option><a-select-option value="市场法">{{ t('asset.methodOptions.market') }}</a-select-option></a-select></a-form-item>
           <a-form-item :label="t('asset.valuationBaseDate')"><a-date-picker v-model:value="form.valuation_base_date" value-format="YYYY-MM-DD" style="width: 100%" /></a-form-item>
-          </div>
+          </a-form>
+        </a-modal>
 
-          <a-divider v-if="showManualSection && showMaterialsSection" />
-
-          <div v-if="showMaterialsSection" class="node1-section">
-            <div class="section-heading">{{ t('asset.materialSection') }}</div>
+        <a-modal v-model:open="materialsModalOpen" :title="t('asset.materialSection')" :ok-text="t('asset.saveSection')" :cancel-text="t('asset.closeSection')" :width="980" @ok="saveMaterialsSection">
+          <a-form layout="vertical">
             <a-alert :message="t('asset.uploadInfo')" type="info" show-icon />
             <div class="source-strategy-grid">
               <a-form-item :label="t('asset.registryStrategy')"><a-radio-group v-model:value="form.registry_info_strategy"><a-radio value="file">{{ t('asset.sourceFile') }}</a-radio><a-radio value="qichacha">{{ t('asset.sourceQichacha') }}</a-radio></a-radio-group></a-form-item>
@@ -223,8 +255,8 @@ onBeforeUnmount(clearPoll)
             <a-alert v-if="ocrCache.checking" class="ocr-cache-status" :message="t('asset.ocrCacheChecking')" type="info" show-icon />
             <a-alert v-else-if="ocrCache.hit" class="ocr-cache-status" :message="t('asset.ocrCacheHit', { source: ocrCache.source })" type="success" show-icon />
             <a-alert v-else-if="files.auditMaterials?.some(file => file?.name?.toLowerCase().endsWith('.pdf'))" class="ocr-cache-status" :message="t('asset.ocrCacheMiss')" type="warning" show-icon />
-          </div>
-        </a-form>
+          </a-form>
+        </a-modal>
       </a-card>
     </section>
 
@@ -287,8 +319,16 @@ h1 { margin:8px 0 8px; font-size:34px; color:var(--c2m-text-primary); }
 .workspace-grid { display:grid; grid-template-columns: .92fr 1.4fr; gap:20px; }
 .node1-card { grid-column:1 / -1; }
 .panel { border-radius:18px; box-shadow:0 8px 30px rgba(31,53,81,.07); }
-.node1-section-switch { display:flex; align-items:center; gap:18px; margin-bottom:20px; padding:12px 14px; border:1px solid #e5edf7; border-radius:12px; background:#f8fbff; }
+.node1-section-switch { display:grid; gap:12px; margin-bottom:4px; padding:12px 14px; border:1px solid #e5edf7; border-radius:12px; background:#f8fbff; }
 .node1-section-switch-label { color:var(--c2m-text-secondary); font-size:13px; }
+.node1-entry-grid { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:12px; }
+.node1-entry { display:flex; align-items:center; gap:10px; width:100%; padding:14px 16px; border:1px solid #dbe7f4; border-radius:12px; background:#fff; color:var(--c2m-text-primary); text-align:left; cursor:pointer; transition:border-color .2s, box-shadow .2s, transform .2s; }
+.node1-entry:hover { border-color:#91caff; box-shadow:0 5px 16px rgba(22,119,255,.12); transform:translateY(-1px); }
+.node1-entry-icon { width:22px; height:22px; border-radius:6px; display:grid; place-items:center; flex:none; background:#e6f4ff; color:#1677ff; font-size:13px; font-weight:800; }
+.node1-entry-copy { min-width:0; flex:1; }
+.node1-entry-copy strong, .node1-entry-copy small { display:block; }
+.node1-entry-copy small { margin-top:4px; color:var(--c2m-text-secondary); font-size:12px; }
+.node1-entry-arrow { color:#8b98a8; font-size:24px; line-height:1; }
 .node1-section { min-width:0; }
 .section-heading { margin-bottom:14px; color:var(--c2m-text-primary); font-size:16px; font-weight:700; }
 .source-strategy-grid { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); column-gap:18px; }
@@ -345,5 +385,5 @@ h1 { margin:8px 0 8px; font-size:34px; color:var(--c2m-text-primary); }
 .substep-failed .substep-icon { background:#fff1f0; color:#cf1322; }
 .substep-failed .substep-status { color:#cf1322; }
 @keyframes substep-pulse { 50% { opacity:.45; transform:scale(.85); } }
-@media (max-width: 900px) { .workspace-grid { grid-template-columns:1fr; } .topbar, .run-bar { flex-direction:column; } .form-row, .form-row.three, .source-strategy-grid, .upload-grid { grid-template-columns:1fr; } .node1-section-switch { align-items:flex-start; flex-direction:column; gap:8px; } }
+@media (max-width: 900px) { .workspace-grid { grid-template-columns:1fr; } .topbar, .run-bar { flex-direction:column; } .form-row, .form-row.three, .source-strategy-grid, .upload-grid, .node1-entry-grid { grid-template-columns:1fr; } }
 </style>
