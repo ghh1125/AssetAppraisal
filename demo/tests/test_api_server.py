@@ -37,6 +37,30 @@ def test_node_progress_has_user_readable_substeps_and_updates_active_step():
 def test_progress_completion_messages_close_the_active_step():
     assert api_server._progress_step_status("企查查 API 查询完成，正在整理返回证据") == "completed"
     assert api_server._progress_step_status("企查查 API 正在搜索企业信息") == "running"
+    assert api_server._fill_progress_percent(15) >= 72
+    assert api_server._fill_progress_percent(68) > api_server._fill_progress_percent(15)
+    assert api_server._fill_progress_percent(100) == 96
+
+
+def test_finishing_candidate_node_closes_steps_replayed_during_fill():
+    api_server.JOBS.clear()
+    api_server._set_job("fill-progress-test", nodes=api_server._initial_node_states())
+    api_server._set_step(
+        "fill-progress-test",
+        "ocr_llm_candidates",
+        "query_qichacha",
+        "running",
+        "企查查 API 查询完成，正在整理返回证据",
+    )
+    api_server._set_node(
+        "fill-progress-test",
+        "ocr_llm_candidates",
+        "completed",
+        "候选内容已确认，材料复核完成",
+    )
+    node = next(item for item in api_server.JOBS["fill-progress-test"]["nodes"] if item["key"] == "ocr_llm_candidates")
+    assert node["status"] == "completed"
+    assert all(step["status"] != "running" for step in node["steps"])
 
 
 def test_second_node_substeps_follow_the_actual_parse_review_and_candidate_order():

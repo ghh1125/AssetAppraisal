@@ -190,6 +190,14 @@ def _progress_step_status(message: str) -> str:
     return "completed" if any(marker in text for marker in completion_markers) else "running"
 
 
+def _fill_progress_percent(percent: int | None) -> int | None:
+    """Keep the second pipeline pass inside node 3's 72–96% range."""
+    if percent is None:
+        return None
+    bounded = max(0, min(int(percent), 100))
+    return 72 + int(round(bounded * 0.24))
+
+
 def _run_id_for_pdf(filename: str) -> str:
     """Create a readable, collision-safe output folder name."""
     stem = Path(filename or "source.pdf").stem
@@ -487,9 +495,9 @@ def _execute_fill(run_id: str, selected_fields: dict[str, Any]) -> None:
         )
         ocr_workbook = run_dir / "OCR结构化结果.xlsx"
         def report_progress(node: str, step: str, message: str, percent: int | None = None) -> None:
-            _set_step(run_id, node, step, "running", message)
+            _set_step(run_id, node, step, _progress_step_status(message), message)
             if percent is not None:
-                _set_job(run_id, progress=percent, message=message)
+                _set_job(run_id, progress=_fill_progress_percent(percent), message=message)
 
         _set_step(run_id, "fill_word", "load_selection", "running", "正在读取人工确认的 LLM 模块")
         result = run_pipeline(
@@ -513,6 +521,7 @@ def _execute_fill(run_id: str, selected_fields: dict[str, Any]) -> None:
             llm_values_override=selected_fields,
             progress_callback=report_progress,
         )
+        _set_node(run_id, "ocr_llm_candidates", "completed", "候选内容已确认，材料复核完成")
         _set_node(run_id, "fill_word", "completed", "Word 填充完成")
         current_node = "output"
         _set_node(run_id, "output", "running", "正在生成评估报告 Word")
