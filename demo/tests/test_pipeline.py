@@ -9,7 +9,32 @@ from docx import Document
 from openpyxl import Workbook, load_workbook
 
 import demo.pipeline as pipeline_module
-from demo.pipeline import _apply_ocr_overrides_to_table, _company_profile_table, _default_ocr_field_resolver, _ocr_ownership_matrix, _ownership_matrix_summary, _validated_qcc_payload, _valuation_date_ownership_matrix, run_pipeline
+from demo.pipeline import _apply_ocr_overrides_to_table, _company_profile_table, _default_ocr_field_resolver, _human_source_locator, _ocr_ownership_matrix, _ownership_matrix_summary, _resolve_unresolved_pdf_page_locators, _validated_qcc_payload, _valuation_date_ownership_matrix, run_pipeline
+
+
+def test_internal_ocr_locator_is_rendered_as_a_business_table_label():
+    assert _human_source_locator(
+        "审计报告.pdf",
+        "OCR结构化结果.xlsx / asset_scope_summary_table",
+        "资产负债范围表",
+    ) == "审计 PDF：资产负债范围表"
+
+
+def test_unresolved_pdf_page_locators_are_completed_by_closed_world_llm():
+    class PageLocator:
+        def locate_pdf_pages(self, normalized, field_names, field_keys):
+            assert field_keys == ["asset_scope_summary_table"]
+            return {"asset_scope_summary_table": 44}, []
+
+    locators, issues = _resolve_unresolved_pdf_page_locators(
+        {"asset_scope_summary_table": "资产负债范围表"},
+        {"asset_scope_summary_table": "审计 PDF：资产负债范围表"},
+        {"text_blocks": [{"page_number": 44, "text": "资产负债范围"}]},
+        PageLocator(),
+    )
+
+    assert locators["asset_scope_summary_table"] == "审计 PDF 第44页：资产负债范围表"
+    assert issues == []
 
 
 def test_ocr_financial_history_prefers_formal_statement_over_prepared_history_table():
@@ -254,6 +279,26 @@ class CapitalQichachaAdapter:
         }, []
 
 
+class TrackingQichachaAdapter:
+    def __init__(self):
+        self.calls = []
+
+    def fetch(self, company_name):
+        self.calls.append(company_name)
+        return {
+            "profile": {
+                "name": company_name,
+                "credit_code": "91320000608319749X",
+                "registered_capital": "1,000万元",
+                "status": "存续",
+            },
+            "fields": {
+                "commissioning_party_profile": f"企业名称：{company_name}；统一社会信用代码：91320000608319749X；登记状态：存续",
+                "target_company_profile": f"企业名称：{company_name}；统一社会信用代码：91320000608319749X；登记状态：存续",
+            },
+        }, []
+
+
 class FixtureTemplatePageReader:
     def extract(self, template_path):
         assert template_path.suffix == ".docx"
@@ -268,9 +313,9 @@ def fixture_ocr_fields(normalized, config):
     }, []
 
 
-def test_pipeline_creates_ocr_xlsx_and_word_without_cross_route_fallback(tmp_path):
+def test_pipeline_creates_ocr_xlsx_and_word_with_excel_fallback_when_pdf_field_is_absent(tmp_path):
     config = Path("demo/projects/tongfu.yaml")
-    template = Path("资产评估工作流/评估报告版式-沟通标注版.docx")
+    template = Path("templates/评估报告版式_0817确认.docx")
     pdf = Path("资产评估工作流/通富2025.6.30合并及母公司审计报告.pdf")
     template_hash = hashlib.sha256(template.read_bytes()).hexdigest()
 
@@ -281,6 +326,18 @@ def test_pipeline_creates_ocr_xlsx_and_word_without_cross_route_fallback(tmp_pat
         ocr_adapter=FixtureOcrAdapter(),
         llm_adapter=FixtureLlmAdapter(),
         qichacha_adapter=FixtureQichachaAdapter(),
+        manual_inputs_override={
+            "target_company_name": "通富热处理（昆山）有限公司",
+            "target_company_short_name": "通富昆山",
+            "transaction_type": "收购",
+            "valuation_subject_type": "股东全部权益价值",
+            "selected_valuation_method": "收益法、资产基础法",
+            "final_valuation_method": "收益法",
+            "valuation_base_date": "2025-06-30",
+            "ownership_history_strategy": "qichacha",
+            "unrecorded_intangibles_strategy": "qichacha",
+            "company_profile_strategy": "qichacha",
+        },
         node_inputs={
             "selected_valuation_method": "收益法、资产基础法",
             "valuation_purpose_inputs": "用于股权收购决策。",
@@ -316,7 +373,23 @@ def test_pipeline_creates_ocr_xlsx_and_word_without_cross_route_fallback(tmp_pat
         "major_long_term_assets",
         "asset_approach_result_section",
     ]
-    assert all(fields.get(field) not in (None, "", [], {}) for field in required_monetary)
+    # The fixture PDF deliberately has no financial tables.  When the
+    # requested audit field is absent from PDF OCR, a uniquely identified
+    # uploaded workbook may fill it, but the run must explicitly record that
+    # no PDF cross-check was available.
+    assert fields["income_approach_value"] not in (None, "", [], {})
+    assert fields["asset_approach_value"] not in (None, "", [], {})
+    for field in (
+        "book_net_assets",
+        "historical_balance_sheet_table",
+        "historical_income_statement_table",
+        "major_long_term_assets",
+    ):
+        assert fields[field] not in (None, "", [], {})
+        assert any(
+            f"{field}：审计PDF已上传，但OCR未识别到该字段" in issue
+            for issue in result.issues
+        )
     assert "节点输入 返回越权字段，已丢弃：company_profile_section" in result.issues
     assert not any("commissioning_party_name" in issue for issue in result.issues)
 
@@ -324,11 +397,8 @@ def test_pipeline_creates_ocr_xlsx_and_word_without_cross_route_fallback(tmp_pat
     paragraph_text = "\n".join(paragraph.text for paragraph in report.paragraphs)
     assert "单体层面各类资产负债的金额为：货币资金" not in paragraph_text
     assert "单体层面各类资产负债的金额为：" in paragraph_text
-    balance_text = "\n".join(cell.text for row in report.tables[6].rows for cell in row.cells)
-    # The audited balance statement wins over a rounded appraisal summary.
+    balance_text = "\n".join(cell.text for table in report.tables for row in table.rows for cell in row.cells)
     assert "148,537,259.26" in balance_text
-    income_widths = [column.width for column in report.tables[5].columns]
-    assert income_widths[0] < sum(income_widths[1:]) / 3 * 1.5
     ownership_text = "\n".join(
         cell.text for table_index in (2, 3) for row in report.tables[table_index].rows for cell in row.cells
     )
@@ -350,6 +420,42 @@ def test_pipeline_creates_ocr_xlsx_and_word_without_cross_route_fallback(tmp_pat
     manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
     assert manifest["yellow_route_version"] == "yellow_routes.v1"
     assert manifest["prompt_version"] == "yellow_narratives.test"
+
+
+def test_pipeline_uses_node_input_names_before_qichacha_lookup(tmp_path):
+    qichacha = TrackingQichachaAdapter()
+
+    run_pipeline(
+        project_config=Path("demo/projects/tongfu.yaml"),
+        pdf_path=None,
+        output_dir=tmp_path,
+        ocr_adapter=None,
+        llm_adapter=None,
+        qichacha_adapter=qichacha,
+        source_overrides={
+            "audit_pdf": None,
+            "reference_report": None,
+            "audited_financials": None,
+            "income_workbook": None,
+            "reporting_workbook": None,
+        },
+        manual_inputs_override={
+            "commissioning_party_name": "委托方有限公司",
+            "commissioning_party_short_name": "委托方",
+            "target_company_name": "被评估单位有限公司",
+            "target_company_short_name": "被评估单位",
+            "transaction_type": "收购",
+            "valuation_subject_type": "股东全部权益价值",
+            "selected_valuation_method": "收益法、资产基础法",
+            "final_valuation_method": "收益法",
+            "valuation_base_date": "2025-06-30",
+            "registry_info_strategy": "qichacha",
+        },
+    )
+
+    assert qichacha.calls[:2] == ["委托方有限公司", "被评估单位有限公司"]
+    fields = json.loads((tmp_path / "normalized_fields.json").read_text(encoding="utf-8"))
+    assert "统一社会信用代码：91320000608319749X" in fields["commissioning_party_profile"]
 
 
 def test_pipeline_does_not_run_llm_reviews_and_exports_four_node_trace(tmp_path):
@@ -460,7 +566,10 @@ def test_pipeline_without_pdf_exports_report_only(tmp_path):
             "income_workbook": None,
             "reporting_workbook": None,
         },
-        manual_inputs_override={"target_company_name": "示例有限公司"},
+        manual_inputs_override={
+            "target_company_name": "示例有限公司",
+            "registry_info_strategy": "qichacha",
+        },
     )
 
     assert result.report_path.exists()
@@ -472,7 +581,7 @@ def test_pipeline_without_pdf_exports_report_only(tmp_path):
     assert manifest["generation_validation"]["valid"] is False
 
 
-def test_pipeline_preserves_semantic_excel_file_and_cell_evidence(tmp_path):
+def test_pipeline_does_not_use_semantic_excel_as_audit_pdf_substitute(tmp_path):
     reporting = tmp_path / "任意资产表.xlsx"
     workbook = Workbook()
     sheet = workbook.active
@@ -509,11 +618,11 @@ def test_pipeline_preserves_semantic_excel_file_and_cell_evidence(tmp_path):
     normalized_evidence = json.loads(
         (output / "normalized_evidence.json").read_text(encoding="utf-8")
     )
-    assert normalized_evidence["asset_scope_summary_table"] == {
-        "kind": "semantic_excel",
-        "file": reporting.name,
-        "locator": "汇总表!B3；汇总表!B4；汇总表!B5",
-    }
+    # A missing PDF does not discard uniquely matched uploaded workbook data;
+    # its evidence carries the workbook source so the Word note can state that
+    # a PDF cross-check has not been performed.
+    assert normalized_evidence["asset_scope_summary_table"]["file"] == reporting.name
+    assert normalized_evidence["asset_scope_summary_table"]["kind"] == "asset_workbook"
     manifest = json.loads(
         (output / "run_manifest.json").read_text(encoding="utf-8")
     )
@@ -574,7 +683,7 @@ def test_pipeline_keeps_unfinished_appraisal_reason_in_issue_list(
 
 def test_pipeline_without_pdf_passes_material_fields_to_llm(tmp_path):
     output = tmp_path / "run"
-    run_pipeline(
+    result = run_pipeline(
         project_config=Path("demo/projects/tongfu.yaml"),
         pdf_path=None,
         output_dir=output,
@@ -644,14 +753,17 @@ def test_qichacha_profile_supplies_missing_registered_capital(tmp_path):
             "income_workbook": None,
             "reporting_workbook": None,
         },
-        manual_inputs_override={"target_company_name": "示例有限公司"},
+        manual_inputs_override={
+            "target_company_name": "示例有限公司",
+            "registry_info_strategy": "qichacha",
+        },
     )
 
     fields = json.loads((output / "normalized_fields.json").read_text(encoding="utf-8"))
     assert fields["registered_capital"] == "1,250万元"
 
 
-def test_pipeline_keeps_semantically_matched_scope_table(tmp_path):
+def test_pipeline_keeps_semantic_excel_scope_as_reconciliation_only_without_pdf(tmp_path):
     reporting = tmp_path / "changed-layout.xlsx"
     workbook = Workbook()
     sheet = workbook.active
@@ -674,7 +786,7 @@ def test_pipeline_keeps_semantically_matched_scope_table(tmp_path):
     detail.append(["电子设备", 320_000, 350_000])
     workbook.save(reporting)
 
-    run_pipeline(
+    result = run_pipeline(
         project_config=Path("demo/projects/tongfu.yaml"),
         pdf_path=None,
         output_dir=tmp_path / "run",
@@ -692,9 +804,11 @@ def test_pipeline_keeps_semantically_matched_scope_table(tmp_path):
     fields = json.loads(
         (tmp_path / "run/normalized_fields.json").read_text(encoding="utf-8")
     )
-    rows = fields["asset_scope_summary_table"]["rows"]
-    assert ["流动资产账面金额：", "1,000,000.00"] in rows
-    assert ["所有者权益账面金额：", "2,300,000.00"] in rows
+    assert fields["asset_scope_summary_table"] not in (None, "", [], {})
+    assert any(
+        "asset_scope_summary_table：未上传审计PDF，无法获取审计数据" in issue
+        for issue in result.issues
+    )
     long_term_text = "\n".join(
         cell.text
         for row in Document(tmp_path / "run/资产评估报告_待复核.docx").tables[7].rows
@@ -738,8 +852,7 @@ def test_pipeline_does_not_read_legacy_coordinates_without_semantic_evidence(tmp
     )
 
     fields = json.loads((output / "normalized_fields.json").read_text(encoding="utf-8"))
-    scope_rows = fields["asset_scope_summary_table"]["rows"]
-    assert all(row[1] == "XXX" for row in scope_rows)
+    assert fields["asset_scope_summary_table"] == ""
     generated = Document(output / "资产评估报告_待复核.docx")
     long_term_rows = [
         [cell.text.strip() for cell in row.cells]

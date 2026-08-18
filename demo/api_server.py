@@ -26,9 +26,10 @@ from .adapters.ocr_factory import create_ocr_adapter
 from .domain.field_validation import (
     normalize_valuation_methods,
     validate_required_text,
-    validate_report_serial_input,
     validate_final_valuation_method,
+    validate_material_source_strategy,
     validate_transaction_type,
+    validate_valuation_base_date,
     validate_valuation_subject_type,
 )
 
@@ -45,6 +46,36 @@ PUBLIC_NODES = (
     ("fill_word", "节点 3：填充 Word", "写入确定性字段和用户选中的候选"),
     ("output", "节点 4：结果输出", "生成评估报告 Word"),
 )
+
+NODE_STEPS = {
+    "start_input": (
+        ("validate_inputs", "校验人工输入", "检查公司名称、评估对象、方法和基准日"),
+        ("store_materials", "整理上传材料", "识别 PDF、Excel 和补充材料的文件角色"),
+        ("load_template", "加载 Word 模板", "确认后台只读模板和批注映射已就绪"),
+    ),
+    "ocr_llm_candidates": (
+        ("detect_materials", "识别材料类型", "确认是否有审计 PDF、资产基础法表和收益法表"),
+        ("ocr_pdf", "解析审计 PDF", "有 PDF 时执行 OCR；命中缓存时直接复用"),
+        ("parse_excel", "解析 Excel 表格", "按工作表标题、科目、期间和单位识别数据"),
+        ("reconcile_sources", "整合并比对来源", "按科目、期间、口径和单位归并 PDF/OCR 与 Excel，并记录一致或冲突"),
+        ("review_evidence", "LLM 证据复核批注", "读取已整理的 PDF/OCR 与 Excel 证据，逐字段生成不改数值的人工审核批注"),
+        ("query_qichacha", "企查查 API 搜索", "查询工商、股权、商标、专利和上市信息"),
+        ("generate_candidates", "生成 LLM 候选", "按固定 Word 位置分别生成六个可选报告模块"),
+        ("wait_selection", "等待人工选择", "展示候选内容，等待确认写入哪些模块"),
+    ),
+    "fill_word": (
+        ("load_selection", "读取人工选择", "载入用户确认的 LLM 模块"),
+        ("map_word", "匹配 Word 批注位置", "按模板原文和批注映射定位写入位置"),
+        ("fill_fields", "填写文字字段", "逐项写入人工输入、PDF/OCR、Excel 和企查查字段"),
+        ("fill_tables", "填写财务表格", "按工作表和表头语义写入资产负债及历史报表"),
+        ("write_comments", "写入 LLM 批注", "把模型生成的审核说明挂到对应数值位置"),
+        ("check_placeholders", "校验未填位置", "找不到证据的字段保留黄色 XXX"),
+    ),
+    "output": (
+        ("save_word", "保存评估报告", "复制模板生成独立的评估报告 Word"),
+        ("verify_output", "检查输出文件", "确认 Word 可打开且没有覆盖原模板"),
+    ),
+}
 
 app = FastAPI(title="Asset Appraisal API", version="0.1.0")
 app.add_middleware(
@@ -73,9 +104,20 @@ def _set_job(job_key: str, **values: Any) -> None:
         JOBS.setdefault(job_key, {}).update(values)
 
 
-def _initial_node_states() -> list[dict[str, str]]:
+def _initial_node_states() -> list[dict[str, Any]]:
     return [
-        {"key": key, "name": name, "description": description, "status": "pending", "message": "等待执行"}
+        {
+            "key": key,
+            "name": name,
+            "description": description,
+            "status": "pending",
+            "message": "等待执行",
+            "active_step": "",
+            "steps": [
+                {"key": step_key, "name": step_name, "description": step_description, "status": "pending", "message": "等待执行"}
+                for step_key, step_name, step_description in NODE_STEPS[key]
+            ],
+        }
         for key, name, description in PUBLIC_NODES
     ]
 
@@ -88,7 +130,43 @@ def _set_node(run_id: str, key: str, status: str, message: str = "") -> None:
             if node.get("key") == key:
                 node["status"] = status
                 node["message"] = message
+                if status in {"completed", "failed", "skipped", "awaiting_selection"}:
+                    for step in node.get("steps", []):
+                        if step.get("status") == "running":
+                            step["status"] = "failed" if status == "failed" else "completed"
+                    if status != "awaiting_selection":
+                        node["active_step"] = ""
                 break
+
+
+def _set_step(
+    run_id: str,
+    node_key: str,
+    step_key: str,
+    status: str,
+    message: str = "",
+) -> None:
+    """Update one user-facing operation without exposing internal field keys."""
+    with JOBS_LOCK:
+        job = JOBS.setdefault(run_id, {})
+        nodes = job.setdefault("nodes", _initial_node_states())
+        for node in nodes:
+            if node.get("key") != node_key:
+                continue
+            steps = node.setdefault("steps", [])
+            step = next((item for item in steps if item.get("key") == step_key), None)
+            if step is None:
+                step = {"key": step_key, "name": step_key, "description": "", "status": "pending", "message": "等待执行"}
+                steps.append(step)
+            step.update({"status": status, "message": message})
+            node["active_step"] = step_key if status == "running" else node.get("active_step", "")
+            if status == "running":
+                for other in steps:
+                    if other is not step and other.get("status") == "running":
+                        other["status"] = "completed"
+            if message:
+                node["message"] = message
+            break
 
 
 def _run_id_for_pdf(filename: str) -> str:
@@ -235,6 +313,14 @@ def _execute_run(
     try:
         _set_job(run_id, status="running", progress=5, message="节点 1：接收输入材料")
         _set_node(run_id, "start_input", "running", "校验人工字段和上传文件")
+        # Keep the first node just as visible as the later parsing node.  The
+        # frontend can now show exactly what is happening before any external
+        # service is called, without exposing implementation field keys.
+        _set_step(run_id, "start_input", "validate_inputs", "running", "正在校验人工输入和必填材料")
+        _set_step(run_id, "start_input", "validate_inputs", "completed", "人工输入和必填材料校验完成")
+        _set_step(run_id, "start_input", "store_materials", "running", "正在整理 PDF、Excel 和补充材料")
+        _set_step(run_id, "start_input", "store_materials", "completed", "上传材料已按角色保存")
+        _set_step(run_id, "start_input", "load_template", "running", "正在加载后台 Word 模板和批注映射")
         from .pipeline import run_pipeline
         from .adapters.template_pages import LibreOfficeTemplatePageReader
         template_path = _project_template()
@@ -258,6 +344,11 @@ def _execute_run(
             "running",
             "准备 OCR、Excel/API 解析和 LLM 候选",
         )
+        def report_progress(node: str, step: str, message: str, percent: int | None = None) -> None:
+            _set_step(run_id, node, step, "running", message)
+            if percent is not None:
+                _set_job(run_id, progress=percent, message=message)
+
         llm_adapter, qichacha_adapter, _http_client = _build_external_adapters(use_glm, use_qichacha)
         _set_job(
             run_id,
@@ -290,10 +381,13 @@ def _execute_run(
             source_overrides=source_overrides,
             prepare_only=use_glm,
             generate_all_narratives=True,
+            progress_callback=report_progress,
         )
         if not use_glm:
             _set_node(run_id, "ocr_llm_candidates", "completed", "材料解析完成，未启用 LLM")
             _set_node(run_id, "fill_word", "completed", "Word 已填充")
+            _set_step(run_id, "output", "verify_output", "running", "正在检查 Word 文件是否可打开且未覆盖模板")
+            _set_step(run_id, "output", "verify_output", "completed", "Word 文件检查完成")
             _set_node(run_id, "output", "completed", "评估报告 Word 已输出")
             _set_job(
                 run_id,
@@ -301,7 +395,7 @@ def _execute_run(
                 progress=100,
                 message="评估报告 Word 已生成",
                 artifacts=_artifact_list(run_dir),
-                issues=[],
+                issues=result.issues,
                 completed_at=datetime.now(timezone.utc).isoformat(),
             )
             return
@@ -317,10 +411,11 @@ def _execute_run(
             "awaiting_selection",
             f"已生成 {len(candidate_items)} 个候选，等待人工选择",
         )
+        _set_step(run_id, "ocr_llm_candidates", "wait_selection", "running", "候选内容已生成，等待人工选择")
         _set_job(
             run_id,
             status="awaiting_selection",
-            progress=65,
+            progress=70,
             message="LLM候选内容已生成，请选择要写入 Word 的位置" + ("（已复用 OCR）" if ocr_cache else ""),
             artifacts=_artifact_list(run_dir),
             issues=result.issues,
@@ -370,6 +465,12 @@ def _execute_fill(run_id: str, selected_fields: dict[str, Any]) -> None:
             False, bool(context.get("use_qichacha"))
         )
         ocr_workbook = run_dir / "OCR结构化结果.xlsx"
+        def report_progress(node: str, step: str, message: str, percent: int | None = None) -> None:
+            _set_step(run_id, node, step, "running", message)
+            if percent is not None:
+                _set_job(run_id, progress=percent, message=message)
+
+        _set_step(run_id, "fill_word", "load_selection", "running", "正在读取人工确认的 LLM 模块")
         result = run_pipeline(
             project_config=PROJECT_CONFIG,
             pdf_path=pdf_path,
@@ -389,10 +490,13 @@ def _execute_fill(run_id: str, selected_fields: dict[str, Any]) -> None:
             source_overrides=source_overrides,
             generate_all_narratives=True,
             llm_values_override=selected_fields,
+            progress_callback=report_progress,
         )
         _set_node(run_id, "fill_word", "completed", "Word 填充完成")
         current_node = "output"
         _set_node(run_id, "output", "running", "正在生成评估报告 Word")
+        _set_step(run_id, "output", "verify_output", "running", "正在检查 Word 文件是否可打开且未覆盖模板")
+        _set_step(run_id, "output", "verify_output", "completed", "Word 文件检查完成")
         _set_node(run_id, "output", "completed", "全部输出已生成")
         _set_job(
             run_id,
@@ -400,7 +504,7 @@ def _execute_fill(run_id: str, selected_fields: dict[str, Any]) -> None:
             progress=100,
             message="评估报告 Word 已生成",
             artifacts=_artifact_list(run_dir),
-            issues=[],
+            issues=result.issues,
             completed_at=datetime.now(timezone.utc).isoformat(),
         )
     except Exception as exc:
@@ -412,9 +516,14 @@ def _execute_fill(run_id: str, selected_fields: dict[str, Any]) -> None:
 async def create_run(
     background_tasks: BackgroundTasks,
     materials: list[UploadFile] | None = File(None),
+    audit_materials: list[UploadFile] | None = File(None),
     pdf: UploadFile | None = File(None),
     income_workbook: UploadFile | None = File(None),
     reporting_workbook: UploadFile | None = File(None),
+    registry_materials: list[UploadFile] | None = File(None),
+    ownership_history_materials: list[UploadFile] | None = File(None),
+    unrecorded_intangibles_materials: list[UploadFile] | None = File(None),
+    company_profile_materials: list[UploadFile] | None = File(None),
     inputs: str = Form("{}"),
     use_glm: bool = Form(True),
     use_qichacha: bool = Form(True),
@@ -424,8 +533,18 @@ async def create_run(
     # gives the workbook an arbitrary filename.  The legacy ``materials``
     # multi-file field is only used to fill roles that were not supplied by a
     # typed slot.
+    audit_uploads = list(audit_materials or [])
+    if pdf is not None:
+        audit_uploads.insert(0, pdf)
     role_uploads: dict[str, UploadFile | None] = {
-        "pdf": pdf,
+        "pdf": next(
+            (
+                upload
+                for upload in audit_uploads
+                if Path(upload.filename or "").suffix.lower() == ".pdf"
+            ),
+            None,
+        ),
         "reporting_workbook": reporting_workbook,
         "income_workbook": income_workbook,
         "reference_report": None,
@@ -433,8 +552,10 @@ async def create_run(
     workbook_candidates: list[UploadFile] = []
     for upload in list(materials or []):
         suffix = Path(upload.filename or "").suffix.lower()
-        if suffix == ".pdf" and role_uploads["pdf"] is None:
-            role_uploads["pdf"] = upload
+        if suffix == ".pdf":
+            audit_uploads.append(upload)
+            if role_uploads["pdf"] is None:
+                role_uploads["pdf"] = upload
         elif suffix in {".xls", ".xlsx", ".xlsm"}:
             workbook_candidates.append(upload)
         elif suffix in {".doc", ".docx"} and role_uploads["reference_report"] is None:
@@ -450,7 +571,6 @@ async def create_run(
         elif role_uploads["income_workbook"] is None:
             role_uploads["income_workbook"] = upload
     uploads = {
-        "pdf": (role_uploads["pdf"], (".pdf",), "审计报告 PDF"),
         "income_workbook": (
             role_uploads["income_workbook"],
             (".xls", ".xlsx", ".xlsm"),
@@ -494,7 +614,18 @@ async def create_run(
     try:
         for key, label, limit in required_text_fields:
             parsed_inputs[key] = validate_required_text(parsed_inputs.get(key), label, limit)
-        parsed_inputs["report_serial"] = validate_report_serial_input(parsed_inputs.get("report_serial"))
+        parsed_inputs["valuation_base_date"] = validate_valuation_base_date(
+            parsed_inputs.get("valuation_base_date")
+        )
+        for key, label in (
+            ("registry_info_strategy", "工商信息"),
+            ("ownership_history_strategy", "股权结构及历史沿革"),
+            ("unrecorded_intangibles_strategy", "账外无形资产"),
+            ("company_profile_strategy", "企业介绍"),
+        ):
+            parsed_inputs[key] = validate_material_source_strategy(
+                parsed_inputs.get(key), label
+            )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     missing_choices = [
@@ -505,7 +636,34 @@ async def create_run(
     ]
     if missing_choices:
         raise HTTPException(status_code=422, detail=f"缺少必填选择项：{'、'.join(missing_choices)}")
-    has_upload = any(upload is not None for upload, _, _ in uploads.values())
+    if not audit_uploads:
+        raise HTTPException(status_code=422, detail="请至少上传一份审计报告材料")
+    audit_suffixes = {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".xlsm"}
+    for upload in audit_uploads:
+        suffix = Path(upload.filename or "").suffix.lower()
+        if not upload.filename or suffix not in audit_suffixes:
+            raise HTTPException(
+                status_code=422,
+                detail="审计报告材料仅支持 Word、Excel、PDF 格式",
+            )
+    optional_upload_groups = {
+        "registry_materials": (list(registry_materials or []), {".doc", ".docx", ".ppt", ".pptx", ".pdf"}, "工商文件"),
+        "ownership_history_materials": (list(ownership_history_materials or []), {".doc", ".docx", ".ppt", ".pptx", ".pdf", ".xls", ".xlsx", ".xlsm"}, "股权结构及历史沿革文件"),
+        "unrecorded_intangibles_materials": (list(unrecorded_intangibles_materials or []), {".doc", ".docx", ".ppt", ".pptx", ".pdf", ".xls", ".xlsx", ".xlsm"}, "账外无形资产文件"),
+        "company_profile_materials": (list(company_profile_materials or []), {".doc", ".docx", ".ppt", ".pptx", ".pdf"}, "企业介绍文件"),
+    }
+    for _role, group, suffixes, label in (
+        (role, items, suffixes, label)
+        for role, (items, suffixes, label) in optional_upload_groups.items()
+    ):
+        for upload in group:
+            suffix = Path(upload.filename or "").suffix.lower()
+            if not upload.filename or suffix not in suffixes:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"{label}格式不支持",
+                )
+    has_upload = bool(audit_uploads) or any(upload is not None for upload, _, _ in uploads.values())
     has_manual = any(
         value not in (None, "", [], {})
         for value in parsed_inputs.values()
@@ -538,8 +696,8 @@ async def create_run(
     first_filename = next(
         (
             upload.filename
-            for upload, _, _ in uploads.values()
-            if upload is not None and upload.filename
+            for upload in audit_uploads
+            if upload.filename
         ),
         str(
             parsed_inputs.get("target_company_name")
@@ -551,27 +709,69 @@ async def create_run(
     input_dir = RUNS_ROOT / run_id / "input"
     input_dir.mkdir(parents=True, exist_ok=True)
     stored_files: dict[str, Path] = {}
+    audit_dir = input_dir / "audit"
+    audit_dir.mkdir(parents=True, exist_ok=True)
+    audit_paths: list[Path] = []
+    used_names: set[str] = set()
+    for index, upload in enumerate(audit_uploads, start=1):
+        original_name = Path(upload.filename or f"audit-{index}").name
+        safe_name = re.sub(r"[\\\\/:*?\"<>|]+", "_", original_name) or f"audit-{index}"
+        candidate = safe_name
+        suffix = 2
+        while candidate in used_names:
+            candidate = f"{Path(safe_name).stem}-{suffix}{Path(safe_name).suffix}"
+            suffix += 1
+        used_names.add(candidate)
+        target = audit_dir / candidate
+        with target.open("wb") as destination:
+            shutil.copyfileobj(upload.file, destination)
+        audit_paths.append(target)
     for field_name, (upload, _, _) in uploads.items():
         if upload is None:
             continue
         suffix = Path(upload.filename or "").suffix.lower()
-        stored_name = (
-            "source.pdf"
-            if field_name == "pdf"
-            else f"{field_name}{suffix}"
-        )
+        original_name = Path(upload.filename or f"{field_name}{suffix}").name
+        safe_name = re.sub(r"[\\\\/:*?\"<>|]+", "_", original_name) or f"{field_name}{suffix}"
+        stored_name = "source.pdf" if field_name == "pdf" else safe_name
         stored_files[field_name] = input_dir / stored_name
         with stored_files[field_name].open("wb") as target:
             shutil.copyfileobj(upload.file, target)
-    pdf_path = stored_files.get("pdf")
+    optional_paths: dict[str, list[Path]] = {}
+    for role, (group, _suffixes, _label) in optional_upload_groups.items():
+        if not group:
+            continue
+        group_dir = input_dir / role
+        group_dir.mkdir(parents=True, exist_ok=True)
+        optional_paths[role] = []
+        used_group_names: set[str] = set()
+        for index, upload in enumerate(group, start=1):
+            original_name = Path(upload.filename or f"{index}{Path(upload.filename or '').suffix.lower()}").name
+            safe_name = re.sub(r"[\\\\/:*?\"<>|]+", "_", original_name) or f"{index}"
+            candidate = safe_name
+            suffix = 2
+            while candidate in used_group_names:
+                candidate = f"{Path(safe_name).stem}-{suffix}{Path(safe_name).suffix}"
+                suffix += 1
+            used_group_names.add(candidate)
+            target = group_dir / candidate
+            with target.open("wb") as destination:
+                shutil.copyfileobj(upload.file, destination)
+            optional_paths[role].append(target)
+    pdf_path = next((path for path in audit_paths if path.suffix.lower() == ".pdf"), None)
+    audited_workbook = next(
+        (path for path in audit_paths if path.suffix.lower() in {".xls", ".xlsx", ".xlsm"}),
+        None,
+    )
     source_overrides = {
         "audit_pdf": pdf_path,
-        # Do not fall back to the developer's hidden local audited workbook.
-        # Web uploads are the authoritative material set for this run.
-        "audited_financials": None,
+        "audited_financials": audited_workbook,
         "income_workbook": stored_files.get("income_workbook"),
         "reporting_workbook": stored_files.get("reporting_workbook"),
         "reference_report": stored_files.get("reference_report"),
+        "registry_material": next(iter(optional_paths.get("registry_materials", [])), None),
+        "ownership_history_material": next(iter(optional_paths.get("ownership_history_materials", [])), None),
+        "unrecorded_intangibles_material": next(iter(optional_paths.get("unrecorded_intangibles_materials", [])), None),
+        "company_profile_material": next(iter(optional_paths.get("company_profile_materials", [])), None),
     }
     _set_job(
         run_id,

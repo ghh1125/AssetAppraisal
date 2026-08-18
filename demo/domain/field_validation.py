@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from datetime import date
 from typing import Any
 
 
@@ -13,6 +14,7 @@ VALUATION_SUBJECT_TYPES = (
 
 VALUATION_METHODS = ("资产基础法", "收益法", "市场法")
 TRANSACTION_TYPES = ("转让", "收购", "增资", "减资")
+MATERIAL_SOURCE_STRATEGIES = ("file", "qichacha")
 NARRATIVE_MODULES = (
     "industry_overview",
     "business_and_segments",
@@ -108,6 +110,25 @@ def validate_final_valuation_method(value: Any) -> str:
     text = aliases.get(text, text)
     if text not in VALUATION_METHODS:
         raise ValueError("评估结论采用方法只能选择：" + "、".join(VALUATION_METHODS))
+    return text
+
+
+def validate_valuation_base_date(value: Any) -> str:
+    """Validate the assessment base date entered at the start node."""
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError("评估基准日不能为空")
+    try:
+        return date.fromisoformat(text).isoformat()
+    except ValueError as exc:
+        raise ValueError("评估基准日必须是有效日期，格式为YYYY-MM-DD") from exc
+
+
+def validate_material_source_strategy(value: Any, label: str) -> str:
+    """Validate the explicit file/API choice required by the 0817 contract."""
+    text = str(value or "file").strip().lower()
+    if text not in MATERIAL_SOURCE_STRATEGIES:
+        raise ValueError(f"{label}来源只能选择：上传文件、企查查API")
     return text
 
 

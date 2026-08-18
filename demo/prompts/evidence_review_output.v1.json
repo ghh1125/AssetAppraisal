@@ -1,0 +1,22 @@
+{
+  "version": "evidence_review_output.v1",
+  "type": "object",
+  "required": ["reviews"],
+  "properties": {
+    "reviews": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["field_key", "status", "reason", "comment"],
+        "properties": {
+          "field_key": {"type": "string"},
+          "status": {"enum": ["accept", "needs_review", "conflict", "missing"]},
+          "reason": {"type": "string"},
+          "comment": {"type": "string"}
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

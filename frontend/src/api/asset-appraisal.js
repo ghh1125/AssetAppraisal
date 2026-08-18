@@ -7,18 +7,26 @@ export function checkAssetAppraisalOcrCache(file) {
 }
 
 export function buildAssetAppraisalForm({
-  pdf,
+  auditMaterials = [],
   reportingWorkbook,
   incomeWorkbook,
+  registryMaterials = [],
+  ownershipHistoryMaterials = [],
+  unrecordedIntangiblesMaterials = [],
+  companyProfileMaterials = [],
   inputs,
   useGlm,
   useQichacha,
   reuseOcr,
 }) {
   const form = new FormData()
-  if (pdf) form.append('pdf', pdf)
+  for (const file of auditMaterials) form.append('audit_materials', file)
   if (reportingWorkbook) form.append('reporting_workbook', reportingWorkbook)
   if (incomeWorkbook) form.append('income_workbook', incomeWorkbook)
+  for (const file of registryMaterials) form.append('registry_materials', file)
+  for (const file of ownershipHistoryMaterials) form.append('ownership_history_materials', file)
+  for (const file of unrecordedIntangiblesMaterials) form.append('unrecorded_intangibles_materials', file)
+  for (const file of companyProfileMaterials) form.append('company_profile_materials', file)
   form.append('inputs', JSON.stringify(inputs))
   form.append('use_glm', String(useGlm))
   form.append('use_qichacha', String(useQichacha))

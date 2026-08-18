@@ -92,6 +92,32 @@ def test_qichacha_adapter_signs_and_maps_only_authorized_fields():
     assert first_kwargs["headers"]["Token"] == QichachaApiAdapter.token("app", timespan, "secret")
 
 
+def test_qichacha_retries_transient_request_failure():
+    class FlakyClient(_Client):
+        def __init__(self):
+            super().__init__()
+            self.failures = 0
+
+        def get(self, url, **kwargs):
+            if url.endswith("ECIInfoVerify/GetInfo") and self.failures == 0:
+                self.failures += 1
+                self.calls.append((url, kwargs))
+                raise RuntimeError("temporary connection error")
+            return super().get(url, **kwargs)
+
+    client = FlakyClient()
+    payload, issues = QichachaApiAdapter(
+        client,
+        "app",
+        "secret",
+        extra_api_codes=(),
+    ).fetch("示例有限公司")
+
+    assert issues == []
+    assert "示例有限公司" in payload["fields"]["commissioning_party_profile"]
+    assert sum(1 for url, _ in client.calls if url.endswith("ECIInfoVerify/GetInfo")) == 2
+
+
 def test_graphical_trademark_uses_text_name_and_marks_software_query_successfully():
     class GraphicClient(_Client):
         def get(self, url, **kwargs):

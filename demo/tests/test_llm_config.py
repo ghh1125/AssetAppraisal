@@ -4,8 +4,8 @@ from demo.domain.llm_config import DEFAULT_LLM_FALLBACK_MODEL, DEFAULT_LLM_MODEL
 def test_llm_models_use_deepseek_default_and_qwen_fallback_when_no_override_exists():
     models = resolve_llm_models({}, {})
 
-    assert set(models.values()) == {"deepseek-v4-flash-0731"}
-    assert DEFAULT_LLM_MODEL == "deepseek-v4-flash-0731"
+    assert set(models.values()) == {"deepseek-v4-pro-0813"}
+    assert DEFAULT_LLM_MODEL == "deepseek-v4-pro-0813"
     assert DEFAULT_LLM_FALLBACK_MODEL == "qwen3.8-max"
 
 
@@ -16,7 +16,22 @@ def test_llm_models_default_to_qwen_and_allow_task_override():
     )
 
     assert models["narrative"] == "qwen-max"
-    assert set(models) == {"narrative"}
+    assert models["evidence_review"] == "qwen3.7-flash"
+
+
+def test_llm_models_allow_evidence_review_to_use_a_separate_model():
+    models = resolve_llm_models(
+        {
+            "llm": {
+                "default_model": "qwen-flash",
+                "tasks": {"evidence_review": "qwen-max"},
+            }
+        },
+        {},
+    )
+
+    assert models["narrative"] == "qwen-flash"
+    assert models["evidence_review"] == "qwen-max"
 
 
 def test_llm_environment_override_wins_over_project_config():

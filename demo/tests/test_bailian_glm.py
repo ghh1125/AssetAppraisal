@@ -18,9 +18,11 @@ class FakeClient:
     def __init__(self, content):
         self.content = content
         self.request = None
+        self.requests = []
 
     def post(self, *args, **kwargs):
         self.request = {"args": args, "kwargs": kwargs}
+        self.requests.append(self.request)
         return FakeResponse({"choices": [{"message": {"content": self.content}}]})
 
 
@@ -44,6 +46,39 @@ class FieldwiseClient:
                                         "value": f"{field}内容",
                                         "evidence_ids": [evidence_id],
                                     }
+                                },
+                                ensure_ascii=False,
+                            )
+                        }
+                    }
+                ]
+            }
+        )
+
+
+class EvidenceReviewClient:
+    def __init__(self):
+        self.requests = []
+
+    def post(self, *args, **kwargs):
+        self.requests.append({"args": args, "kwargs": kwargs})
+        user_payload = json.loads(kwargs["json"]["messages"][-1]["content"])
+        field_key = user_payload["fields"][0]["field_key"]
+        return FakeResponse(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "reviews": [
+                                        {
+                                            "field_key": field_key,
+                                            "status": "accept",
+                                            "reason": "PDF和表格的期间、口径及单位一致。",
+                                            "comment": "已核对审计报告页码与对应工作表。",
+                                        }
+                                    ]
                                 },
                                 ensure_ascii=False,
                             )
@@ -83,7 +118,7 @@ def test_glm_accepts_only_seven_fields_and_known_evidence_ids():
     assert any("book_net_assets" in issue for issue in issues)
     assert any("pdf:p99:b9" in issue for issue in issues)
     request = client.request["kwargs"]
-    assert request["json"]["model"] == "deepseek-v4-flash-0731"
+    assert request["json"]["model"] == "deepseek-v4-pro-0813"
     assert request["json"]["enable_thinking"] is False
     assert request["json"]["response_format"]["type"] == "json_object"
     assert request["headers"]["Authorization"] == "Bearer test-key"
@@ -124,6 +159,132 @@ def test_glm_accepts_flat_json_object_used_by_qwen_flash():
 
     assert values["main_products"] == "主营工业滤波器。"
     assert issues == []
+
+
+def test_glm_reviews_extracted_data_without_returning_a_replacement_value():
+    client = FakeClient(
+        json.dumps(
+            {
+                "reviews": [
+                    {
+                        "field_key": "book_net_assets",
+                        "status": "needs_review",
+                        "reason": "PDF与Excel期间标签不一致。",
+                        "value": "不得接受的替换金额",
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        )
+    )
+    adapter = BailianYellowNarrativeAdapter(
+        client=client,
+        api_key="test-key",
+        prompt="叙述规则",
+        review_prompt="复核规则",
+        review_model="review-model",
+    )
+
+    reviews, issues = adapter.review_extracted_evidence(
+        [
+            {
+                "field_key": "book_net_assets",
+                "selected": {
+                    "value": "100.00",
+                    "source_kind": "pdf_ocr",
+                    "source_file": "审计报告.pdf",
+                    "source_locator": "第10页",
+                },
+                "candidates": [],
+            }
+        ],
+        {"book_net_assets": "账面净资产"},
+    )
+
+    assert reviews == [
+        {
+            "field_key": "book_net_assets",
+            "status": "needs_review",
+            "reason": "PDF与Excel期间标签不一致。",
+        }
+    ]
+    assert issues == []
+    assert client.request["kwargs"]["json"]["model"] == "review-model"
+    assert client.request["kwargs"]["json"]["messages"][0]["content"] == "复核规则"
+
+
+def test_glm_reviews_each_table_group_with_a_separate_request():
+    client = EvidenceReviewClient()
+    adapter = BailianYellowNarrativeAdapter(
+        client=client,
+        api_key="test-key",
+        prompt="叙述规则",
+        review_prompt="复核规则",
+        review_model="review-model",
+    )
+
+    reviews, issues = adapter.review_extracted_evidence(
+        [
+            {
+                "field_key": "historical_balance_sheet_table",
+                "selected": {"value": {"rows": [["项目", "金额"], ["总资产", "100"]]}, "source_kind": "pdf_ocr", "source_file": "审计.pdf", "source_locator": "审计 PDF 第18页：历史资产负债表"},
+                "candidates": [],
+            },
+            {
+                "field_key": "historical_income_statement_table",
+                "selected": {"value": {"rows": [["项目", "金额"], ["营业收入", "90"]]}, "source_kind": "pdf_ocr", "source_file": "审计.pdf", "source_locator": "审计 PDF 第19页：历史利润表"},
+                "candidates": [],
+            },
+        ],
+        {"historical_balance_sheet_table": "历史资产负债表", "historical_income_statement_table": "历史利润表"},
+    )
+
+    assert len(client.requests) == 2
+    assert [item["field_key"] for item in reviews] == [
+        "historical_balance_sheet_table",
+        "historical_income_statement_table",
+    ]
+    assert issues == []
+
+
+def test_glm_can_locate_unresolved_pdf_pages_from_numbered_ocr_pages():
+    client = FakeClient(
+        json.dumps(
+            {
+                "locations": [
+                    {
+                        "field_key": "historical_income_statement_table",
+                        "page_number": 27,
+                        "reason": "第27页包含利润表标题和营业收入、净利润行。",
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        )
+    )
+    adapter = BailianYellowNarrativeAdapter(
+        client=client,
+        api_key="test-key",
+        prompt="叙述规则",
+        review_prompt="复核规则",
+        review_model="review-model",
+    )
+
+    locations, issues = adapter.locate_pdf_pages(
+        {
+            "text_blocks": [{"page_number": 27, "text": "利润表 营业收入 净利润"}],
+            "table_cells": [],
+        },
+        {"historical_income_statement_table": "历史利润表"},
+        ["historical_income_statement_table"],
+    )
+
+    assert locations == {"historical_income_statement_table": 27}
+    assert issues == []
+    request = client.request["kwargs"]["json"]
+    assert request["model"] == "review-model"
+    assert request["response_format"]["type"] == "json_object"
+    assert request["messages"][1]["content"].find("第27页") >= 0
 
 
 def test_glm_ignores_target_context_pseudo_citation_when_real_evidence_remains():
@@ -528,6 +689,6 @@ def test_glm_failure_returns_empty_fields_without_exposing_api_key():
 
     assert values == {}
     assert len(issues) == 1
-    assert "主模型 deepseek-v4-flash-0731 失败" in issues[0]
+    assert "主模型 deepseek-v4-pro-0813 失败" in issues[0]
     assert "降级模型 qwen3.8-max 失败" in issues[0]
     assert "secret-never-print" not in issues[0]

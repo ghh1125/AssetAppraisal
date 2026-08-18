@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import re
 import tempfile
@@ -29,6 +30,7 @@ from demo.adapters.workflow_trace import (
     trace_resolved_fields,
 )
 from demo.adapters.word import (
+    annotate_source_conflicts,
     document_paragraph_texts,
     fill_template,
     highlight_unresolved_placeholders,
@@ -44,7 +46,10 @@ from demo.domain.generation_issues import (
     issues_from_word_findings,
     organize_generation_issues,
 )
-from demo.domain.comment_mapping import build_comment_aware_locations
+from demo.domain.comment_mapping import (
+    align_locations_to_output_template,
+    build_comment_aware_locations,
+)
 from demo.domain.field_validation import (
     apply_missing_field_policy,
     normalize_narrative_modules,
@@ -64,6 +69,9 @@ from demo.domain.narrative_policy import (
 from demo.domain.ocr_normalization import normalize_ocr_pages
 from demo.domain.pdf_ocr_fields import find_ocr_table, resolve_configured_ocr_fields, resolve_ocr_aux_fields
 from demo.domain.replacement import build_replacements
+from demo.domain.source_reconciliation import SourceCandidate, reconcile_field
+from demo.domain.source_labels import human_source_locator as render_source_locator
+from demo.domain.source_labels import pdf_field_locators
 from demo.domain.template_pagination import map_location_pages
 from demo.domain.workflow_contracts import validate_workflow_contract
 from demo.domain.yellow_routing import (
@@ -73,6 +81,500 @@ from demo.domain.yellow_routing import (
     validate_yellow_routes,
 )
 from demo.run import run_project
+
+
+def _semantic_source_kind(source: dict[str, Any], source_overrides: dict[str, Path | None] | None) -> str:
+    """Name a workbook role without relying on a sheet coordinate.
+
+    The semantic extractor retains the file and sheet/cell evidence.  This
+    helper only translates the selected file back to its uploaded role so the
+    reconciliation record can explain a PDF-versus-workbook difference.
+    """
+    source_file = str(source.get("file", ""))
+    for role, path in (source_overrides or {}).items():
+        if path is not None and path.name == source_file:
+            return {
+                "reporting_workbook": "asset_workbook",
+                "income_workbook": "income_workbook",
+                "audited_financials": "audit_workbook",
+            }.get(role, role)
+    return "semantic_workbook"
+
+
+def _reconcile_pdf_authoritative_fields(
+    *,
+    fields: dict[str, Any],
+    evidence: dict[str, dict[str, Any]],
+    resolved_ocr: dict[str, Any],
+    field_keys: set[str],
+    pdf_name: str,
+    ocr_source_name: str,
+    ocr_locators: dict[str, str] | None,
+    source_overrides: dict[str, Path | None] | None,
+) -> tuple[dict[str, Any], dict[str, dict[str, Any]], list[str], list[dict[str, Any]]]:
+    """Use PDF/OCR for PDF-mandated fields and only compare workbooks.
+
+    A workbook candidate may be useful evidence, but it must never silently
+    replace a field that the Word comment requires to come from the audit
+    report.  If an audit PDF/OCR candidate is absent, the field is deliberately
+    left unresolved for the yellow placeholder policy.
+    """
+    updated_fields = dict(fields)
+    updated_evidence = {key: dict(value) for key, value in evidence.items() if isinstance(value, dict)}
+    issues: list[str] = []
+    audit_rows: list[dict[str, Any]] = []
+    for field_key in sorted(field_keys):
+        candidates: list[SourceCandidate] = []
+        current_value = updated_fields.get(field_key)
+        current_source = updated_evidence.get(field_key, {})
+        if current_value not in (None, "", [], {}):
+            candidates.append(
+                SourceCandidate(
+                    value=current_value,
+                    source_kind=_semantic_source_kind(current_source, source_overrides),
+                    source_file=str(current_source.get("file", "")),
+                    source_locator=str(current_source.get("locator", "")),
+                )
+            )
+        # Only values actually produced by the OCR resolver count as PDF
+        # evidence.  Do not treat a later Excel fallback as if it were PDF.
+        if field_key in resolved_ocr and resolved_ocr[field_key] not in (None, "", [], {}):
+            candidates.append(
+                SourceCandidate(
+                    value=resolved_ocr[field_key],
+                    source_kind="pdf_ocr",
+                    source_file=pdf_name or ocr_source_name,
+                    source_locator=(ocr_locators or {}).get(
+                        field_key,
+                        f"审计 PDF：{field_key}",
+                    ),
+                )
+            )
+        # The citation below audit-derived tables is itself an audit-PDF
+        # field.  Its value is the submitted PDF filename, not a financial
+        # number requiring OCR.  It must still stay blank when no PDF exists.
+        if field_key in {"audit_report_name", "financial_data_source_name"} and pdf_name:
+            candidates.append(
+                SourceCandidate(
+                    value=Path(pdf_name).stem,
+                    source_kind="pdf_ocr",
+                    source_file=pdf_name,
+                    source_locator="审计报告文件名",
+                )
+            )
+        reconciled = reconcile_field(
+            field_key=field_key,
+            candidates=candidates,
+            source_priority=("pdf_ocr", "audit_workbook", "asset_workbook", "income_workbook", "semantic_workbook"),
+            require_primary_source=True,
+            allow_fallback_when_primary_missing=True,
+            primary_source_supplied=bool(pdf_name),
+        )
+        audit_rows.append(
+            {
+                "field_key": field_key,
+                "selected": {
+                    "value": reconciled.value,
+                    "source_kind": reconciled.source_kind,
+                    "source_file": reconciled.source_file,
+                    "source_locator": reconciled.source_locator,
+                },
+                "candidates": [item.__dict__ for item in reconciled.candidates],
+                "discrepancies": [item.__dict__ for item in reconciled.discrepancies],
+                "issues": reconciled.issues,
+                "pdf_uploaded": bool(pdf_name),
+            }
+        )
+        if reconciled.value in (None, "", [], {}):
+            updated_fields[field_key] = ""
+            updated_evidence[field_key] = {"kind": "missing", "file": "", "locator": "无对应PDF文件，无法获取审计数据"}
+        else:
+            updated_fields[field_key] = reconciled.value
+            updated_evidence[field_key] = {
+                "kind": (
+                    "pdf_ocr_xlsx"
+                    if reconciled.source_kind == "pdf_ocr"
+                    else reconciled.source_kind
+                ),
+                "file": reconciled.source_file,
+                "locator": reconciled.source_locator,
+            }
+        issues.extend(reconciled.issues)
+        for difference in reconciled.discrepancies:
+            issues.append(
+                f"{field_key}：数据不一致；审计PDF {difference.selected_source_file}"
+                f"（{difference.selected_source_locator}）={difference.selected_value}；"
+                f"其他材料 {difference.other_source_file}（{difference.other_source_locator}）={difference.other_value}。已按审计PDF填入"
+            )
+    return updated_fields, updated_evidence, issues, audit_rows
+
+
+_RECONCILE_NUMBER = re.compile(r"[-+]?\d[\d,]*(?:\.\d+)?%?")
+
+
+def _numeric_value(value: Any) -> str | None:
+    """Return a display value only for a standalone amount/rate cell."""
+    if isinstance(value, bool):
+        return None
+    text = str(value if value is not None else "").strip()
+    if not text or not _RECONCILE_NUMBER.fullmatch(text):
+        return None
+    return text
+
+
+def _matrix(value: Any) -> list[list[Any]] | None:
+    if isinstance(value, dict) and isinstance(value.get("rows"), list):
+        value = value["rows"]
+    if not isinstance(value, list) or not value or not all(isinstance(row, list) for row in value):
+        return None
+    return value
+
+
+def _table_value_conflicts(
+    selected: Any,
+    other: Any,
+    *,
+    field_name: str,
+) -> list[dict[str, str]]:
+    """Return only differing numeric cells from two similarly shaped tables.
+
+    A row label is retained as a Word lookup hint.  It prevents a common value
+    such as ``0.00`` in another table from being coloured red by mistake.
+    """
+    selected_rows, other_rows = _matrix(selected), _matrix(other)
+    if selected_rows is None or other_rows is None:
+        return []
+    differences: list[dict[str, str]] = []
+    for row_index in range(1, min(len(selected_rows), len(other_rows))):
+        left_row, right_row = selected_rows[row_index], other_rows[row_index]
+        row_label = str(left_row[0]).strip() if left_row else ""
+        for column_index in range(1, min(len(left_row), len(right_row))):
+            left = _numeric_value(left_row[column_index])
+            right = _numeric_value(right_row[column_index])
+            if left is None or right is None:
+                continue
+            if left.replace(",", "") == right.replace(",", ""):
+                continue
+            header = ""
+            if selected_rows and column_index < len(selected_rows[0]):
+                header = str(selected_rows[0][column_index]).strip()
+            label = " / ".join(item for item in (field_name, row_label, header) if item)
+            differences.append(
+                {
+                    "pdf_value": left,
+                    "excel_value": right,
+                    "field_name": label or field_name,
+                    "word_context_hint": row_label,
+                }
+            )
+    return differences
+
+
+def _human_source_locator(source_file: str, locator: str, field_name: str) -> str:
+    """Turn internal OCR field locators into reviewer-readable locations."""
+    return render_source_locator(source_file, locator, field_name)
+
+
+def _resolve_unresolved_pdf_page_locators(
+    field_names: dict[str, str],
+    locators: dict[str, str],
+    normalized: dict[str, Any],
+    llm_adapter: Any | None,
+) -> tuple[dict[str, str], list[str]]:
+    """Complete PDF page labels with a closed-world LLM locator when needed.
+
+    Deterministic OCR/table evidence remains the primary path.  The optional
+    model receives only numbered OCR pages and may return only an existing
+    page number; it cannot supply values or alter source selection.
+    """
+    updated = dict(locators)
+    unresolved = [
+        key
+        for key in sorted(field_names)
+        if key in updated and not re.search(r"第\d+页", str(updated.get(key, "")))
+    ]
+    if not unresolved or llm_adapter is None or not hasattr(llm_adapter, "locate_pdf_pages"):
+        return updated, []
+    try:
+        page_map, issues = llm_adapter.locate_pdf_pages(
+            normalized,
+            field_names,
+            unresolved,
+        )
+    except Exception as exc:
+        return updated, [f"PDF页码定位调用失败：{exc}"]
+    for field_key, page in (page_map or {}).items():
+        if field_key not in unresolved:
+            continue
+        try:
+            page_number = int(page)
+        except (TypeError, ValueError):
+            continue
+        if page_number > 0:
+            updated[field_key] = f"审计 PDF 第{page_number}页：{field_names.get(field_key, field_key)}"
+    return updated, list(issues or [])
+
+
+def _reviewable_source_conflicts(
+    reconciliation_rows: list[dict[str, Any]],
+    field_names: dict[str, str],
+) -> list[dict[str, str]]:
+    """Turn reconciliation records into precise red-font/Word-comment tasks."""
+    findings: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for row in reconciliation_rows:
+        field_key = str(row.get("field_key", ""))
+        display_name = field_names.get(field_key, field_key)
+        for discrepancy in row.get("discrepancies", []):
+            if not isinstance(discrepancy, dict):
+                continue
+            common = {
+                "field_key": field_key,
+                "pdf_file": str(discrepancy.get("selected_source_file", "")),
+                "pdf_locator": _human_source_locator(
+                    str(discrepancy.get("selected_source_file", "")),
+                    str(discrepancy.get("selected_source_locator", "")),
+                    display_name,
+                ),
+                "excel_file": str(discrepancy.get("other_source_file", "")),
+                "excel_locator": _human_source_locator(
+                    str(discrepancy.get("other_source_file", "")),
+                    str(discrepancy.get("other_source_locator", "")),
+                    display_name,
+                ),
+            }
+            pdf_value = _numeric_value(discrepancy.get("selected_value"))
+            excel_value = _numeric_value(discrepancy.get("other_value"))
+            if pdf_value is not None and excel_value is not None:
+                candidates = [{
+                    **common,
+                    "field_name": display_name,
+                    "pdf_value": pdf_value,
+                    "excel_value": excel_value,
+                    "word_context_hint": "",
+                }]
+            else:
+                candidates = [
+                    {**common, **item}
+                    for item in _table_value_conflicts(
+                        discrepancy.get("selected_value"),
+                        discrepancy.get("other_value"),
+                        field_name=display_name,
+                    )
+                ]
+            for candidate in candidates:
+                key = (
+                    candidate["field_key"],
+                    candidate["field_name"],
+                    candidate["pdf_value"],
+                    candidate["excel_value"],
+                )
+                if key not in seen:
+                    findings.append(candidate)
+                    seen.add(key)
+    return findings
+
+
+def _first_table_numeric_value(value: Any) -> dict[str, str] | None:
+    """Select one anchored cell to note an Excel-only table source in Word."""
+    rows = _matrix(value)
+    if rows is None:
+        return None
+    for row_index in range(1, len(rows)):
+        row = rows[row_index]
+        row_label = str(row[0]).strip() if row else ""
+        for column_index in range(1, len(row)):
+            numeric = _numeric_value(row[column_index])
+            if numeric is None:
+                continue
+            header = str(rows[0][column_index]).strip() if column_index < len(rows[0]) else ""
+            return {
+                "excel_value": numeric,
+                "word_context_hint": row_label,
+                "field_suffix": " / ".join(item for item in (row_label, header) if item),
+            }
+    return None
+
+
+def _reviewable_source_fallbacks(
+    reconciliation_rows: list[dict[str, Any]],
+    field_names: dict[str, str],
+) -> list[dict[str, str]]:
+    """Record one Word note whenever a PDF-required field falls back to Excel.
+
+    This is deliberately a source-availability note, not a mismatch: there is
+    no PDF value to compare and the adopted Excel number stays black.
+    """
+    findings: list[dict[str, str]] = []
+    for row in reconciliation_rows:
+        selected = row.get("selected", {})
+        if not isinstance(selected, dict) or selected.get("source_kind") == "pdf_ocr":
+            continue
+        source_file = str(selected.get("source_file", ""))
+        value = selected.get("value")
+        if not source_file or value in (None, "", [], {}):
+            continue
+        field_key = str(row.get("field_key", ""))
+        field_name = field_names.get(field_key, field_key)
+        numeric = _numeric_value(value)
+        if numeric is not None:
+            findings.append(
+                {
+                    "review_kind": "excel_fallback",
+                    "field_key": field_key,
+                    "field_name": field_name,
+                    "excel_value": numeric,
+                    "excel_file": source_file,
+                    "excel_locator": _human_source_locator(
+                        source_file,
+                        str(selected.get("source_locator", "")),
+                        field_name,
+                    ),
+                    "pdf_uploaded": bool(row.get("pdf_uploaded", False)),
+                    "word_context_hint": "",
+                }
+            )
+            continue
+        first_value = _first_table_numeric_value(value)
+        if first_value is not None:
+            findings.append(
+                {
+                    "review_kind": "excel_fallback",
+                    "field_key": field_key,
+                    "field_name": " / ".join(
+                        item for item in (field_name, first_value["field_suffix"]) if item
+                    ),
+                    "excel_value": first_value["excel_value"],
+                    "excel_file": source_file,
+                    "excel_locator": _human_source_locator(
+                        source_file,
+                        str(selected.get("source_locator", "")),
+                        field_name,
+                    ),
+                    "pdf_uploaded": bool(row.get("pdf_uploaded", False)),
+                    "word_context_hint": first_value["word_context_hint"],
+                }
+            )
+    return findings
+
+
+def _reviewable_llm_notes(
+    reviews: list[dict[str, str]],
+    reconciliation_rows: list[dict[str, Any]],
+    field_names: dict[str, str],
+) -> list[dict[str, str]]:
+    """Attach LLM caution notes without letting the LLM recolour or alter data."""
+    selected_by_field = {
+        str(row.get("field_key", "")): row.get("selected", {})
+        for row in reconciliation_rows
+        if isinstance(row.get("selected"), dict)
+    }
+    notes: list[dict[str, str]] = []
+    for review in reviews:
+        if review.get("status") not in {"needs_review", "conflict", "missing"}:
+            continue
+        field_key = str(review.get("field_key", ""))
+        selected = selected_by_field.get(field_key, {})
+        if not isinstance(selected, dict):
+            continue
+        value = selected.get("value")
+        numeric = _numeric_value(value)
+        field_name = field_names.get(field_key, field_key)
+        word_context_hint = ""
+        if numeric is None:
+            first_value = _first_table_numeric_value(value)
+            if first_value is None:
+                continue
+            numeric = first_value["excel_value"]
+            word_context_hint = first_value["word_context_hint"]
+            field_name = " / ".join(
+                item for item in (field_name, first_value["field_suffix"]) if item
+            )
+        notes.append(
+            {
+                "review_kind": "llm_review",
+                "field_key": field_key,
+                "field_name": field_name,
+                # The generic Word annotator uses this as the selected text;
+                # it is intentionally not an Excel assertion.
+                "excel_value": numeric,
+                "excel_file": str(selected.get("source_file", "")),
+                "excel_locator": _human_source_locator(
+                    str(selected.get("source_file", "")),
+                    str(selected.get("source_locator", "")),
+                    field_name,
+                ),
+                "word_context_hint": word_context_hint,
+                "review_status": str(review.get("status", "")),
+                "review_reason": str(review.get("reason", "")),
+                "llm_comment": str(review.get("comment", "")),
+            }
+        )
+    return notes
+
+
+def _attach_llm_comments(
+    annotations: list[dict[str, Any]],
+    llm_notes: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Attach the model's complete human-facing comment to source findings."""
+    comments_by_field = {
+        str(item.get("field_key", "")): str(item.get("llm_comment", ""))
+        for item in llm_notes
+        if item.get("llm_comment")
+    }
+    enriched: list[dict[str, Any]] = []
+    for item in annotations:
+        copy = dict(item)
+        comment = comments_by_field.get(str(item.get("field_key", "")))
+        if comment:
+            copy["llm_comment"] = comment
+        enriched.append(copy)
+    return enriched
+
+
+_LLM_REVIEW_SOURCE_KINDS = frozenset(
+    {
+        "pdf_ocr_xlsx",
+        "ocr_xlsx",
+        "audit_workbook",
+        "asset_workbook",
+        "income_workbook",
+        "semantic_workbook",
+    }
+)
+
+
+def _llm_review_rows(
+    fields: dict[str, Any],
+    evidence: dict[str, dict[str, Any]],
+    reconciliation_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Include every resolved PDF/Excel field in the LLM review batch once."""
+    rows = list(reconciliation_rows)
+    present = {str(item.get("field_key", "")) for item in rows}
+    for field_key, value in fields.items():
+        if field_key in present or value in (None, "", [], {}):
+            continue
+        source = evidence.get(field_key, {})
+        if not isinstance(source, dict) or source.get("kind") not in _LLM_REVIEW_SOURCE_KINDS:
+            continue
+        candidate = {
+            "value": value,
+            "source_kind": source.get("kind", ""),
+            "source_file": source.get("file", ""),
+            "source_locator": source.get("locator", ""),
+        }
+        rows.append(
+            {
+                "field_key": field_key,
+                "selected": candidate,
+                "candidates": [candidate],
+                "discrepancies": [],
+            }
+        )
+        present.add(field_key)
+    return rows
 
 
 def _keep_unresolved_ocr_issues(
@@ -619,6 +1121,7 @@ def run_pipeline(
     prepare_only: bool = False,
     generate_all_narratives: bool = False,
     llm_values_override: dict[str, Any] | None = None,
+    progress_callback: Callable[[str, str, str, int | None], None] | None = None,
 ) -> PipelineResult:
     config_path = project_config.resolve()
     config = json.loads(config_path.read_text(encoding="utf-8"))
@@ -647,6 +1150,15 @@ def run_pipeline(
         contract_version=workflow_definition.contract_version,
         versions=trace_versions,
     )
+
+    def emit_progress(
+        node: str,
+        step: str,
+        message: str,
+        percent: int | None = None,
+    ) -> None:
+        if progress_callback is not None:
+            progress_callback(node, step, message, percent)
 
     def record_node(
         name: str,
@@ -723,6 +1235,7 @@ def run_pipeline(
     )
     if comment_template:
         locations = build_comment_aware_locations(annotation_inventory, locations)
+        locations = align_locations_to_output_template(template_inventory, locations)
     else:
         annotation_template = template
         annotation_inventory = template_inventory
@@ -731,7 +1244,40 @@ def run_pipeline(
         for item in [*mapping.get("locations", []), *locations, *static_locations]
         if item.get("field_key")
     }
+    # Internal keys must never leak into Word comments or user-facing review
+    # messages. These table fields are configured outside the mapping list,
+    # so give them the same business labels a reviewer sees in the template.
+    field_names.update(
+        {
+            "asset_scope_summary_table": "资产负债范围表",
+            "long_term_assets_table": "主要长期资产账面记录表",
+            "major_long_term_assets": "主要长期资产账面记录",
+            "book_net_assets": "审计后账面净资产",
+        }
+    )
     routes = load_yellow_routes(config["yellow_routes"])
+    # Comments remain the source-of-truth.  The mapping agent is used only
+    # for the small residue of locations that the deterministic comment parser
+    # cannot classify; it receives a closed list of existing fields and may
+    # never overwrite a confirmed mapping or invent a replacement value.
+    mapping_agent_issues: list[str] = []
+    if llm_adapter is not None and hasattr(llm_adapter, "map_template_locations"):
+        allowed_mapping_fields = sorted(
+            set(field_names)
+            | {route.field_key for route in routes}
+        )
+        suggestions, mapping_agent_issues = llm_adapter.map_template_locations(
+            locations,
+            allowed_mapping_fields,
+        )
+        for location in locations:
+            location_id = str(location.get("location_id", ""))
+            suggested_field = suggestions.get(location_id)
+            if not suggested_field or location.get("field_key"):
+                continue
+            location["field_key"] = suggested_field
+            location["field_name"] = field_names.get(suggested_field, suggested_field)
+            location["mapping_agent_assisted"] = True
     inventory_trace = [
         {
             "location_id": item["location_id"],
@@ -762,7 +1308,9 @@ def run_pipeline(
         validate_yellow_routes(routes, expected_location_ids=yellow_location_ids)
 
     template_hash = _sha256(template)
-    issues: list[str] = []
+    issues: list[str] = list(mapping_agent_issues)
+    emit_progress("ocr_llm_candidates", "detect_materials", "正在识别上传材料的文件类型", 18)
+    emit_progress("ocr_llm_candidates", "parse_excel", "正在读取 Excel 工作表标题和表头", 20)
     with tempfile.TemporaryDirectory(prefix="appraisal-base-") as temporary:
         legacy = run_project(
             config_path,
@@ -779,6 +1327,7 @@ def run_pipeline(
             if normalized_evidence.exists()
             else {}
         )
+    emit_progress("ocr_llm_candidates", "parse_excel", "Excel 语义解析完成，开始整理候选字段", 24)
 
     # The valuation object is a controlled user input even though the current
     # template does not mark every occurrence in yellow.  Validate it once and
@@ -846,6 +1395,13 @@ def run_pipeline(
             }
 
     ocr_node_issues: list[str] = []
+    if pdf is not None or ocr_workbook_path is not None:
+        emit_progress(
+            "ocr_llm_candidates",
+            "ocr_pdf",
+            "正在读取审计 PDF 的 OCR 结构化结果" if ocr_workbook_path else "正在执行审计 PDF OCR",
+            28,
+        )
     if ocr_workbook_path is not None:
         try:
             normalized = normalized_from_ocr_workbook(ocr_workbook_path.resolve())
@@ -871,6 +1427,12 @@ def run_pipeline(
         normalized = normalize_ocr_pages(pages)
     else:
         normalized = normalize_ocr_pages([])
+    emit_progress(
+        "ocr_llm_candidates",
+        "ocr_pdf",
+        "审计 PDF/OCR 解析完成" if pdf is not None or ocr_workbook_path is not None else "未提供 PDF，跳过 OCR",
+        34,
+    )
 
     page_counts: dict[int, int] = {}
     for record in [*normalized.get("text_blocks", []), *normalized.get("table_cells", [])]:
@@ -986,6 +1548,33 @@ def run_pipeline(
                 "file": "OCR结构化结果.xlsx",
                 "locator": scope_table.get("source_locator", "") + "；语义 OCR 覆盖",
             }
+    # For audit-PDF tables, construct the visible table from OCR evidence
+    # rather than retaining a semantic Excel matrix.  Partial OCR evidence is
+    # useful: matched rows are filled and the remainder keeps its yellow XXX.
+    if isinstance(scope_table, dict):
+        scope_rows_from_pdf = _apply_ocr_overrides_to_table(
+            blank_configured_table(scope_table, placeholder="XXX"),
+            scope_table,
+            ocr_aux_values,
+        )
+        if any(row.get("ocr_field_key") in ocr_aux_values for row in scope_table.get("rows", [])):
+            resolved_scope = {
+                "caption": scope_table.get("caption", ""),
+                "rows": scope_rows_from_pdf,
+            }
+            resolved_ocr[scope_table["field_key"]] = resolved_scope
+            ocr_values[scope_table["field_key"]] = resolved_scope
+    long_term_table_spec = config.get("long_term_assets_table")
+    if isinstance(long_term_table_spec, dict):
+        long_term_rows = [["项目", "账面金额（元）", "数量", "现状、特点"]]
+        matched_long_term = False
+        for row in long_term_table_spec.get("rows", []):
+            key = str(row.get("ocr_field_key", ""))
+            amount = ocr_aux_values.get(key, "XXX")
+            matched_long_term = matched_long_term or amount != "XXX"
+            long_term_rows.append([str(row.get("label", "")), str(amount), "XXX", "XXX"])
+        if matched_long_term:
+            resolved_ocr["long_term_assets_table"] = {"rows": long_term_rows}
     ocr_fallback_fields = set(config.get("ocr_fallback_fields", []))
     ocr_prefer_material_fields = set(config.get("ocr_prefer_material_fields", []))
     formal_ocr_history_fields = {
@@ -1017,6 +1606,157 @@ def run_pipeline(
                     "evidence_id": source.get("locator", "ocr:xlsx"),
                 }
             )
+
+    # Latest confirmed mapping requires audit-derived fields to be resolved
+    # from the audit PDF/OCR first.  Uploaded valuation workbooks remain in
+    # the candidate pool only for cross-checking and will produce an explicit
+    # issue when their value differs.
+    pdf_authoritative_fields = set(
+        config.get(
+            "pdf_authoritative_fields",
+            [
+                "historical_balance_sheet_table",
+                "historical_income_statement_table",
+                "tax_rates",
+                "valuation_scope",
+                "asset_scope_summary_table",
+                "long_term_assets_table",
+                "major_long_term_assets",
+                "book_net_assets",
+            ],
+        )
+    )
+    emit_progress("ocr_llm_candidates", "reconcile_sources", "正在比对 PDF/OCR 与 Excel 的重复字段", 48)
+    ocr_locators = pdf_field_locators(normalized, pdf_authoritative_fields, field_names)
+    unresolved_pdf_page_keys = [
+        key
+        for key, locator in ocr_locators.items()
+        if not re.search(r"第\d+页", str(locator or ""))
+    ]
+    if unresolved_pdf_page_keys and llm_adapter is not None and hasattr(llm_adapter, "locate_pdf_pages"):
+        emit_progress(
+            "ocr_llm_candidates",
+            "locate_pdf_pages",
+            f"正在用 LLM 补充 {len(unresolved_pdf_page_keys)} 个 PDF 页码定位",
+            50,
+        )
+    ocr_locators, page_locator_issues = _resolve_unresolved_pdf_page_locators(
+        field_names,
+        ocr_locators,
+        normalized,
+        llm_adapter,
+    )
+    issues.extend(page_locator_issues)
+    if unresolved_pdf_page_keys and llm_adapter is not None and hasattr(llm_adapter, "locate_pdf_pages"):
+        resolved_count = sum(
+            1 for key in unresolved_pdf_page_keys if re.search(r"第\d+页", str(ocr_locators.get(key, "")))
+        )
+        emit_progress(
+            "ocr_llm_candidates",
+            "locate_pdf_pages",
+            f"PDF 页码定位完成：已补充 {resolved_count}/{len(unresolved_pdf_page_keys)} 项",
+            51,
+        )
+    fields, evidence, reconciliation_issues, reconciliation_rows = _reconcile_pdf_authoritative_fields(
+        fields=fields,
+        evidence=evidence,
+        resolved_ocr=resolved_ocr,
+        field_keys=pdf_authoritative_fields,
+        pdf_name=pdf.name if pdf is not None else "",
+        ocr_source_name=ocr_workbook_path.name if ocr_workbook_path is not None else "",
+        ocr_locators=ocr_locators,
+        source_overrides=source_overrides,
+    )
+    issues.extend(reconciliation_issues)
+    emit_progress("ocr_llm_candidates", "reconcile_sources", "来源整合完成，差异已记录", 52)
+    reviewable_source_conflicts = _reviewable_source_conflicts(
+        reconciliation_rows,
+        field_names,
+    )
+    reviewable_source_fallbacks = _reviewable_source_fallbacks(
+        reconciliation_rows,
+        field_names,
+    )
+    llm_evidence_reviews: list[dict[str, str]] = []
+    llm_evidence_review_issues: list[str] = []
+    llm_review_rows = _llm_review_rows(fields, evidence, reconciliation_rows)
+    if llm_adapter is not None and hasattr(llm_adapter, "review_extracted_evidence"):
+        emit_progress(
+            "ocr_llm_candidates",
+            "review_evidence",
+            f"LLM 正在逐项复核 {len(llm_review_rows)} 个表/字段证据",
+            58,
+        )
+        try:
+            def review_progress(done: int, total: int, label: str) -> None:
+                if total <= 0:
+                    return
+                pct = 58 + int(3 * min(done, total) / total)
+                current = min(max(done, 1), total)
+                emit_progress(
+                    "ocr_llm_candidates",
+                    "review_evidence",
+                    f"LLM 正在复核第 {current}/{total} 项：{label}（对照 PDF 页码与 Excel 工作表）",
+                    pct,
+                )
+
+            reviewer = llm_adapter.review_extracted_evidence
+            if "progress_callback" in inspect.signature(reviewer).parameters:
+                llm_evidence_reviews, llm_evidence_review_issues = reviewer(
+                    llm_review_rows,
+                    field_names,
+                    progress_callback=review_progress,
+                )
+            else:
+                llm_evidence_reviews, llm_evidence_review_issues = reviewer(
+                    llm_review_rows,
+                    field_names,
+                )
+        except Exception as exc:
+            llm_evidence_review_issues = [f"LLM 取数复核调用失败：{exc}"]
+    issues.extend(llm_evidence_review_issues)
+    for item in llm_evidence_reviews:
+        if item.get("status") in {"needs_review", "conflict", "missing"}:
+            issues.append(
+                f"LLM取数复核：{item.get('field_key', '')}={item.get('status', '')}；"
+                f"{item.get('reason', '')}"
+            )
+    reviewable_llm_notes = _reviewable_llm_notes(
+        llm_evidence_reviews,
+        llm_review_rows,
+        field_names,
+    )
+    emit_progress(
+        "ocr_llm_candidates",
+        "review_evidence",
+        (
+            f"LLM 已完成 {len(llm_evidence_reviews)} 个表/字段复核并生成审核批注"
+            if llm_adapter is not None
+            else "未启用 LLM，跳过批注生成"
+        ),
+        61,
+    )
+    for field_key in pdf_authoritative_fields:
+        ocr_values[field_key] = fields.get(field_key, "")
+    write_json(
+        output_dir / "来源整合与差异.json",
+        {
+            "fields": reconciliation_rows,
+            "llm_review_fields": llm_review_rows,
+            "word_review_annotations": reviewable_source_conflicts,
+            "word_source_fallback_notes": reviewable_source_fallbacks,
+            "llm_reviews": llm_evidence_reviews,
+            "word_llm_review_notes": reviewable_llm_notes,
+        },
+    )
+    llm_evidence_review_path = write_json(
+        output_dir / "LLM取数复核.json",
+        {
+            "version": "evidence_review.v1",
+            "reviews": llm_evidence_reviews,
+            "issues": llm_evidence_review_issues,
+        },
+    )
     ocr_workbook = (
         export_ocr_workbook(
             output_dir / "OCR结构化结果.xlsx",
@@ -1105,6 +1845,32 @@ def run_pipeline(
         )
 
     qcc_allowed = fields_for_route(routes, RouteKind.QICHACHA_API)
+    # The 0817 input contract lets the reviewer choose the authoritative
+    # provider for four business modules.  Keep the choice field-scoped:
+    # selecting an uploaded file must never result in a silent QCC fallback.
+    qcc_groups = {
+        "registry_info_strategy": {
+            "commissioning_party_profile",
+            "target_company_profile",
+        },
+        "ownership_history_strategy": {
+            "ownership_history",
+            "ownership_at_valuation_date",
+        },
+        "unrecorded_intangibles_strategy": {
+            "unrecorded_intangibles",
+            "software_copyrights",
+            "trademark_summary",
+        },
+    }
+    for strategy_key, grouped_fields in qcc_groups.items():
+        if configured_inputs.get(strategy_key, "file") != "qichacha":
+            qcc_allowed -= grouped_fields
+    qcc_company_profile_enabled = (
+        configured_inputs.get("company_profile_strategy", "file") == "qichacha"
+    )
+    fetch_commissioning_qcc = "commissioning_party_profile" in qcc_allowed
+    fetch_target_qcc = bool(qcc_allowed) or qcc_company_profile_enabled
     qcc_values: dict[str, Any] = {}
     qcc_profiles: dict[str, dict[str, Any]] = {}
     qcc_payloads: dict[str, dict[str, Any]] = {}
@@ -1113,7 +1879,7 @@ def run_pipeline(
     commissioning_name = str(fields.get("commissioning_party_name", ""))
     target_name = str(fields.get("target_company_name", ""))
     qcc_snapshot_path = output_dir / "qichacha_result.json"
-    if not prepare_only and qcc_snapshot_path.is_file():
+    if not prepare_only and qcc_snapshot_path.is_file() and fetch_target_qcc:
         try:
             snapshot = json.loads(qcc_snapshot_path.read_text(encoding="utf-8"))
             saved_payloads = snapshot.get("payloads", {})
@@ -1142,7 +1908,7 @@ def run_pipeline(
                     for role, payload in validated_payloads.items()
                 }
             )
-            if "commissioning" in validated_payloads:
+            if "commissioning" in validated_payloads and fetch_commissioning_qcc:
                 qcc_values.update(
                     _filter_provider(
                         validated_payloads["commissioning"],
@@ -1167,7 +1933,12 @@ def run_pipeline(
         except (OSError, ValueError, TypeError) as exc:
             issues.append(f"企查查快照读取失败，改用实时接口：{exc}")
     if qichacha_adapter is not None:
-        if commissioning_name and "commissioning" not in qcc_payloads:
+        emit_progress("ocr_llm_candidates", "query_qichacha", "企查查 API 正在搜索企业信息", 62)
+        if (
+            fetch_commissioning_qcc
+            and commissioning_name
+            and "commissioning" not in qcc_payloads
+        ):
             payload, provider_issues = qichacha_adapter.fetch(commissioning_name)
             issues.extend(provider_issues)
             qcc_provider_issues.extend(provider_issues)
@@ -1176,7 +1947,7 @@ def run_pipeline(
             qcc_payloads["commissioning"] = payload
             qcc_profiles["commissioning"] = qcc_payloads["commissioning"].get("profile", {})
             qcc_values.update(_filter_provider(payload, {"commissioning_party_profile"}, "企查查 API（委托人）", issues))
-        if target_name and "target" not in qcc_payloads:
+        if fetch_target_qcc and target_name and "target" not in qcc_payloads:
             payload, provider_issues = qichacha_adapter.fetch(target_name)
             issues.extend(provider_issues)
             qcc_provider_issues.extend(provider_issues)
@@ -1198,6 +1969,9 @@ def run_pipeline(
                 issues.extend(comparable_issues)
                 qcc_provider_issues.extend(comparable_issues)
                 qcc_payloads["target"].setdefault("evidence", []).extend(comparable_evidence)
+        emit_progress("ocr_llm_candidates", "query_qichacha", "企查查 API 查询完成，正在整理返回证据", 64)
+    else:
+        emit_progress("ocr_llm_candidates", "query_qichacha", "未启用企查查 API，跳过企业信息查询", 64)
     target_profile = qcc_profiles.get("target", {})
     if (
         fields.get("registered_capital") in (None, "", [])
@@ -1216,7 +1990,7 @@ def run_pipeline(
     target_ip = qcc_payloads.get("target", {})
     patent_count = len(target_ip.get("patent_rows", [])) if isinstance(target_ip, dict) else 0
     trademark_count = len(target_ip.get("trademark_rows", [])) if isinstance(target_ip, dict) else 0
-    if patent_count or trademark_count:
+    if (patent_count or trademark_count) and "unrecorded_intangibles" in qcc_allowed:
         details = []
         if patent_count:
             details.append(f"专利{patent_count}项")
@@ -1303,7 +2077,27 @@ def run_pipeline(
                 )
             except (OSError, ValueError, KeyError) as exc:
                 issues.append(f"参考 Word 叙述证据读取失败：{exc}")
-        if target_profile:
+        # The 0817 input contract lets the user choose uploaded material
+        # instead of Qichacha for registry, ownership, intangible, and
+        # profile information.  Word materials become evidence for the LLM
+        # mapper/narrative generator; they are never treated as an implicit
+        # substitute for an audit-PDF financial field.
+        for source_name in (
+            "registry_material",
+            "ownership_history_material",
+            "unrecorded_intangibles_material",
+            "company_profile_material",
+        ):
+            material = _source_path(base, config, source_overrides, source_name)
+            if material is None or material.suffix.lower() != ".docx":
+                continue
+            try:
+                structured_evidence.extend(
+                    read_narrative_evidence(material, source_name=source_name)
+                )
+            except (OSError, ValueError, KeyError) as exc:
+                issues.append(f"{source_name}读取失败：{exc}")
+        if target_profile and qcc_company_profile_enabled:
             # QCC 735 is a current registry snapshot.  Only stable identity
             # facts are supplied to the valuation-date narrative; dynamic
             # capital, ownership, company type and personnel must come from
@@ -1341,7 +2135,9 @@ def run_pipeline(
         # pool, never directly to a Word paragraph. Their codes are enabled
         # explicitly through QICHACHA_EXTRA_API_CODES, so a normal run does
         # not incur new paid calls unexpectedly.
-        for role, qcc_payload in qcc_payloads.items():
+        for role, qcc_payload in (
+            qcc_payloads.items() if qcc_company_profile_enabled else []
+        ):
             for item in qcc_payload.get("evidence", []) if isinstance(qcc_payload, dict) else []:
                 if not isinstance(item, dict) or not item.get("evidence_id") or not item.get("text"):
                     continue
@@ -1383,9 +2179,22 @@ def run_pipeline(
                 for item in [*normalized["text_blocks"], *normalized["table_cells"]]
             ] + structured_evidence,
         }
+        candidate_count = len(llm_request_modules) + (1 if "company_profile_section" in llm_allowed else 0)
+        emit_progress(
+            "ocr_llm_candidates",
+            "generate_candidates",
+            f"LLM 正在分别生成 {candidate_count} 个候选模块（每个模块独立调用）",
+            65,
+        )
         payload, provider_issues = llm_adapter.generate(llm_evidence)
         issues.extend(provider_issues)
         llm_values = _filter_provider(payload, llm_allowed, "百炼 GLM", issues)
+        emit_progress(
+            "ocr_llm_candidates",
+            "generate_candidates",
+            f"已返回 {len(llm_values)} 个 LLM 候选模块，等待人工选择",
+            68,
+        )
     # Narrative fields are the only fields allowed to use a project-level local
     # fallback.  This keeps financial and legal facts fail-closed while allowing
     # a report to be generated when an external LLM returns an unusable or
@@ -1845,6 +2654,7 @@ def run_pipeline(
         ]
 
     report = output_dir / "资产评估报告_待复核.docx"
+    emit_progress("fill_word", "map_word", "正在按模板批注原文匹配 Word 写入位置", 76)
     fill_template(
         template,
         report,
@@ -1853,11 +2663,34 @@ def run_pipeline(
         table_column_ratios=table_column_ratios,
         paragraph_replacements=_paragraph_replacements(config, fields),
         replacement_modes={route.location_id: route.replacement_mode for route in routes},
+        progress_callback=lambda step, message: emit_progress("fill_word", step, message, None),
     )
     replace_transaction_type_literals(report, fields.get("transaction_type"))
     replace_image_markers(report)
     replace_report_number_year(report, fields.get("report_number_year"))
+    emit_progress("fill_word", "write_comments", "正在写入 LLM 生成的审核批注", 88)
+    emit_progress("fill_word", "check_placeholders", "正在检查未找到证据的 XXX 并保留黄色高亮", 91)
     unresolved_findings = highlight_unresolved_placeholders(report)
+    source_conflict_annotations = annotate_source_conflicts(
+        report,
+        [
+            *_attach_llm_comments(
+                [*reviewable_source_conflicts, *reviewable_source_fallbacks],
+                reviewable_llm_notes,
+            ),
+            *reviewable_llm_notes,
+        ],
+    )
+    emit_progress("output", "save_word", "评估报告 Word 已保存，正在做最终文件检查", 96)
+    if len(source_conflict_annotations) < (
+        len(reviewable_source_conflicts)
+        + len(reviewable_source_fallbacks)
+        + len(reviewable_llm_notes)
+    ):
+        issues.append(
+            "部分PDF与表格不一致的数值未能在Word中精确定位；"
+            "已按审计PDF填入，详见来源整合与差异记录。"
+        )
     generation_issues = issues_from_word_findings(
         unresolved_findings,
         [*locations, *static_locations],
@@ -2074,6 +2907,7 @@ def run_pipeline(
         "prompt_version": getattr(llm_adapter, "prompt_version", "yellow_narratives.v1"),
         "llm_models": {
             "narrative": str(getattr(llm_adapter, "model", "")),
+            "evidence_review": str(getattr(llm_adapter, "review_model", "")),
         },
         "ocr_cache_reused": bool(ocr_workbook_path),
         "ocr_cache_source": str(ocr_workbook_path) if ocr_workbook_path else "",
@@ -2094,6 +2928,7 @@ def run_pipeline(
             str(report),
             str(normalized_fields_path),
             str(normalized_evidence_path),
+            str(llm_evidence_review_path),
             str(trace_path),
             str(comment_path),
         ],

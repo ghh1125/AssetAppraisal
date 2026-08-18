@@ -16,7 +16,7 @@ export function canSubmitPartial(files, inputs) {
     inputs?.valuation_subject_type,
     inputs?.selected_valuation_method,
     inputs?.final_valuation_method,
-    inputs?.report_serial,
+    inputs?.valuation_base_date,
   ]
-  return required.every(meaningful)
+  return required.every(meaningful) && Array.isArray(files?.auditMaterials) && files.auditMaterials.length > 0
 }

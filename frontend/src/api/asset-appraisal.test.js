@@ -3,13 +3,15 @@ import assert from 'node:assert/strict'
 
 import { buildAssetAppraisalForm } from './asset-appraisal.js'
 
-test('run request uploads the three typed material slots', () => {
+test('run request uploads confirmed audit, workbook, and source material slots', () => {
   const form = buildAssetAppraisalForm({
-    pdf: new Blob(['pdf']),
+    auditMaterials: [new Blob(['pdf']), new Blob(['audit-doc'])],
     reportingWorkbook: new Blob(['asset']),
     incomeWorkbook: new Blob(['income']),
-    referenceReport: new Blob(['must not upload']),
-    auditedFinancials: new Blob(['must not upload']),
+    registryMaterials: [new Blob(['registry'])],
+    ownershipHistoryMaterials: [new Blob(['ownership'])],
+    unrecordedIntangiblesMaterials: [new Blob(['intangible'])],
+    companyProfileMaterials: [new Blob(['profile'])],
     inputs: { target_company_name: '示例公司' },
     useGlm: true,
     useQichacha: false,
@@ -17,9 +19,14 @@ test('run request uploads the three typed material slots', () => {
   })
 
   assert.deepEqual([...form.keys()], [
-    'pdf',
+    'audit_materials',
+    'audit_materials',
     'reporting_workbook',
     'income_workbook',
+    'registry_materials',
+    'ownership_history_materials',
+    'unrecorded_intangibles_materials',
+    'company_profile_materials',
     'inputs',
     'use_glm',
     'use_qichacha',

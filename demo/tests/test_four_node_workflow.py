@@ -81,6 +81,40 @@ def test_candidate_node_pauses_before_word_is_written(tmp_path: Path) -> None:
     assert trace["nodes"][2]["status"] == "skipped"
 
 
+def test_pipeline_records_llm_evidence_review_without_mutating_selected_value(tmp_path: Path) -> None:
+    class ReviewAdapter(FixtureLlmAdapter):
+        def review_extracted_evidence(self, rows, field_names):
+            selected = next(item["selected"] for item in rows if item["field_key"] == "book_net_assets")
+            assert selected["value"] not in (None, "", [], {})
+            return [
+                {
+                    "field_key": "book_net_assets",
+                    "status": "needs_review",
+                    "reason": "表头单位未能完全核验。",
+                    "comment": "请人工核对审计 PDF 的页码、表头单位和账面口径。",
+                }
+            ], []
+
+    result = run_pipeline(
+        project_config=ROOT / "projects/tongfu.yaml",
+        pdf_path=ROOT.parent / "资产评估工作流/通富2025.6.30合并及母公司审计报告.pdf",
+        output_dir=tmp_path,
+        ocr_adapter=FixtureOcrAdapter(),
+        llm_adapter=ReviewAdapter(),
+        ocr_field_resolver=fixture_ocr_fields,
+    )
+
+    fields = json.loads((tmp_path / "normalized_fields.json").read_text(encoding="utf-8"))
+    review = json.loads((tmp_path / "LLM取数复核.json").read_text(encoding="utf-8"))
+    assert fields["book_net_assets"] == 4598.16
+    assert review["reviews"][0]["status"] == "needs_review"
+    with zipfile.ZipFile(result.report_path) as archive:
+        comments = archive.read("word/comments.xml").decode("utf-8")
+        assert "请人工核对审计 PDF 的页码、表头单位和账面口径。" in comments
+        document_xml = archive.read("word/document.xml").decode("utf-8")
+        assert 'w:val="C00000"' in document_xml
+
+
 def test_generate_all_candidate_node_requests_every_fixed_llm_slot(tmp_path: Path) -> None:
     class StrictGenerateAllAdapter:
         prompt_version = "yellow_narratives.test"
@@ -99,10 +133,12 @@ def test_generate_all_candidate_node_requests_every_fixed_llm_slot(tmp_path: Pat
         llm_adapter=StrictGenerateAllAdapter(),
         prepare_only=True,
         generate_all_narratives=True,
-        manual_inputs_override={
-            "commissioning_party_name": "委托方有限公司",
-            "target_company_name": "被评估单位有限公司",
-        },
+            manual_inputs_override={
+                "commissioning_party_name": "委托方有限公司",
+                "target_company_name": "被评估单位有限公司",
+                "registry_info_strategy": "qichacha",
+                "company_profile_strategy": "qichacha",
+            },
     )
 
     assert set(result.candidate_fields) == set(LLM_TEMPLATE_FIELDS)
@@ -232,10 +268,12 @@ def test_candidate_file_always_exposes_the_six_selectable_report_modules(tmp_pat
         llm_adapter=SparseAdapter(),
         prepare_only=True,
         generate_all_narratives=True,
-        manual_inputs_override={
-            "commissioning_party_name": "委托方有限公司",
-            "target_company_name": "被评估单位有限公司",
-        },
+            manual_inputs_override={
+                "commissioning_party_name": "委托方有限公司",
+                "target_company_name": "被评估单位有限公司",
+                "registry_info_strategy": "qichacha",
+                "company_profile_strategy": "qichacha",
+            },
     )
 
     payload = json.loads(result.candidate_path.read_text(encoding="utf-8"))
@@ -295,6 +333,8 @@ def test_qichacha_evidence_ids_are_unique_between_company_roles(tmp_path: Path) 
         manual_inputs_override={
             "commissioning_party_name": "委托方有限公司",
             "target_company_name": "被评估单位有限公司",
+            "registry_info_strategy": "qichacha",
+            "company_profile_strategy": "qichacha",
         },
     )
 
@@ -325,6 +365,8 @@ def test_candidate_node_persists_qichacha_snapshot_for_word_fill(tmp_path: Path)
         manual_inputs_override={
             "commissioning_party_name": "委托方有限公司",
             "target_company_name": "被评估单位有限公司",
+            "registry_info_strategy": "qichacha",
+            "company_profile_strategy": "qichacha",
         },
     )
 
@@ -366,10 +408,12 @@ def test_word_fill_reuses_qichacha_snapshot_without_new_api_calls(tmp_path: Path
             "income_workbook": None,
             "reference_report": None,
         },
-        "manual_inputs_override": {
-            "commissioning_party_name": "委托方有限公司",
-            "target_company_name": "被评估单位有限公司",
-        },
+            "manual_inputs_override": {
+                "commissioning_party_name": "委托方有限公司",
+                "target_company_name": "被评估单位有限公司",
+                "registry_info_strategy": "qichacha",
+                "company_profile_strategy": "qichacha",
+            },
     }
     run_pipeline(**run_kwargs, prepare_only=True)
     assert adapter.calls == ["委托方有限公司", "被评估单位有限公司"]
@@ -418,10 +462,12 @@ def test_word_fill_retries_only_qichacha_role_missing_from_snapshot(tmp_path: Pa
             "income_workbook": None,
             "reference_report": None,
         },
-        "manual_inputs_override": {
-            "commissioning_party_name": "委托方有限公司",
-            "target_company_name": "被评估单位有限公司",
-        },
+            "manual_inputs_override": {
+                "commissioning_party_name": "委托方有限公司",
+                "target_company_name": "被评估单位有限公司",
+                "registry_info_strategy": "qichacha",
+                "company_profile_strategy": "qichacha",
+            },
     }
     run_pipeline(
         **common,

@@ -78,7 +78,12 @@ def _field_from_comment(text: str) -> str | None:
         return "ownership_at_valuation_date"
     if "评估范围" in text:
         return "valuation_scope"
-    if "模块信息" in text or "大模型" in text:
+    if (
+        "模块信息" in text
+        or "大模型" in text
+        or "输出模块支持用户勾选" in text
+        or "根据用户勾选内容" in text
+    ):
         return "company_profile_text"
     return None
 
@@ -140,7 +145,12 @@ def _comment_field_sequence(text: str) -> list[str]:
     annotation (not filenames or coordinates) and are intentionally narrow.
     """
     text = str(text or "")
-    if "模块信息" in text or "大模型" in text:
+    if (
+        "模块信息" in text
+        or "大模型" in text
+        or "输出模块支持用户勾选" in text
+        or "根据用户勾选内容" in text
+    ):
         return ["company_profile_text"]
     if ("评估结论采用方法" in text or "评估结论方法采用" in text) and "金额数据" in text:
         return [
@@ -362,3 +372,62 @@ def build_comment_aware_locations(
             selected["field_key"] = "valuation_subject_type"
         result.append(selected)
     return result
+
+
+def align_locations_to_output_template(
+    output_template_locations: list[dict[str, Any]],
+    annotated_locations: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Move comment-derived field rules onto the clean output template.
+
+    Review comments can insert or remove paragraphs, so the annotated template
+    and the clean output template must not be joined by paragraph number.  The
+    Word text and placeholder occurrence remain stable identifiers.
+    """
+    by_context_occurrence: dict[tuple[str, int, str], list[dict[str, Any]]] = {}
+    for item in annotated_locations:
+        key = (
+            _normalize_context(item.get("context", "")),
+            int(item.get("occurrence_index", 1)),
+            str(item.get("marker", "")),
+        )
+        by_context_occurrence.setdefault(key, []).append(item)
+
+    aligned: list[dict[str, Any]] = []
+    for output_item in output_template_locations:
+        key = (
+            _normalize_context(output_item.get("context", "")),
+            int(output_item.get("occurrence_index", 1)),
+            str(output_item.get("marker", "")),
+        )
+        candidates = by_context_occurrence.get(key, [])
+        exact_position = [
+            item for item in candidates
+            if item.get("part") == output_item.get("part")
+            and item.get("paragraph_index") == output_item.get("paragraph_index")
+        ]
+        ranked = exact_position or sorted(
+            candidates,
+            key=lambda item: abs(
+                int(item.get("paragraph_index", 0))
+                - int(output_item.get("paragraph_index", 0))
+            ),
+        )
+        if not ranked or not ranked[0].get("field_key"):
+            continue
+        selected = deepcopy(ranked[0])
+        selected.update({
+            "location_id": output_item["location_id"],
+            "context": output_item.get("context", selected.get("context", "")),
+            "word_search_text": output_item.get(
+                "word_search_text", output_item.get("context", selected.get("context", ""))
+            ),
+            "marker": output_item.get("marker", selected.get("marker", "")),
+            "record_type": output_item.get("record_type", selected.get("record_type", "占位符")),
+            "part": output_item.get("part", selected.get("part", "word/document.xml")),
+            "paragraph_index": output_item.get("paragraph_index", selected.get("paragraph_index", 0)),
+            "occurrence_index": output_item.get("occurrence_index", selected.get("occurrence_index", 1)),
+            "in_table": output_item.get("in_table", selected.get("in_table", False)),
+        })
+        aligned.append(selected)
+    return aligned

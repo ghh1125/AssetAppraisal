@@ -452,6 +452,7 @@ class QichachaApiAdapter:
         extra_api_codes: tuple[str, ...] | list[str] | None = None,
         enable_comparable_discovery: bool = True,
         timeout: float = 120.0,
+        request_retries: int = 2,
     ):
         self.client = client
         self.app_key = app_key or ""
@@ -469,6 +470,7 @@ class QichachaApiAdapter:
         )
         self.enable_comparable_discovery = enable_comparable_discovery
         self.timeout = timeout
+        self.request_retries = max(1, int(request_retries))
 
     @staticmethod
     def token(app_key: str, timespan: str, secret_key: str) -> str:
@@ -497,21 +499,24 @@ class QichachaApiAdapter:
             if code in {"514", "233", "886", "915"}:
                 params.update({"pageIndex": 1, "pageSize": 50})
         headers = {"Token": self.token(self.app_key, timespan, self.secret_key), "Timespan": timespan}
-        try:
-            response = self.client.get(url, params=params, headers=headers, timeout=self.timeout)
-            response.raise_for_status()
-            payload = response.json()
-            status = str(payload.get("Status", payload.get("status", "200"))) if isinstance(payload, dict) else "200"
-            if status not in {"200", "0", "成功"}:
-                message = payload.get("Message", payload.get("message", "接口返回失败")) if isinstance(payload, dict) else "接口返回失败"
-                # Never parse the envelope itself as a company record.  QCC
-                # error envelopes often contain ``Status`` (for example 125),
-                # which would otherwise be written into the report as a fake
-                # registration status.
-                return None, f"企查查接口 {code} 返回 {status}：{message}"
-            return payload, None
-        except Exception as exc:
-            return None, f"企查查接口 {code} 请求失败：{type(exc).__name__}"
+        last_error = ""
+        for _ in range(self.request_retries):
+            try:
+                response = self.client.get(url, params=params, headers=headers, timeout=self.timeout)
+                response.raise_for_status()
+                payload = response.json()
+                status = str(payload.get("Status", payload.get("status", "200"))) if isinstance(payload, dict) else "200"
+                if status not in {"200", "0", "成功"}:
+                    message = payload.get("Message", payload.get("message", "接口返回失败")) if isinstance(payload, dict) else "接口返回失败"
+                    # Never parse the envelope itself as a company record.  QCC
+                    # error envelopes often contain ``Status`` (for example
+                    # 125), which would otherwise be written into the report as
+                    # a fake registration status.
+                    return None, f"企查查接口 {code} 返回 {status}：{message}"
+                return payload, None
+            except Exception as exc:
+                last_error = type(exc).__name__
+        return None, f"企查查接口 {code} 请求失败：{last_error}"
 
     def fetch(self, company_name: str) -> tuple[dict[str, Any], list[str]]:
         if not company_name:

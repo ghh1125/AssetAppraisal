@@ -24,10 +24,6 @@ def _trim_repeated_suffix(item: dict[str, Any], value: Any) -> Any:
         return value
     tail = item.get("context", "")[markers[occurrence - 1].end() :]
     tail = re.sub(r"^(?:[（(][^）)]*[）)])+", "", tail)
-    if tail.startswith(("有限责任公司", "有限公司")):
-        for suffix in ("有限责任公司", "有限公司"):
-            if value.endswith(suffix):
-                return value[: -len(suffix)]
     for suffix in ("价值", "法"):
         if tail.startswith(suffix) and value.endswith(suffix):
             return value[: -len(suffix)]

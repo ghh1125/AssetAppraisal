@@ -20,7 +20,7 @@ def test_manifest_and_changelog_cover_handoff_requirements():
     qcc = next(item for item in providers if item["name"] == "qichacha")
     assert set(qcc["api_codes"]) == {"735", "231", "514", "233"}
     glm = next(item for item in providers if item["name"] == "bailian_glm")
-    assert glm["model"] == "deepseek-v4-flash-0731"
+    assert glm["model"] == "deepseek-v4-pro-0813"
 
 
 def test_prompt_schema_is_the_runtime_seven_field_contract():
@@ -30,6 +30,14 @@ def test_prompt_schema_is_the_runtime_seven_field_contract():
     assert set(schema["properties"]["fields"]["required"]) == set(ALLOWED_FIELDS)
     assert schema["properties"]["fields"]["additionalProperties"] is False
     assert schema == OUTPUT_SCHEMA
+
+
+def test_evidence_review_prompt_has_a_closed_status_contract():
+    schema = json.loads(Path("demo/prompts/evidence_review_output.v1.json").read_text(encoding="utf-8"))
+    assert schema["version"] == "evidence_review_output.v1"
+    assert set(schema["properties"]["reviews"]["items"]["properties"]["status"]["enum"]) == {
+        "accept", "needs_review", "conflict", "missing"
+    }
 
 
 def test_prompt_compatibility_schema_uses_the_same_field_names():

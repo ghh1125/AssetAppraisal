@@ -5,6 +5,8 @@ import { useI18n } from 'vue-i18n'
 import { artifactUrl } from '../../api/request'
 import { checkAssetAppraisalOcrCache, createAssetAppraisalRun, getAssetAppraisalRun, selectAssetAppraisalCandidates } from '../../api/asset-appraisal'
 import { canSubmitPartial } from '../../domain/submission'
+import { summarizeRunIssues } from '../../domain/run-issues'
+import { currentRunProgress, flattenRunSteps } from '../../domain/run-progress'
 import { createUploadState, uploadFields } from '../../domain/upload-fields'
 
 const { t } = useI18n()
@@ -18,7 +20,11 @@ const form = reactive({
   valuation_subject_type: '',
   selected_valuation_method: [],
   final_valuation_method: '',
-  report_serial: null,
+  valuation_base_date: '',
+  registry_info_strategy: 'file',
+  ownership_history_strategy: 'file',
+  unrecorded_intangibles_strategy: 'file',
+  company_profile_strategy: 'file',
 })
 const files = reactive(createUploadState())
 const useGlm = ref(true)
@@ -28,19 +34,34 @@ const ocrCache = ref({ checking: false, hit: false, source: '' })
 const submitting = ref(false)
 const run = ref(null)
 const selectedCandidateKeys = ref([])
+const RUN_STATUS_REFRESH_MS = 800
 let pollTimer = null
 
 const canSubmit = computed(() => canSubmitPartial(files, form))
 const publicArtifacts = computed(() => (
   (run.value?.artifacts || []).filter(item => item.name === '资产评估报告_待复核.docx')
 ))
+const readableIssues = computed(() => summarizeRunIssues(run.value?.issues || []))
+const progressSummary = computed(() => currentRunProgress(run.value))
+const progressSteps = computed(() => flattenRunSteps(run.value))
 const statusText = computed(() => t(`asset.${run.value?.status || 'queued'}`))
 const nodeStatusText = (status) => t(`asset.nodeStatus.${status || 'pending'}`)
+const stepStatusText = (status) => t(`asset.nodeStatus.${status || 'pending'}`)
 
 function setFile(type, event) {
-  files[type] = event.fileList?.[0]?.originFileObj || null
-  if (type === 'pdf' && files.pdf) checkOcrCache(files.pdf)
-  if (type === 'pdf' && !files.pdf) ocrCache.value = { checking: false, hit: false, source: '' }
+  const field = uploadFields.find(item => item.key === type)
+  files[type] = field?.multiple
+    ? (event.fileList || []).map(item => item.originFileObj).filter(Boolean)
+    : event.fileList?.[0]?.originFileObj || null
+  if (type === 'auditMaterials') {
+    const pdf = files.auditMaterials.find(file => file?.name?.toLowerCase().endsWith('.pdf'))
+    if (pdf) checkOcrCache(pdf)
+    else ocrCache.value = { checking: false, hit: false, source: '' }
+  }
+}
+
+function showUploadField(field) {
+  return !field.sourceStrategy || form[field.sourceStrategy] === 'file'
 }
 
 async function checkOcrCache(file) {
@@ -63,7 +84,7 @@ async function refreshRun(runId) {
   try {
     run.value = await getAssetAppraisalRun(runId)
     if (['queued', 'running'].includes(run.value.status)) {
-      pollTimer = window.setTimeout(() => refreshRun(runId), 1500)
+      pollTimer = window.setTimeout(() => refreshRun(runId), RUN_STATUS_REFRESH_MS)
     } else if (run.value.status === 'awaiting_selection') {
       selectedCandidateKeys.value = (run.value.candidates || [])
         .filter(item => item.available !== false)
@@ -88,9 +109,13 @@ async function submit() {
   selectedCandidateKeys.value = []
   try {
     const result = await createAssetAppraisalRun().mutationFn({
-      pdf: files.pdf,
+      auditMaterials: files.auditMaterials,
       reportingWorkbook: files.reportingWorkbook,
       incomeWorkbook: files.incomeWorkbook,
+      registryMaterials: files.registryMaterials,
+      ownershipHistoryMaterials: files.ownershipHistoryMaterials,
+      unrecordedIntangiblesMaterials: files.unrecordedIntangiblesMaterials,
+      companyProfileMaterials: files.companyProfileMaterials,
       inputs: { ...form },
       useGlm: useGlm.value,
       useQichacha: useQichacha.value,
@@ -141,24 +166,25 @@ onBeforeUnmount(clearPoll)
       <a-card class="panel" :title="t('asset.uploadTitle')" :bordered="false">
         <a-alert :message="t('asset.uploadInfo')" type="info" show-icon />
         <div class="upload-grid">
-          <a-upload-dragger
-            v-for="field in uploadFields"
-            :key="field.key"
-            :multiple="field.multiple"
-            :max-count="field.multiple ? 20 : 1"
-            :accept="field.accept"
-            :before-upload="() => false"
-            @change="setFile(field.key, $event)"
-          >
-            <p :class="['upload-icon', field.icon.toLowerCase()]">{{ field.icon }}</p>
-            <p class="upload-title">{{ t(`asset.${field.titleKey}`) }}</p>
-            <p class="upload-hint">{{ t(`asset.${field.hintKey}`) }}</p>
-          </a-upload-dragger>
+          <template v-for="field in uploadFields" :key="field.key">
+            <a-upload-dragger
+              v-if="showUploadField(field)"
+              :multiple="field.multiple"
+              :max-count="field.multiple ? 20 : 1"
+              :accept="field.accept"
+              :before-upload="() => false"
+              @change="setFile(field.key, $event)"
+            >
+              <p :class="['upload-icon', field.icon.toLowerCase()]">{{ field.icon }}</p>
+              <p class="upload-title">{{ t(`asset.${field.titleKey}`) }}</p>
+              <p class="upload-hint">{{ t(`asset.${field.hintKey}`) }}</p>
+            </a-upload-dragger>
+          </template>
         </div>
         <a-alert class="template-source" :message="t('asset.templateSource')" type="success" show-icon />
         <a-alert v-if="ocrCache.checking" class="ocr-cache-status" :message="t('asset.ocrCacheChecking')" type="info" show-icon />
         <a-alert v-else-if="ocrCache.hit" class="ocr-cache-status" :message="t('asset.ocrCacheHit', { source: ocrCache.source })" type="success" show-icon />
-        <a-alert v-else-if="files.pdf" class="ocr-cache-status" :message="t('asset.ocrCacheMiss')" type="warning" show-icon />
+        <a-alert v-else-if="files.auditMaterials?.some(file => file?.name?.toLowerCase().endsWith('.pdf'))" class="ocr-cache-status" :message="t('asset.ocrCacheMiss')" type="warning" show-icon />
       </a-card>
 
       <a-card class="panel" :title="t('asset.inputTitle')" :bordered="false">
@@ -175,7 +201,12 @@ onBeforeUnmount(clearPoll)
           <a-form-item :label="t('asset.subjectType')"><a-select v-model:value="form.valuation_subject_type"><a-select-option value="股东全部权益价值">股东全部权益价值</a-select-option><a-select-option value="股东部分权益价值">股东部分权益价值</a-select-option><a-select-option value="企业整体价值">企业整体价值</a-select-option><a-select-option value="资产组价值">资产组价值</a-select-option></a-select></a-form-item>
           <a-form-item :label="t('asset.method')"><a-select v-model:value="form.selected_valuation_method" mode="multiple" :max-tag-count="3"><a-select-option value="资产基础法">{{ t('asset.methodOptions.asset') }}</a-select-option><a-select-option value="收益法">{{ t('asset.methodOptions.income') }}</a-select-option><a-select-option value="市场法">{{ t('asset.methodOptions.market') }}</a-select-option></a-select></a-form-item>
           <a-form-item :label="t('asset.finalMethod')"><a-select v-model:value="form.final_valuation_method"><a-select-option value="资产基础法">{{ t('asset.methodOptions.asset') }}</a-select-option><a-select-option value="收益法">{{ t('asset.methodOptions.income') }}</a-select-option><a-select-option value="市场法">{{ t('asset.methodOptions.market') }}</a-select-option></a-select></a-form-item>
-          <a-form-item :label="t('asset.reportSerial')"><a-input-number v-model:value="form.report_serial" :min="0" :precision="0" style="width: 100%" /></a-form-item>
+          <a-form-item :label="t('asset.valuationBaseDate')"><a-date-picker v-model:value="form.valuation_base_date" value-format="YYYY-MM-DD" style="width: 100%" /></a-form-item>
+          <a-divider>{{ t('asset.sourceStrategyTitle') }}</a-divider>
+          <a-form-item :label="t('asset.registryStrategy')"><a-radio-group v-model:value="form.registry_info_strategy"><a-radio value="file">{{ t('asset.sourceFile') }}</a-radio><a-radio value="qichacha">{{ t('asset.sourceQichacha') }}</a-radio></a-radio-group></a-form-item>
+          <a-form-item :label="t('asset.ownershipStrategy')"><a-radio-group v-model:value="form.ownership_history_strategy"><a-radio value="file">{{ t('asset.sourceFile') }}</a-radio><a-radio value="qichacha">{{ t('asset.sourceQichacha') }}</a-radio></a-radio-group></a-form-item>
+          <a-form-item :label="t('asset.intangiblesStrategy')"><a-radio-group v-model:value="form.unrecorded_intangibles_strategy"><a-radio value="file">{{ t('asset.sourceFile') }}</a-radio><a-radio value="qichacha">{{ t('asset.sourceQichacha') }}</a-radio></a-radio-group></a-form-item>
+          <a-form-item :label="t('asset.profileStrategy')"><a-radio-group v-model:value="form.company_profile_strategy"><a-radio value="file">{{ t('asset.sourceFile') }}</a-radio><a-radio value="qichacha">{{ t('asset.sourceQichacha') }}</a-radio></a-radio-group></a-form-item>
         </a-form>
       </a-card>
     </section>
@@ -187,9 +218,27 @@ onBeforeUnmount(clearPoll)
 
     <a-card v-if="run" class="panel result-panel" :title="t('asset.result')" :bordered="false">
       <div class="result-head"><div><span class="run-id">{{ t('asset.task') }} {{ run.run_id }}</span><a-tag :color="run.status === 'failed' ? 'red' : run.status === 'completed' ? 'green' : 'blue'">{{ statusText }}</a-tag></div><span v-if="run.message">{{ run.message }}</span></div>
+      <div class="progress-overview">
+        <div class="progress-overview-head"><span>当前工作流进度</span><strong>{{ run.progress || 0 }}%</strong></div>
+        <div class="progress-overview-label">{{ progressSummary.label }}</div>
+        <div class="progress-overview-detail">{{ progressSummary.detail }}</div>
+        <div v-if="progressSteps.length" class="progress-strip" aria-label="workflow live steps">
+          <div v-for="step in progressSteps" :key="step.key" :class="['progress-strip-step', `strip-${step.status}`]">
+            <span class="progress-strip-dot">{{ step.status === 'completed' ? '✓' : step.status === 'failed' ? '!' : step.status === 'running' ? '●' : '○' }}</span>
+            <div>
+              <span>{{ step.name }}</span>
+              <small>{{ step.message }}</small>
+            </div>
+          </div>
+        </div>
+      </div>
+      <a-progress v-if="['queued', 'running'].includes(run.status)" :percent="run.progress || 0" status="active" />
       <div v-if="run.status === 'completed' && publicArtifacts.length" class="artifact-list result-artifact">
         <a :href="artifactUrl(run.run_id, artifact.name)" target="_blank" v-for="artifact in publicArtifacts" :key="artifact.name">{{ artifact.label || artifact.name }}</a>
       </div>
+      <a-alert v-if="run.status === 'completed' && readableIssues.length" class="result-issues" :message="t('asset.reconciliationHint')" type="warning" show-icon>
+        <template #description><div v-for="issue in readableIssues" :key="issue">{{ issue }}</div></template>
+      </a-alert>
       <div v-if="run.nodes?.length" class="node-progress" aria-label="workflow nodes">
         <div v-for="(node, index) in run.nodes" :key="node.key" :class="['node-step', `node-${node.status}`]">
           <div class="node-marker">{{ index + 1 }}</div>
@@ -200,14 +249,13 @@ onBeforeUnmount(clearPoll)
           </div>
         </div>
       </div>
-      <a-progress v-if="['queued', 'running'].includes(run.status)" :percent="run.progress || 0" status="active" />
       <a-alert v-if="run.status === 'failed'" :message="run.error || t('asset.taskFailed')" type="error" show-icon />
       <div v-if="run.status === 'awaiting_selection'" class="candidate-panel">
         <a-alert :message="t('asset.candidateHint')" type="info" show-icon />
         <a-alert v-if="!run.candidates?.length" :message="t('asset.candidateEmpty')" type="warning" show-icon />
-        <div v-if="!run.candidates?.length && run.issues?.length" class="candidate-issues">
+        <div v-if="!run.candidates?.length && readableIssues.length" class="candidate-issues">
           <strong>{{ t('asset.candidateIssues') }}</strong>
-          <div v-for="issue in run.issues" :key="issue">{{ issue }}</div>
+          <div v-for="issue in readableIssues" :key="issue">{{ issue }}</div>
         </div>
         <a-checkbox-group v-model:value="selectedCandidateKeys" class="candidate-list">
           <div v-for="candidate in run.candidates" :key="candidate.field_key" class="candidate-item">
@@ -243,9 +291,24 @@ h1 { margin:8px 0 8px; font-size:34px; color:var(--c2m-text-primary); }
 .run-bar span { display:block; color:var(--c2m-text-secondary); font-size:13px; margin-top:5px; }
 .result-head { display:flex; justify-content:space-between; gap:12px; margin-bottom:18px; color:var(--c2m-text-secondary); }
 .run-id { margin-right:12px; font-family:monospace; }
+.progress-overview { margin:0 0 16px; padding:12px 14px; border:1px solid #e5edf7; border-radius:12px; background:#f8fbff; }
+.progress-overview-head { display:flex; justify-content:space-between; align-items:center; color:var(--c2m-text-secondary); font-size:12px; }
+.progress-overview-head strong { color:var(--c2m-color-primary); font-size:14px; }
+.progress-overview-label { margin-top:6px; color:var(--c2m-text-primary); font-weight:650; }
+.progress-overview-detail { margin-top:3px; color:var(--c2m-text-secondary); font-size:12px; white-space:pre-wrap; }
+.progress-strip { margin-top:12px; display:grid; grid-template-columns:repeat(auto-fit, minmax(190px, 1fr)); gap:8px; }
+.progress-strip-step { display:flex; gap:8px; align-items:flex-start; min-width:0; padding:8px 9px; border:1px solid #e9eff7; border-radius:10px; background:#fff; color:var(--c2m-text-secondary); }
+.progress-strip-dot { width:18px; height:18px; border-radius:50%; display:grid; place-items:center; flex:none; font-size:11px; font-weight:700; background:#edf1f6; color:#8b98a8; }
+.progress-strip-step span:last-child { display:block; color:var(--c2m-text-primary); font-size:12px; font-weight:650; }
+.progress-strip-step small { display:block; margin-top:2px; color:#8b98a8; font-size:11px; line-height:1.35; white-space:normal; }
+.strip-completed .progress-strip-dot { background:#e6f7ee; color:#16834b; }
+.strip-running { border-color:#b7dcff; background:#f7fbff; }
+.strip-running .progress-strip-dot { background:#e6f4ff; color:#1677ff; animation:substep-pulse 1.2s infinite; }
+.strip-failed .progress-strip-dot { background:#fff1f0; color:#cf1322; }
 .artifact-list { display:flex; flex-wrap:wrap; gap:12px; }
 .artifact-list a { padding:10px 14px; border:1px solid var(--c2m-border-light); border-radius:10px; color:var(--c2m-color-primary); background:#f8fbff; }
 .result-artifact { margin-bottom:20px; }
+.result-issues { margin-bottom:20px; white-space:pre-wrap; }
 .candidate-panel { margin-top:16px; display:grid; gap:14px; }
 .candidate-list { display:grid; gap:12px; }
 .candidate-item { padding:12px; border:1px solid var(--c2m-border-light); border-radius:10px; background:#fbfdff; }
@@ -263,5 +326,19 @@ h1 { margin:8px 0 8px; font-size:34px; color:var(--c2m-text-primary); }
 .node-copy { min-width:0; flex:1; }
 .node-title { display:flex; align-items:center; gap:8px; color:var(--c2m-text-primary); }
 .node-description, .node-message { color:var(--c2m-text-secondary); font-size:12px; margin-top:4px; }
+.node-substeps { margin-top:10px; padding:10px 12px; border:1px solid #edf1f6; border-radius:12px; background:#fbfcfe; display:grid; gap:8px; }
+.node-substep { display:flex; gap:8px; align-items:flex-start; color:var(--c2m-text-secondary); }
+.substep-icon { width:18px; height:18px; border-radius:50%; display:grid; place-items:center; flex:none; font-size:11px; font-weight:700; background:#edf1f6; color:#8b98a8; }
+.substep-copy { min-width:0; flex:1; }
+.substep-title { display:flex; align-items:center; gap:8px; font-size:12px; color:var(--c2m-text-primary); }
+.substep-status { color:#9aa6b2; font-size:11px; }
+.substep-description { margin-top:2px; font-size:11px; line-height:1.45; color:#8b98a8; }
+.substep-completed .substep-icon { background:#e6f7ee; color:#16834b; }
+.substep-completed .substep-status { color:#16834b; }
+.substep-running .substep-icon { background:#e6f4ff; color:#1677ff; animation:substep-pulse 1.2s infinite; }
+.substep-running .substep-status { color:#1677ff; }
+.substep-failed .substep-icon { background:#fff1f0; color:#cf1322; }
+.substep-failed .substep-status { color:#cf1322; }
+@keyframes substep-pulse { 50% { opacity:.45; transform:scale(.85); } }
 @media (max-width: 900px) { .workspace-grid { grid-template-columns:1fr; } .topbar, .run-bar { flex-direction:column; } .form-row, .form-row.three, .upload-grid { grid-template-columns:1fr; } }
 </style>

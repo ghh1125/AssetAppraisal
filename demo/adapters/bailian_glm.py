@@ -6,6 +6,15 @@ from pathlib import Path
 from typing import Any
 
 from demo.domain.llm_config import DEFAULT_LLM_FALLBACK_MODEL, DEFAULT_LLM_MODEL
+from demo.domain.mapping_agent import mapping_agent_request, validate_mapping_agent_response
+from demo.domain.evidence_review import (
+    build_evidence_review_request,
+    validate_evidence_review_response,
+)
+from demo.domain.pdf_page_locator import (
+    build_pdf_page_locator_request,
+    validate_pdf_page_locator_response,
+)
 
 
 ALLOWED_FIELDS = frozenset(
@@ -87,6 +96,9 @@ class BailianYellowNarrativeAdapter:
         model: str = DEFAULT_LLM_MODEL,
         fallback_model: str = DEFAULT_LLM_FALLBACK_MODEL,
         prompt_version: str = "yellow_narratives.v3",
+        mapping_prompt: str = "",
+        review_prompt: str = "",
+        review_model: str = "",
     ):
         self.client = client
         self.api_key = api_key
@@ -95,6 +107,9 @@ class BailianYellowNarrativeAdapter:
         self.model = model
         self.fallback_model = fallback_model
         self.prompt_version = prompt_version
+        self.mapping_prompt = mapping_prompt
+        self.review_prompt = review_prompt
+        self.review_model = review_model or model
 
     def _request_for_model(
         self,
@@ -149,6 +164,176 @@ class BailianYellowNarrativeAdapter:
                     f"主模型 {self.model} 失败：{primary_error}；"
                     f"降级模型 {self.fallback_model} 失败：{fallback_error}"
                 ) from fallback_error
+
+    def map_template_locations(
+        self,
+        locations: list[dict[str, Any]],
+        allowed_fields: list[str],
+    ) -> tuple[dict[str, str], list[str]]:
+        """Ask the model only to classify currently unmapped Word locations.
+
+        The response cannot write a value or change an established mapping;
+        ``validate_mapping_agent_response`` enforces that closed-world policy.
+        """
+        request = mapping_agent_request(locations, allowed_fields)
+        if not request["locations"] or not self.mapping_prompt:
+            return {}, []
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": self.mapping_prompt},
+                {"role": "user", "content": json.dumps(request, ensure_ascii=False)},
+            ],
+            "response_format": {"type": "json_object"},
+        }
+        if self.model not in THINKING_ONLY_MODELS:
+            payload["enable_thinking"] = False
+        try:
+            response = self.client.post(
+                f"{self.base_url}/chat/completions",
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                json=payload,
+            )
+            response.raise_for_status()
+            response_payload = json.loads(response.json()["choices"][0]["message"]["content"])
+        except Exception as primary_error:
+            return {}, [f"LLM 映射代理调用失败，已保留规则映射：{primary_error}"]
+        return validate_mapping_agent_response(
+            response_payload,
+            unresolved_location_ids=[item["location_id"] for item in request["locations"]],
+            allowed_fields=request["allowed_field_keys"],
+        )
+
+    def review_extracted_evidence(
+        self,
+        reconciliation_rows: list[dict[str, Any]],
+        field_names: dict[str, str],
+        progress_callback: Any | None = None,
+    ) -> tuple[list[dict[str, str]], list[str]]:
+        """Ask the LLM to review evidence only; it cannot alter selected values."""
+        request = build_evidence_review_request(reconciliation_rows, field_names)
+        if not request["fields"] or not self.review_prompt:
+            return [], []
+        all_reviews: list[dict[str, str]] = []
+        all_issues: list[str] = []
+        total = len(request["fields"])
+        for index, field in enumerate(request["fields"], start=1):
+            field_name = str(field.get("field_name") or field.get("field_key") or "")
+            if progress_callback is not None:
+                progress_callback(index - 1, total, field_name)
+            single_request = {**request, "fields": [field]}
+            payload = {
+                "model": self.review_model,
+                "messages": [
+                    {"role": "system", "content": self.review_prompt},
+                    {"role": "user", "content": json.dumps(single_request, ensure_ascii=False)},
+                ],
+                "response_format": {"type": "json_object"},
+            }
+            if self.review_model not in THINKING_ONLY_MODELS:
+                payload["enable_thinking"] = False
+            try:
+                response = self.client.post(
+                    f"{self.base_url}/chat/completions",
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    json=payload,
+                )
+                response.raise_for_status()
+                response_payload = json.loads(response.json()["choices"][0]["message"]["content"])
+            except Exception as primary_error:
+                if not self.fallback_model or self.fallback_model == self.review_model:
+                    all_issues.append(f"LLM 取数复核调用失败：{field_name}：{primary_error}")
+                    continue
+                try:
+                    fallback_payload = {**payload, "model": self.fallback_model}
+                    if self.fallback_model in THINKING_ONLY_MODELS:
+                        fallback_payload.pop("enable_thinking", None)
+                    else:
+                        fallback_payload["enable_thinking"] = False
+                    response = self.client.post(
+                        f"{self.base_url}/chat/completions",
+                        headers={"Authorization": f"Bearer {self.api_key}"},
+                        json=fallback_payload,
+                    )
+                    response.raise_for_status()
+                    response_payload = json.loads(response.json()["choices"][0]["message"]["content"])
+                except Exception as fallback_error:
+                    all_issues.append(
+                        f"LLM 取数复核调用失败：{field_name}：主模型 {primary_error}；降级模型 {fallback_error}"
+                    )
+                    continue
+            reviews, issues = validate_evidence_review_response(
+                response_payload,
+                allowed_field_keys=[str(field["field_key"])],
+            )
+            if not reviews:
+                all_issues.append(f"LLM 取数复核未返回有效结论：{field_name}")
+            all_reviews.extend(reviews)
+            all_issues.extend(issues)
+            if progress_callback is not None:
+                progress_callback(index, total, field_name)
+        return all_reviews, all_issues
+
+    def locate_pdf_pages(
+        self,
+        normalized: dict[str, Any],
+        field_names: dict[str, str],
+        field_keys: list[str],
+    ) -> tuple[dict[str, int], list[str]]:
+        """Use the same configured LLM to locate unresolved PDF evidence pages.
+
+        This is a closed-world locator: it can return only a page already
+        present in the OCR payload and never supplies or changes a value.
+        """
+        request = build_pdf_page_locator_request(normalized, field_names, field_keys)
+        if not request["fields"] or not request["pages"] or not self.review_prompt:
+            return {}, []
+        payload = {
+            "model": self.review_model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        Path(__file__).resolve().parents[1]
+                        / "prompts/pdf_page_locator.v1.txt"
+                    ).read_text(encoding="utf-8"),
+                },
+                {"role": "user", "content": json.dumps(request, ensure_ascii=False)},
+            ],
+            "response_format": {"type": "json_object"},
+        }
+        if self.review_model not in THINKING_ONLY_MODELS:
+            payload["enable_thinking"] = False
+        try:
+            response = self.client.post(
+                f"{self.base_url}/chat/completions",
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                json=payload,
+            )
+            response.raise_for_status()
+            response_payload = json.loads(response.json()["choices"][0]["message"]["content"])
+        except Exception as primary_error:
+            if not self.fallback_model or self.fallback_model == self.review_model:
+                return {}, [f"PDF页码定位调用失败：{primary_error}"]
+            try:
+                fallback_payload = {**payload, "model": self.fallback_model}
+                if self.fallback_model in THINKING_ONLY_MODELS:
+                    fallback_payload.pop("enable_thinking", None)
+                response = self.client.post(
+                    f"{self.base_url}/chat/completions",
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    json=fallback_payload,
+                )
+                response.raise_for_status()
+                response_payload = json.loads(response.json()["choices"][0]["message"]["content"])
+            except Exception as fallback_error:
+                return {}, [f"PDF页码定位调用失败：主模型 {primary_error}；降级模型 {fallback_error}"]
+        available_pages = {int(page["page_number"]) for page in request["pages"]}
+        return validate_pdf_page_locator_response(
+            response_payload,
+            allowed_field_keys=field_keys,
+            available_pages=available_pages,
+        )
 
     @staticmethod
     def _target_context(evidence: list[dict[str, Any]]) -> dict[str, str]:

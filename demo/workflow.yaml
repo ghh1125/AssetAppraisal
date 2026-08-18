@@ -4,7 +4,7 @@
   "nodes": [
     {
       "name": "start_input",
-      "description": "接收图片定义的九项必填人工基础信息、三个可选的类型化PDF/Excel材料，并使用后台只读模板。",
+      "description": "接收九项必填人工基础信息、至少一份审计材料、两类业务Excel和四类按来源策略选择的补充材料，并使用后台只读模板。",
       "input_model": "StartInput",
       "output_model": "StartOutput",
       "depends_on": [],
@@ -12,7 +12,7 @@
     },
     {
       "name": "ocr_llm_candidates",
-      "description": "有PDF时执行OCR并形成结构化数据；百炼模型为Word固定LLM位置生成全部候选文本，暂停等待用户选择。",
+      "description": "解析审计PDF/Word/Excel和两类业务Excel，按字段整合候选、去重并标记不一致；有PDF时执行OCR，百炼逐字段/表复核已选数据的科目、期间、单位和口径但无权改数，再为固定LLM位置生成候选文本，暂停等待用户选择。",
       "input_model": "CandidateGenerationInput",
       "output_model": "CandidateGenerationOutput",
       "depends_on": ["start_input"],
@@ -20,7 +20,7 @@
     },
     {
       "name": "fill_word",
-      "description": "将人工、Excel、OCR、企查查和用户选中的LLM内容按模板映射写入新Word，不修改原模板。",
+      "description": "按模板批注的字段主来源写入新Word；LLM只辅助未分类位置的语义映射，不能生成金额或突破来源规则，不修改原模板。",
       "input_model": "WordFillInput",
       "output_model": "WordFillOutput",
       "depends_on": ["ocr_llm_candidates"],
@@ -28,7 +28,7 @@
     },
     {
       "name": "output",
-      "description": "输出独立的评估报告 Word；找不到的内容保留并高亮XXX。",
+      "description": "输出独立的评估报告 Word；找不到可用数据的内容保留并高亮XXX，PDF与表格不一致的数字标红并加批注，LLM复核疑点只加提示批注且不改数。",
       "input_model": "OutputInput",
       "output_model": "OutputOutput",
       "depends_on": ["fill_word"],

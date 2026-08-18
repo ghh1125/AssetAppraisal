@@ -18,6 +18,10 @@ PLACEHOLDER = re.compile(r"X{2,}", re.I)
 UNRESOLVED_MARKER = re.compile(r"20XX|X{2,}", re.I)
 PART_RE = re.compile(r"word/(document|header\d+|footer\d+|footnotes|endnotes)\.xml")
 COMMENTS_PART = "word/comments.xml"
+DOCUMENT_RELS_PART = "word/_rels/document.xml.rels"
+CONTENT_TYPES_PART = "[Content_Types].xml"
+COMMENTS_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments"
+COMMENTS_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml"
 
 
 def _paragraph_text(paragraph) -> str:
@@ -316,6 +320,18 @@ def _replace_method_heading(paragraph, value: str) -> None:
         _set_paragraph_text(paragraph, str(value), True)
 
 
+def _collapse_duplicate_company_suffixes(text: str) -> str:
+    for before, after in (
+        ("有限公司有限责任公司", "有限公司"),
+        ("有限责任公司有限公司", "有限责任公司"),
+        ("有限责任公司有限责任公司", "有限责任公司"),
+        ("有限公司有限公司", "有限公司"),
+    ):
+        while before in text:
+            text = text.replace(before, after)
+    return text
+
+
 def _replace_placeholders_preserving_runs(paragraph, items, replacements) -> None:
     ordered = sorted(items, key=lambda item: item["occurrence_index"])
     runs = paragraph.xpath("./w:r", namespaces=NS)
@@ -343,7 +359,7 @@ def _replace_placeholders_preserving_runs(paragraph, items, replacements) -> Non
             parts[0] = re.sub(r"^\s*[）)]", "", parts[0])
         if index + 1 < len(runs) and _is_highlighted(runs[index + 1]):
             parts[-1] = re.sub(r"[（(]\s*$", "", parts[-1])
-        _set_run_text(run, "".join(parts))
+        _set_run_text(run, _collapse_duplicate_company_suffixes("".join(parts)))
     for index, run in enumerate(runs):
         if _is_highlighted(run):
             continue
@@ -352,7 +368,7 @@ def _replace_placeholders_preserving_runs(paragraph, items, replacements) -> Non
             text = re.sub(r"^\s*[）)]", "", text)
         if index + 1 < len(runs) and _is_highlighted(runs[index + 1]):
             text = re.sub(r"[（(]\s*$", "", text)
-        _set_run_text(run, text)
+        _set_run_text(run, _collapse_duplicate_company_suffixes(text))
     for run in runs:
         if _is_highlighted(run):
             _clear_run_text(run)
@@ -509,6 +525,275 @@ def highlight_unresolved_placeholders(path: Path) -> list[dict[str, Any]]:
             for info in items:
                 output.writestr(info, contents[info.filename])
     return findings
+
+
+def _set_red_font(run) -> None:
+    properties = run.find("w:rPr", namespaces=NS)
+    if properties is None:
+        properties = etree.Element(f"{{{W}}}rPr")
+        run.insert(0, properties)
+    color = properties.find("w:color", namespaces=NS)
+    if color is None:
+        color = etree.SubElement(properties, f"{{{W}}}color")
+    color.set(f"{{{W}}}val", "C00000")
+
+
+def _comment_root(contents: dict[str, bytes]):
+    if COMMENTS_PART in contents:
+        return etree.fromstring(contents[COMMENTS_PART])
+    return etree.Element(f"{{{W}}}comments", nsmap={"w": W})
+
+
+def _ensure_comment_parts(contents: dict[str, bytes]) -> None:
+    """Add the OOXML relationship/content type needed for Word comments."""
+    rels = (
+        etree.fromstring(contents[DOCUMENT_RELS_PART])
+        if DOCUMENT_RELS_PART in contents
+        else etree.Element(
+            "{http://schemas.openxmlformats.org/package/2006/relationships}Relationships"
+        )
+    )
+    rel_ns = "http://schemas.openxmlformats.org/package/2006/relationships"
+    if not any(item.get("Type") == COMMENTS_REL_TYPE for item in rels):
+        existing = {
+            item.get("Id", "") for item in rels.findall(f"{{{rel_ns}}}Relationship")
+        }
+        index = 1
+        while f"rId{index}" in existing:
+            index += 1
+        relation = etree.SubElement(rels, f"{{{rel_ns}}}Relationship")
+        relation.set("Id", f"rId{index}")
+        relation.set("Type", COMMENTS_REL_TYPE)
+        relation.set("Target", "comments.xml")
+    contents[DOCUMENT_RELS_PART] = etree.tostring(
+        rels, xml_declaration=True, encoding="UTF-8", standalone=True
+    )
+
+    content_types = etree.fromstring(contents[CONTENT_TYPES_PART])
+    ct_ns = "http://schemas.openxmlformats.org/package/2006/content-types"
+    if not any(
+        item.get("PartName") == "/word/comments.xml"
+        for item in content_types.findall(f"{{{ct_ns}}}Override")
+    ):
+        override = etree.SubElement(content_types, f"{{{ct_ns}}}Override")
+        override.set("PartName", "/word/comments.xml")
+        override.set("ContentType", COMMENTS_CONTENT_TYPE)
+    contents[CONTENT_TYPES_PART] = etree.tostring(
+        content_types, xml_declaration=True, encoding="UTF-8", standalone=True
+    )
+
+
+def _isolate_run_text(run, target: str):
+    """Return a run containing only ``target`` while preserving surrounding text.
+
+    Word often keeps a whole table-cell value or even a short label and value
+    in one run.  Splitting that run means the red mark and comment point only
+    to the differing PDF value, not to the full sentence or cell label.
+    """
+    text = _run_text(run)
+    start = text.find(target)
+    if start < 0:
+        return None
+    end = start + len(target)
+    if start == 0 and end == len(text):
+        return run
+    parent = run.getparent()
+    if parent is None:
+        return None
+    position = parent.index(run)
+    pieces = (text[:start], target, text[end:])
+    middle = None
+    for offset, value in enumerate(pieces):
+        if not value:
+            continue
+        clone = deepcopy(run)
+        _set_run_text(clone, value)
+        parent.insert(position + offset, clone)
+        if value == target:
+            middle = clone
+    parent.remove(run)
+    return middle
+
+
+def _run_matches_conflict_context(run, context_hint: str) -> bool:
+    """Limit a repeated amount to its intended table row when possible."""
+    if not context_hint:
+        return True
+    cells = run.xpath("ancestor::w:tc[1]", namespaces=NS)
+    if not cells:
+        return True
+    row = cells[0].xpath("ancestor::w:tr[1]", namespaces=NS)
+    if not row:
+        return True
+    row_text = "".join(row[0].xpath(".//w:t/text()", namespaces=NS))
+    return context_hint in row_text
+
+
+def _matched_run_value(run, target: str) -> str | None:
+    """Find a display-equivalent numeric token (``4598.16`` / ``4,598.16``)."""
+    text = _run_text(run)
+    if target in text:
+        return target
+    normalized_target = target.replace(",", "").replace("，", "")
+    if not re.fullmatch(r"[-+]?\d+(?:\.\d+)?%?", normalized_target):
+        return None
+    for match in re.finditer(r"[-+]?\d[\d,]*(?:\.\d+)?%?", text):
+        if match.group(0).replace(",", "") == normalized_target:
+            return match.group(0)
+    return None
+
+
+def annotate_source_conflicts(path: Path, conflicts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Attach concise reconciliation notes, marking true conflicts in red.
+
+    The report retains the authoritative audit-PDF value.  A red font is used
+    only when a different numeric value was located in a non-authoritative
+    workbook.  The attached Word comment makes the review action explicit,
+    instead of forcing the reviewer to reconstruct file lineage manually.
+    """
+    actionable = []
+    for item in conflicts:
+        is_nonconflict_note = item.get("review_kind") in {"excel_fallback", "llm_review"}
+        adopted_value = item.get("excel_value") if is_nonconflict_note else item.get("pdf_value")
+        if str(adopted_value or "").strip():
+            actionable.append(item)
+    if not actionable:
+        return []
+    with zipfile.ZipFile(path) as archive:
+        items = archive.infolist()
+        contents = {info.filename: archive.read(info.filename) for info in items}
+
+    comments = _comment_root(contents)
+    existing_ids = [
+        int(item.get(f"{{{W}}}id"))
+        for item in comments.xpath(".//w:comment", namespaces=NS)
+        if str(item.get(f"{{{W}}}id", "")).isdigit()
+    ]
+    next_id = max(existing_ids, default=-1) + 1
+    applied: list[dict[str, Any]] = []
+    changed_parts: set[str] = set()
+
+    for conflict in actionable:
+        is_fallback = conflict.get("review_kind") == "excel_fallback"
+        is_llm_review = conflict.get("review_kind") == "llm_review"
+        target = str(
+            conflict.get("excel_value") if (is_fallback or is_llm_review) else conflict.get("pdf_value")
+        ).strip()
+        matched = False
+        for part in sorted(name for name in contents if PART_RE.fullmatch(name)):
+            if matched:
+                break
+            root = etree.fromstring(contents[part])
+            for run in root.xpath(".//w:r", namespaces=NS):
+                run_target = _matched_run_value(run, target)
+                if (
+                    run_target is None
+                    or not _run_matches_conflict_context(
+                        run, str(conflict.get("word_context_hint", ""))
+                    )
+                ):
+                    continue
+                run = _isolate_run_text(run, run_target)
+                if run is None:
+                    continue
+                paragraph = run.xpath("ancestor::w:p[1]", namespaces=NS)
+                if not paragraph:
+                    continue
+                paragraph = paragraph[0]
+                parent = run.getparent()
+                if parent is None or parent.tag != f"{{{W}}}p":
+                    continue
+                comment_id = str(next_id)
+                next_id += 1
+                # Excel-only fallback is a source-availability note and stays
+                # black.  Any LLM needs_review/conflict finding is an actual
+                # review warning and must be visibly red beside its comment.
+                if not is_fallback and not (
+                    is_llm_review and conflict.get("review_status") == "missing"
+                ):
+                    _set_red_font(run)
+                start = etree.Element(f"{{{W}}}commentRangeStart")
+                start.set(f"{{{W}}}id", comment_id)
+                end = etree.Element(f"{{{W}}}commentRangeEnd")
+                end.set(f"{{{W}}}id", comment_id)
+                parent.insert(parent.index(run), start)
+                parent.insert(parent.index(run) + 1, end)
+                reference_run = etree.Element(f"{{{W}}}r")
+                reference = etree.SubElement(reference_run, f"{{{W}}}commentReference")
+                reference.set(f"{{{W}}}id", comment_id)
+                paragraph.insert(paragraph.index(end) + 1, reference_run)
+
+                comment = etree.SubElement(comments, f"{{{W}}}comment")
+                comment.set(f"{{{W}}}id", comment_id)
+                comment.set(f"{{{W}}}author", "数据核对")
+                comment.set(f"{{{W}}}initials", "核对")
+                comment_paragraph = etree.SubElement(comment, f"{{{W}}}p")
+                comment_run = etree.SubElement(comment_paragraph, f"{{{W}}}r")
+                comment_text = etree.SubElement(comment_run, f"{{{W}}}t")
+                comment_text.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+                if conflict.get("llm_comment"):
+                    # The complete human-facing annotation comes from the
+                    # evidence-review LLM. This branch never adds a rule-
+                    # generated evidence judgement around it.  Add only a
+                    # stable visible label so reviewers can distinguish the
+                    # model's review note from the template's own comments.
+                    llm_comment = str(conflict["llm_comment"]).strip()
+                    if not llm_comment.startswith("【LLM取数复核提示】"):
+                        llm_comment = f"【LLM取数复核提示】{llm_comment}"
+                    comment_text.text = llm_comment
+                elif is_llm_review:
+                    comment_text.text = (
+                        "【LLM取数复核提示】"
+                        f"字段：{conflict.get('field_name') or conflict.get('field_key', '')}。"
+                        f"当前值 {target} 来源于{conflict.get('excel_file', '')}"
+                        f"（{conflict.get('excel_locator', '')}）。"
+                        f"LLM复核结论：{conflict.get('review_status', '')}；"
+                        f"原因：{conflict.get('review_reason', '') or '未说明'}。"
+                        "LLM不修改金额或来源，请人工核对原始材料后确认。"
+                    )
+                elif is_fallback:
+                    pdf_status = (
+                        "审计PDF已上传，但OCR未定位到该字段，暂无法完成交叉核对。"
+                        if conflict.get("pdf_uploaded")
+                        else "本次未上传审计PDF，暂无法完成交叉核对。"
+                    )
+                    comment_text.text = (
+                        "【数据来源提示】"
+                        f"字段：{conflict.get('field_name') or conflict.get('field_key', '')}。"
+                        f"报告暂采用《{conflict.get('excel_file', '')}》中“{conflict.get('excel_locator', '')}”的数据 {target}。"
+                        f"{pdf_status}"
+                        "建议核对评估基准日、单体/合并口径、金额单位及科目定义后确认。"
+                    )
+                else:
+                    comment_text.text = (
+                        "【数据不一致，需人工复核】"
+                        f"字段：{conflict.get('field_name') or conflict.get('field_key', '')}。"
+                        f"审计PDF《{conflict.get('pdf_file', '')}》“{conflict.get('pdf_locator', '')}”识别值为 {target}，与《{conflict.get('excel_file', '')}》“{conflict.get('excel_locator', '')}”的"
+                        f"对照值 {conflict.get('excel_value', '')} 不一致。"
+                        "当前按模板来源规则采用审计PDF值。请核对评估基准日、单体/合并口径、金额单位及科目定义；确认后保留或更正。"
+                    )
+                contents[part] = etree.tostring(
+                    root, xml_declaration=True, encoding="UTF-8", standalone=True
+                )
+                changed_parts.add(part)
+                applied.append({**conflict, "part": part, "comment_id": comment_id})
+                matched = True
+                break
+
+    if not applied:
+        return []
+    _ensure_comment_parts(contents)
+    contents[COMMENTS_PART] = etree.tostring(
+        comments, xml_declaration=True, encoding="UTF-8", standalone=True
+    )
+    existing_names = {info.filename for info in items}
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as output:
+        for info in items:
+            output.writestr(info, contents[info.filename])
+        for name in (DOCUMENT_RELS_PART, CONTENT_TYPES_PART, COMMENTS_PART):
+            if name not in existing_names:
+                output.writestr(name, contents[name])
+    return applied
 
 
 def replace_image_markers(path: Path) -> None:
@@ -753,6 +1038,7 @@ def fill_template(
     table_column_ratios: dict[int, list[float]] | None = None,
     paragraph_replacements: dict[tuple[str, int], str] | None = None,
     replacement_modes: dict[str, str] | None = None,
+    progress_callback: Any | None = None,
 ) -> Path:
     if template.resolve() == output.resolve():
         raise ValueError("输出 Word 不能覆盖模板")
@@ -790,6 +1076,8 @@ def fill_template(
                     paragraph = paragraphs[p_index - 1]
                     split_into_lines = False
                     if items and len(items) == 1 and items[0]["record_type"] == "占位符":
+                        if progress_callback is not None:
+                            progress_callback("fill_fields", f"正在填写：{items[0].get('field_name', items[0]['location_id'])}")
                         value = str(replacements[items[0]["location_id"]])
                         if "\n" in value:
                             _replace_paragraph_with_lines(
@@ -798,6 +1086,8 @@ def fill_template(
                             )
                             split_into_lines = True
                     if items and not split_into_lines and items[0]["record_type"] == "黄色标注内容块":
+                        if progress_callback is not None:
+                            progress_callback("fill_fields", f"正在填写：{items[0].get('field_name', items[0]['location_id'])}")
                         value = str(replacements[items[0]["location_id"]])
                         mode = replacement_modes.get(items[0]["location_id"], "replace_paragraph")
                         if mode == "strip_yellow_annotation":
@@ -827,6 +1117,8 @@ def fill_template(
                     if p_index in static_by_index and not split_into_lines:
                         _set_paragraph_text(paragraph, str(static_by_index[p_index]), True)
                 if has_tables:
+                    if progress_callback is not None:
+                        progress_callback("fill_tables", "正在填写财务表格和长期资产表")
                     _fill_tables(root, table_replacements)
                     _set_table_column_ratios(root, table_column_ratios)
                 data = etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)

@@ -1,8 +1,19 @@
 # AssetAppraisal
 
-可配置的资产评估报告 Demo 工作流：按现有材料读取 PDF/OCR/XLSX、企查查 API、百炼模型和用户输入，再依据模板字段来源规则填入 Word。PDF 和各类项目材料均可缺省；找不到的数据在 Word 保留黄色占位符。最终只输出复制模板生成的独立评估报告 Word，不覆盖原模板。
+可配置的资产评估报告 Demo 工作流：先解析审计材料、资产基础法/资产清查 Excel、收益法/市场法 Excel 和企业资料，再按最新版 Word 批注的字段来源规则整合、比对并填入 Word。审计报告材料为必传；找不到的数据在 Word 保留黄色占位符。最终只输出复制模板生成的独立评估报告 Word，不覆盖原模板。
 
 ## 安全边界
+
+## 0817 确认版运行规则
+
+1. 节点 1 必填人工信息：委托方全称/简称、委托类型、评估主体全称/简称、评估对象、评估方法、评估结论采用方法、评估基准日；不再输入报告流水号。
+2. 审计报告材料必传，可上传多个 PDF、Word、Excel。另可上传资产基础法/资产清查 Excel、收益法/市场法 Excel。
+3. 工商信息、股权结构及历史沿革、账外无形资产、企业介绍四类材料分别选择“上传文件”或“企查查 API”。
+4. 系统先解析全部材料并建立带文件、页码/工作表/单元格的候选池；重复值一致即去重。审计 PDF 与表格同字段不一致时，结果页会明确列出差异。
+5. 每个 Word 字段遵循批注指定的主来源。审计财务表、税率、资产负债范围和账面净资产优先取审计 PDF/OCR；资产/收益/市场法评估结论优先取对应方法工作簿。PDF 未上传或未识别到某字段时，如表格存在唯一语义匹配值则采用表格值并注明“未完成 PDF 对照”；所有材料都无值时才保留黄色 `XXX`。PDF 已填入但与表格不一致时，报告保留 PDF 值、将该数字标红，并加入可定位双方文件及位置的 Word 批注供人工复核。PDF 来源定位优先显示原始 PDF 页码；OCR 页码不足时，受限 LLM 只从已编号 OCR 页面中补充页码，不得生成新页码或改数。
+6. LLM 映射代理只在批注规则无法定位的 Word 位置，从已授权字段中选择映射；LLM 不能自造字段、金额或来源。六个企业介绍候选由 LLM 基于已核验材料生成，用户选择后写入 Word。
+
+前端会把四个节点展开为可追踪的细步骤：校验输入、整理材料、OCR/Excel 解析、企查查搜索、来源整合比对、LLM 候选和批注生成、逐字段/逐表填充、写入批注、检查黄色 `XXX` 以及最终 Word 文件校验。来源提示使用真实文件名、工作表/子表名称和单元格范围；不会把 `asset_scope_summary_table` 之类的内部字段键展示给用户。
 
 仓库只提交业务内核、配置、Prompt、测试和前端示例。以下内容不会提交：
 
@@ -20,7 +31,7 @@ uv sync --extra dev
 
 完整流程、配置格式、前端启动和 c2m 接入方式见 [demo/README.md](demo/README.md)。
 
-仓库内保留模板和标注两个版本：`templates/评估报告版式_v2.docx`是最终输出版式，`templates/评估报告版式-沟通标注版_批注版.docx`是批注规则版。项目配置用 `web_template`/`template` 指定输出模板、用 `annotation_template` 指定批注模板；批注只用于建立“Word位置→字段→来源”映射，不会出现在最终报告正文。运行时用户只需上传审计 PDF、资产基础法/资产清查 Excel 和收益法/基础法 Excel（均可选）；客户材料不随仓库提交。
+当前默认模板为 `templates/评估报告版式_0817确认.docx`，对应批注规则版为 `templates/评估报告版式-映射批注_0817确认.docx`。批注只用于建立“Word位置→字段→来源”映射，不会出现在最终报告正文。运行时审计报告材料必传（PDF、Word、Excel 可多选）；资产基础法/资产清查 Excel、收益法/市场法 Excel 及四类补充材料按需上传。
 
 ## 需要的外部服务及获取方式
 
@@ -53,15 +64,15 @@ QICHACHA_EXTRA_API_CODES=2001,213
 
 ### 百炼模型
 
-在[阿里云百炼控制台](https://bailian.console.aliyun.com/)开通兼容 OpenAI 接口并创建 API Key。默认先调用 `deepseek-v4-flash-0731`；该次调用失败时自动改用 `qwen3.8-max`，两个模型和网关都可以自行修改：
+在[阿里云百炼控制台](https://bailian.console.aliyun.com/)开通兼容 OpenAI 接口并创建 API Key。默认先调用 `deepseek-v4-pro-0813`；该次调用失败时自动改用 `qwen3.8-max`，两个模型和网关都可以自行修改：
 
 ```dotenv
 DASHSCOPE_API_KEY=你的百炼APIKey
-APPRAISAL_LLM_MODEL=deepseek-v4-flash-0731
+APPRAISAL_LLM_MODEL=deepseek-v4-pro-0813
 APPRAISAL_LLM_FALLBACK_MODEL=qwen3.8-max
 ```
 
-项目配置可以为 `narrative` 指定模型；未指定时统一使用 `default_model`，环境变量优先级更高。`APPRAISAL_LLM_FALLBACK_MODEL` 仅在主模型请求失败时启用，不会混合两种模型的文本。
+项目配置可以分别为 `narrative`（六个企业介绍候选）和 `evidence_review`（取数证据复核）指定模型；未指定时统一使用 `default_model`，环境变量可用 `APPRAISAL_LLM_MODEL_NARRATIVE`、`APPRAISAL_LLM_MODEL_EVIDENCE_REVIEW` 分别覆盖。`APPRAISAL_LLM_FALLBACK_MODEL` 仅在主模型请求失败时启用，不会混合两种模型的文本。
 
 公司概况在有确定证据时自动写入。第二节点固定展示并让用户选择六个可选模块：所处行业及行业介绍、业务内容及细分市场、主要产品、主要客户及供应商、盈利模式和SWOT分析、对标上市公司（列表多维度展示）。LLM 不逐句复制 API/PDF/Excel，而是在证据边界内进行专业归纳、结构组织和审慎分析；可根据明确业务事实分析盈利模式和 SWOT，但不得虚构公司、客户、供应商、金额或市场数据。用户勾选的是“哪些候选写入 Word”，不是重新选择 API。
 
@@ -69,6 +80,10 @@ APPRAISAL_LLM_FALLBACK_MODEL=qwen3.8-max
 
 - `demo/prompts/yellow_narratives.v3.txt`
 - `demo/prompts/yellow_narratives_output.v3.json`
+- `demo/prompts/evidence_review.v1.txt`
+- `demo/prompts/evidence_review_output.v1.json`
+
+取数复核会对每个已找到的 PDF/OCR 或 Excel 逻辑字段/表格，读取候选的科目、期间、单位、口径、文件及定位信息，返回 `accept`、`needs_review`、`conflict` 或 `missing`。它没有修改数值、修改来源或生成新字段的权限；出现 `needs_review`/`conflict`/`missing` 时，报告会增加带“LLM取数复核提示”标签的 Word 批注供人工查看。批注使用真实文件名、PDF 页码或 Excel 工作表，不展示 `asset_scope_summary_table`、`income_workbook.xlsx` 等内部临时名称。
 
 修改模型时应保持输出字段白名单和 JSON 结构；如项目后端配置了参考资料，叙述生成会先检索相关证据，再按公司概况和六个可选模块分别调用模型并在本地校验证据编号。参考报告不是前端运行时上传项。业务代码不会读取 `.env` 创建全局客户端，凭证只在 CLI/API 入口注入。
 
@@ -214,17 +229,17 @@ OCR 所处的完整资产评估工作流为：
 
 ## 本地运行示例
 
-`--pdf` 是可选参数；不提供时跳过 OCR，仍会根据人工输入、工作簿/API/LLM 的现有结果生成待复核 Word。
+命令行的 `--pdf` 可省略以便离线调试；Web 工作台按 0817 需求要求至少上传一份审计报告材料。没有可 OCR 的 PDF 时，批注要求从审计 PDF 获取的字段会明确保留黄色 `XXX`，不会由业务 Excel 代填。
 
 ```bash
 uv run --python 3.11 python -m demo.run demo/projects/tongfu.yaml \
   --pdf "资产评估工作流/审计报告.pdf" \
-  --template "templates/评估报告版式_v2.docx" \
+  --template "templates/评估报告版式_0817确认.docx" \
   --output-dir runs/local \
   --use-glm --use-qichacha \
   --commissioning-party-name "委托方全称" \
   --commissioning-party-short-name "委托方简称" \
-  --report-serial "001" \
+  --valuation-base-date "2025-06-30" \
   --valuation-purpose-inputs "评估目的" \
   --selected-valuation-method "收益法、资产基础法" \
   --valuation-subject-type "股东全部权益价值" \

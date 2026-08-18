@@ -3,8 +3,8 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 
-TASKS = ("narrative",)
-DEFAULT_LLM_MODEL = "deepseek-v4-flash-0731"
+TASKS = ("narrative", "evidence_review")
+DEFAULT_LLM_MODEL = "deepseek-v4-pro-0813"
 DEFAULT_LLM_FALLBACK_MODEL = "qwen3.8-max"
 
 

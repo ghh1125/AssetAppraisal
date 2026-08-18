@@ -27,7 +27,10 @@ from .adapters.word import (
 )
 from .domain.mapping import validate_mapping
 from .domain.calculations import derive_system_fields
-from .domain.comment_mapping import build_comment_aware_locations
+from .domain.comment_mapping import (
+    align_locations_to_output_template,
+    build_comment_aware_locations,
+)
 from .domain.field_validation import (
     apply_missing_field_policy,
     normalize_narrative_modules,
@@ -44,6 +47,43 @@ from .domain.historical_table_merge import merge_historical_tables
 
 _PREPARED_HISTORY_SHEET_MARKERS = ("历资表", "历利表")
 _FORMAL_HISTORY_SHEET_MARKERS = ("资产负债表", "利润表")
+_MANUAL_BASIC_INPUT_KEYS = {
+    "commissioning_party_name",
+    "commissioning_party_short_name",
+    "transaction_type",
+    "target_company_name",
+    "target_company_short_name",
+    "valuation_subject_type",
+    "selected_valuation_method",
+    "final_valuation_method",
+    "valuation_base_date",
+    "registry_info_strategy",
+    "ownership_history_strategy",
+    "unrecorded_intangibles_strategy",
+    "company_profile_strategy",
+}
+
+
+def _merge_cli_manual_inputs(
+    project_defaults: Mapping[str, Any],
+    node_inputs: Mapping[str, Any],
+    cli_inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Overlay user-facing node input onto project examples without leakage.
+
+    The project file contains only local sample defaults.  In a real CLI or
+    web run, a source-strategy selected by the user (for example, 企查查 API)
+    must replace that sample's ``file`` value while unrelated defaults such
+    as the narrative module list remain available.
+    """
+    merged = dict(project_defaults)
+    for payload in (node_inputs, cli_inputs):
+        merged.update({
+            key: value
+            for key, value in payload.items()
+            if key in _MANUAL_BASIC_INPUT_KEYS and value not in (None, "", [])
+        })
+    return merged
 
 
 def _financial_data_source_label(
@@ -349,6 +389,7 @@ def run_project(
     )
     if any(item.get("comment_texts") for item in annotation_inventory) and same_template_structure:
         locations = build_comment_aware_locations(annotation_inventory, locations)
+        locations = align_locations_to_output_template(template_inventory, locations)
     else:
         annotation_template = template
         annotation_inventory = template_inventory
@@ -402,10 +443,16 @@ def run_project(
             fields[key] = manual[key]
             evidence[key] = {"kind": "manual", "file": manual_path.name, "locator": key}
             continue
-        value, source = _excel_value(record, sources, source_lineage)
-        if value not in (None, ""):
-            fields[key] = value
-            evidence[key] = source or {}
+        # A document's sheet/cell coordinates are not portable across client
+        # workbooks.  The normal workflow therefore relies on semantic table
+        # extraction below.  Coordinate reading is retained only for an
+        # explicitly verified legacy project configuration, never as a hidden
+        # fallback for an uploaded file.
+        if config.get("enable_legacy_coordinate_compatibility", False):
+            value, source = _excel_value(record, sources, source_lineage)
+            if value not in (None, ""):
+                fields[key] = value
+                evidence[key] = source or {}
 
     for key, value in manual.items():
         if value not in (None, "") and key not in fields:
@@ -493,6 +540,12 @@ def run_project(
                     "locator": field_key,
                 },
             )
+            # Semantic extractors focus on workbook structure and may omit
+            # the outer file name.  Evidence shown to a reviewer must always
+            # identify the actual uploaded workbook, so complete it here
+            # before reconciliation or LLM review sees the candidate.
+            semantic_source = dict(semantic_source)
+            semantic_source["file"] = str(semantic_source.get("file") or source_path.name)
             if field_key in {
                 "historical_balance_sheet_table",
                 "historical_income_statement_table",
@@ -919,7 +972,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--node-inputs-json", type=Path, help="两个节点输入字段的 JSON 文件")
     parser.add_argument("--commissioning-party-name", help="用户输入：委托方全称")
     parser.add_argument("--commissioning-party-short-name", help="用户输入：委托方简称")
-    parser.add_argument("--report-serial", help="用户输入：评估报告编号流水号")
     parser.add_argument("--target-company-name", help="用户输入：被评估单位全称（企查查核验，可选）")
     parser.add_argument("--valuation-purpose-inputs", help="用户输入：评估目的")
     parser.add_argument("--selected-valuation-method", help="用户输入：选用评估方法")
@@ -927,6 +979,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--transaction-type", help="用户输入：交易类型")
     parser.add_argument("--final-valuation-method", help="用户输入：最终采用的评估方法")
     parser.add_argument("--target-company-short-name", help="用户输入：被评估单位简称")
+    parser.add_argument("--valuation-base-date", help="用户输入：评估基准日，格式 YYYY-MM-DD")
     parser.add_argument("--report-date")
     args = parser.parse_args(argv)
     pipeline_requested = bool(
@@ -940,7 +993,6 @@ def main(argv: list[str] | None = None) -> int:
             for value in (
                 args.commissioning_party_name,
                 args.commissioning_party_short_name,
-                args.report_serial,
                 args.target_company_name,
                 args.valuation_purpose_inputs,
                 args.selected_valuation_method,
@@ -948,6 +1000,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.transaction_type,
                 args.final_valuation_method,
                 args.target_company_short_name,
+                args.valuation_base_date,
             )
         )
     )
@@ -1035,7 +1088,6 @@ def main(argv: list[str] | None = None) -> int:
         cli_inputs = {
             "commissioning_party_name": args.commissioning_party_name,
             "commissioning_party_short_name": args.commissioning_party_short_name,
-            "report_serial": args.report_serial,
             "target_company_name": args.target_company_name,
             "valuation_purpose_inputs": args.valuation_purpose_inputs,
             "selected_valuation_method": args.selected_valuation_method,
@@ -1043,6 +1095,7 @@ def main(argv: list[str] | None = None) -> int:
             "transaction_type": args.transaction_type,
             "final_valuation_method": args.final_valuation_method,
             "target_company_short_name": args.target_company_short_name,
+            "valuation_base_date": args.valuation_base_date,
         }
         cli_inputs = {key: value for key, value in cli_inputs.items() if value not in (None, "")}
         node_inputs.update({
@@ -1050,6 +1103,18 @@ def main(argv: list[str] | None = None) -> int:
             for key, value in cli_inputs.items()
             if key in {"selected_valuation_method", "valuation_purpose_inputs"}
         })
+        project_config = json.loads(Path(args.project).read_text(encoding="utf-8"))
+        manual_path = _path(Path(args.project).parent, project_config["manual_inputs"])
+        project_manual_defaults = (
+            json.loads(manual_path.read_text(encoding="utf-8"))
+            if manual_path.exists()
+            else {}
+        )
+        manual_inputs_override = _merge_cli_manual_inputs(
+            project_manual_defaults,
+            node_inputs,
+            cli_inputs,
+        )
         result = run_pipeline(
             project_config=Path(args.project),
             pdf_path=args.pdf,
@@ -1058,7 +1123,7 @@ def main(argv: list[str] | None = None) -> int:
             llm_adapter=llm_adapter,
             qichacha_adapter=qichacha_adapter,
             node_inputs=node_inputs,
-            manual_inputs_override=cli_inputs,
+            manual_inputs_override=manual_inputs_override,
             template_path=args.template,
             template_page_reader=LibreOfficeTemplatePageReader(),
             report_date=args.report_date,

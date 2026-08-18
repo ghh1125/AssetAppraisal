@@ -7,7 +7,31 @@ from pathlib import Path
 from docx import Document
 from openpyxl import Workbook
 
-from demo.run import run_project
+from demo.run import _merge_cli_manual_inputs, run_project
+
+
+def test_cli_node_inputs_override_source_strategies_without_losing_project_defaults():
+    merged = _merge_cli_manual_inputs(
+        {
+            "transaction_type": "收购",
+            "registry_info_strategy": "file",
+            "ownership_history_strategy": "file",
+            "narrative_modules": ["main_products"],
+        },
+        {
+            "registry_info_strategy": "qichacha",
+            "ownership_history_strategy": "qichacha",
+            "valuation_purpose_inputs": "不属于人工基础信息的节点字段",
+        },
+        {"target_company_name": "通富热处理（昆山）有限公司"},
+    )
+
+    assert merged["registry_info_strategy"] == "qichacha"
+    assert merged["ownership_history_strategy"] == "qichacha"
+    assert merged["target_company_name"] == "通富热处理（昆山）有限公司"
+    assert merged["transaction_type"] == "收购"
+    assert merged["narrative_modules"] == ["main_products"]
+    assert "valuation_purpose_inputs" not in merged
 
 
 class FakeLlm:
@@ -96,6 +120,7 @@ def test_non_offline_run_uses_injected_provider_without_domain_dependency(tmp_pa
         offline=False,
         report_date="2026-07-22",
         llm_adapter=FakeLlm(),
+        manual_inputs_override={"target_company_name": "通富热处理（昆山）有限公司"},
     )
     fields = json.loads((tmp_path / "normalized_fields.json").read_text(encoding="utf-8"))
     assert fields["company_profile_text"] == "由注入服务生成的公司简介"

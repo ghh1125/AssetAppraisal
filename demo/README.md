@@ -6,10 +6,12 @@
 
 ## 四个工作流节点
 
-1. `start_input`（开始/输入）：接收图片定义的九项必填人工基础信息——委托方全称/简称、委托类型、评估主体全称/简称、评估对象、评估方法（多选且至少一个）、评估结论采用方法、评估报告编号流水号；资料入口是三个可选的有类型文件：审计报告 PDF、资产基础法/资产清查 Excel、收益法/基础法 Excel。Word 模板始终由后端提供，不接受用户覆盖。
-2. `ocr_llm_candidates`（材料解析与候选生成）：有 PDF 才执行 OCR（命中 SHA-256 缓存则复用）；解析 OCR/XLSX/API 的确定性字段；百炼模型基于带来源证据的材料，为 Word 中六个可选位置生成候选文本。该节点暂停，等待用户逐项选择。
-3. `fill_word`（Word 填充）：只把用户选择的 LLM 候选，加上人工、OCR/XLSX 和企查查字段，按黄色路由和表格语义映射写入复制后的 Word。原模板不改；未命中内容不编造。
-4. `output`（结果输出）：只输出独立的待复核 Word。找不到的内容保留并高亮 `XXX`，供人工在 Word 中复核。
+1. `start_input`（开始/输入）：接收委托方全称/简称、委托类型、评估主体全称/简称、评估对象、评估方法、评估结论采用方法和评估基准日；审计报告材料必传（PDF/Word/Excel，可多选），资产/收益法 Excel 与四类补充材料按需上传。工商、股权沿革、账外无形资产、企业介绍各自选择上传文件或企查查 API。报告流水号已移除。
+2. `ocr_llm_candidates`（材料解析与候选生成）：解析全部审计材料、资产法/收益法工作簿与企业资料，建立带来源位置的候选池；按字段主来源整合，一致去重、不一致保留双方证据。PDF 审计字段优先 PDF/OCR；PDF 未上传或该字段未识别时，允许唯一语义匹配的业务 Excel 降级填入，并记录“未完成 PDF 对照”。PDF 页码先由 OCR 表格/块证据确定，缺失时由受限 LLM 只在已有编号 OCR 页面中补充，不能猜测页码。LLM 在受限映射代理协助下定位规则未覆盖的 Word 位置，并逐字段/表复核已选值的科目、期间、单位和口径；它无权改数或改来源。随后为六个企业介绍模块生成可选候选。
+3. `fill_word`（Word 填充）：只把用户选择的 LLM 候选，加上按批注确定的人工、PDF/OCR、业务 Excel 和企查查字段写入复制后的 Word。映射代理只能选择已授权字段，不能生成金额或越过来源规则。
+4. `output`（结果输出）：输出独立的待复核 Word；缺失主来源的数据保留并高亮 `XXX`。审计 PDF 与表格数值不一致时，报告仍采用 PDF 值，但该数值标红并附 Word 批注，批注写明字段、双方文件和定位位置、采用 PDF 的规则及需核对的基准日/口径/单位/科目定义。LLM 判断为证据不足、口径疑点或来源缺失时，模型给出的审核说明会写入带“LLM取数复核提示”标签的 Word 批注，但不改变数值或颜色规则；PDF 定位不再向用户展示“页码未定位”等内部兜底文本。
+
+节点 2 和节点 3 的每个动作都会实时写入任务状态。前端会展开显示“解析审计 PDF、解析 Excel、企查查 API 搜索、整合并比对来源、LLM 生成候选、LLM 组织审核批注、填写某个文字字段、填写财务表格、写入批注、检查 XXX”等子步骤，并显示当前动作、完成状态和最后一条进度消息。节点 2 在候选生成后暂停，节点 3 只有在人工确认候选后才开始。
 
 运行前会校验 `workflow.yaml` 中四个节点引用的 Pydantic 输入输出模型、依赖关系、描述和字段业务说明。工作流只保留上述四类节点，不再执行格式审核、数据校验、语义审核或审核汇总。
 
@@ -20,7 +22,7 @@ uv sync --extra dev
 uv run python -m demo.run demo/projects/tongfu.yaml --offline
 ```
 
-`--offline` 不调用企业 API 和 LLM。所有业务材料均可缺省；找不到的字段在 Word 保留原 `XX/XXX/20XX`（没有原标记时使用 `XXX`），只标黄占位符本身。可用 `--output-dir` 指定独立输出目录。原 Word 永远作为只读模板，不会被覆盖。
+`--offline` 不调用企业 API 和 LLM，仅用于本地开发验证。网页端按 0817 确认规则至少需要一份审计材料；找不到的字段在 Word 保留原 `XX/XXX/20XX`（没有原标记时使用 `XXX`），只标黄占位符本身。可用 `--output-dir` 指定独立输出目录。原 Word 永远作为只读模板，不会被覆盖。
 
 在 c2m 或其他宿主中，可直接调用 `run_project(...)` / `run_pipeline(...)` 并通过 `ocr_adapter`、`company_api_adapter` 和 `llm_adapter` 参数注入已有服务。Demo 不在 `domain/` 内创建客户端或读取密钥；注入结果只接受映射表中已经登记的字段键。
 
@@ -36,18 +38,18 @@ APPRAISAL_OCR_TIMEOUT_SECONDS=900
 
 百炼和企查查仍分别使用 `DASHSCOPE_API_KEY`、`QICHACHA_APP_KEY` 与 `QICHACHA_SECRET_KEY`，三类服务凭证互不替代。
 
-命令中的 `--pdf` 可省略；省略后跳过 OCR，工作流从其他可用材料和人工输入继续。同一 PDF 命中 SHA-256 缓存时不会再次消耗云端页数。云端失败时不自动回退本地模型，相关字段保留黄色占位符。
+命令中的 `--pdf` 可省略；省略后跳过 OCR。批注指定为审计 PDF 来源的字段会尝试由唯一语义匹配的上传表格降级填入，并在 Word 批注说明“未完成 PDF 对照”；只有所有材料都无法取得时才保留黄色占位符。同一 PDF 命中 SHA-256 缓存时不会再次消耗云端页数。云端失败时不自动回退本地模型。
 
 ```bash
 uv python install 3.11
 uv sync --python 3.11 --extra dev --extra services
 uv run --python 3.11 python -m demo.run demo/projects/tongfu.yaml \
   --pdf '资产评估工作流/通富2025.6.30合并及母公司审计报告.pdf' \
-  --template 'templates/评估报告版式_v2.docx' \
+  --template 'templates/评估报告版式_0817确认.docx' \
   --output-dir runs/tongfu-ocr --ocr-provider aliyun --use-glm --use-qichacha \
   --commissioning-party-name '委托方全称' \
   --commissioning-party-short-name '委托方简称' \
-  --report-serial '报告流水号' \
+  --valuation-base-date '2025-06-30' \
   --selected-valuation-method '收益法、资产基础法' \
   --valuation-subject-type '股东全部权益价值' \
   --transaction-type '收购' \
@@ -61,13 +63,15 @@ uv run --python 3.11 python -m demo.run demo/projects/tongfu.yaml \
 
 ## 最新 Word 批注来源路由
 
-`templates/评估报告版式-沟通标注版_批注版.docx` 是批注规则版，包含 100 条 Word 批注、131 个占位符和 11 个无占位符的批注锚点；`templates/评估报告版式_v2.docx` 是实际复制填充的干净模板。批注优先于旧的黄色坐标映射，运行时逐占位符写入 `template_comments.json` 和 `workflow_trace.json`，保留批注原文、字段键和来源类别。
+`templates/评估报告版式-映射批注_0817确认.docx` 是批注规则版；`templates/评估报告版式_0817确认.docx` 是实际复制填充的干净模板。批注优先于旧的黄色坐标映射，运行时逐占位符写入 `template_comments.json` 和 `workflow_trace.json`，保留批注原文、字段键和来源类别。
 
 审计清单中的 `word_search_text` 始终保存模板正文的原文定位词（例如“二、委托人：XXX有限责任公司”“上述数据摘自XX”“被评估单位XXX账面值为XXX万元……”）。`field_name` 只是程序内部的标准字段名称，不能代替 Word 原文；人工复核时应直接复制 `word_search_text` 在 Word 中搜索。
 
 批注来源类别如下：
 
-这里的 `PDF OCR/XLSX` 表示审计 PDF 经 OCR 后的结构化结果，以及用户上传的资产基础法/收益法工作簿。
+这里的 `PDF OCR/XLSX` 表示审计 PDF 经 OCR 后的结构化结果；资产基础法/收益法工作簿用于评估结果取值或与审计数据交叉核对，不能替代批注指定的审计字段。
+
+Word 批注和前端问题提示不会直接展示程序内部的 `asset_scope_summary_table` 等字段键。OCR 位置会翻译成“审计 PDF 第X页：资产负债范围表”“审计 PDF 第Y页：历史利润表”等页码定位；受限 LLM 只能从已编号 OCR 页面中补充页码，无法定位时不会伪造页码。用户上传的 Excel 会继续显示真实文件名、工作表名以及单元格/范围，例如“《通富审核后财报-单体1月5日.xlsx》的‘07N_利润表’工作表 F4:J35”。这样人工复核可以直接在原文件中定位，不需要理解代码字段。
 
 - `node_input`：人工基础信息中的公司名称、简称、交易类型、评估对象和评估方法；
 - `qichacha_api`：工商概况、股东及股权、商标、专利、软件著作权等；
@@ -86,9 +90,9 @@ OCR 缓存、LLM 候选和运行轨迹属于流程内部状态，不作为用户
 
 ## Vue 前端工作台
 
-`frontend/` 将图片定义的九项必填人工输入、三个可选的有类型材料入口、后端固定 Word 模板和产物下载做成页面。上传文件名不需要与配置一致，后端按扩展名、工作表标题、科目行和金额列语义识别资产基础法/清查 Excel 与收益法/基础法 Excel；只有存在 PDF 时才检查 OCR 缓存。Word 模板和 OCR 结构化 Excel 都由后端提供，不需要用户上传。
+`frontend/` 将九项必填人工输入、审计材料及两类业务 Excel、四类可选补充材料、后端固定 Word 模板和产物下载做成页面。上传文件名不需要与配置一致，后端按扩展名、工作表标题、科目行和金额列语义识别资产基础法/清查 Excel 与收益法/基础法 Excel；只有存在 PDF 时才检查 OCR 缓存。Word 模板和 OCR 结构化 Excel 都由后端提供，不需要用户上传。
 
-模板批注：仓库中的 `templates/评估报告版式-沟通标注版_批注版.docx`保留新版 Word 批注，`templates/评估报告版式_v2.docx`是最终输出版式。项目配置通过 `annotation_template` 读取批注，通过 `web_template`/`template` 填充并输出普通版 Word；运行时会将批注 ID、批注文本和对应占位符写入内部 `template_comments.json`，批注不会出现在最终报告正文。
+模板批注：仓库中的 `templates/评估报告版式-映射批注_0817确认.docx` 保留最新版 Word 批注，`templates/评估报告版式_0817确认.docx` 是最终输出版式。项目配置通过 `annotation_template` 读取批注，通过 `web_template`/`template` 填充并输出普通版 Word；运行时会将批注 ID、批注文本和对应占位符写入内部 `template_comments.json`，批注不会出现在最终报告正文。
 
 任务结果区会实时显示四个节点的时间线和状态。节点 2 完成后状态为“等待人工选择”，用户确认候选后才继续节点 3 和节点 4；节点状态同时写入 API 返回的 `nodes` 和 `workflow_trace.json`。
 
@@ -111,12 +115,12 @@ npm run dev
 
 ## 失败与人工审核策略
 
-- 未上传 PDF：OCR 和 OCR Excel 导出节点标记为 `skipped`，其余节点继续。
-- OCR 失败或某个指定来源无结果：Word 保留黄色占位符，流程继续生成报告。
+- 未上传 PDF：OCR 和 OCR Excel 导出节点标记为 `skipped`；可唯一匹配的 Excel 数据正常填入并附“未完成 PDF 对照”批注，不存在可用数据时才保留黄色 `XXX`。
+- OCR 失败或某个指定来源无结果：先尝试唯一匹配的其他已上传材料；仍无值时 Word 保留黄色占位符，流程继续生成报告。
 - `workflow.yaml` 节点、模型、字段说明或依赖不符合契约：在任何外部调用前停止运行。
 - 本机无 LibreOffice 或 PyMuPDF：Word 仍可生成，缺失内容保留黄色占位符。
 - 金额及财务结果字段缺失：对应段落或表格单元格写黄色 `XXX`，仍生成待复核 Word。
-- 同字段同期间出现冲突候选：不自动选择，保留待复核 Word 和冲突记录，由 c2m 或评估师处理。
+- 审计 PDF 与表格同字段同期间出现冲突：报告按批注规则采用 PDF 值，并把该数值标红、增加 Word 批注；批注列出双方文件和精确位置，并提示核对评估基准日、单体/合并口径、单位和科目定义。无法精确定位到 Word 数字时只保留内部差异记录，不作误标。
 - 百炼叙述返回越权字段、无证据字段或未知证据编号：丢弃该字段并保留黄色占位符。
 - LLM 候选生成失败：对应固定位置保留黄色 `XXX`，继续生成 Word；不会执行额外的格式、数据或语义审核。
 - 企查查 API 未配置或企业身份核验不一致：对应 API 字段保留黄色占位符，继续生成报告供人工复核。

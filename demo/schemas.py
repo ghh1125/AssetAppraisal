@@ -271,19 +271,23 @@ class ManualBasicInputs(DemoModel):
     valuation_subject_type: Literal["股东全部权益价值", "股东部分权益价值", "企业整体价值", "资产组价值"] | None = Field(default=None, description="评估对象，单选", examples=["股东全部权益价值"])
     selected_valuation_method: list[Literal["资产基础法", "收益法", "市场法"]] | str | None = Field(default=None, description="评估方法，多选且至少一个", examples=[["收益法", "资产基础法"]])
     final_valuation_method: Literal["资产基础法", "收益法", "市场法"] | None = Field(default=None, description="评估结论采用方法，单选", examples=["收益法"])
-    report_serial: str | int | None = Field(default=None, description="评估报告编号流水号，非负整数", examples=[1])
+    valuation_base_date: str | None = Field(default=None, description="评估基准日，YYYY-MM-DD", examples=["2025-06-30"])
+    registry_info_strategy: Literal["file", "qichacha"] = Field(default="file", description="工商信息来源策略：上传文件或企查查API")
+    ownership_history_strategy: Literal["file", "qichacha"] = Field(default="file", description="股权结构及历史沿革来源策略：上传文件或企查查API")
+    unrecorded_intangibles_strategy: Literal["file", "qichacha"] = Field(default="file", description="账外无形资产来源策略：上传文件或企查查API")
+    company_profile_strategy: Literal["file", "qichacha"] = Field(default="file", description="企业介绍来源策略：上传文件或企查查API")
 
 
 class StartInput(DemoModel):
     manual_inputs: ManualBasicInputs = Field(
         default_factory=ManualBasicInputs,
-        description="最新图片定义的九项必填人工基础信息；其余模板字段由材料、API、系统时间或占位符规则处理",
-        examples=[{"commissioning_party_name": "示例委托有限公司", "commissioning_party_short_name": "示例委托", "target_company_name": "示例被评估有限公司", "target_company_short_name": "示例主体", "transaction_type": "收购", "valuation_subject_type": "股东全部权益价值", "selected_valuation_method": ["收益法"], "final_valuation_method": "收益法", "report_serial": 1}],
+        description="0817确认的九项人工基础信息及四类资料/API来源策略；评估基准日由用户必填，不再输入报告流水号",
+        examples=[{"commissioning_party_name": "示例委托有限公司", "commissioning_party_short_name": "示例委托", "target_company_name": "示例被评估有限公司", "target_company_short_name": "示例主体", "transaction_type": "收购", "valuation_subject_type": "股东全部权益价值", "selected_valuation_method": ["收益法"], "final_valuation_method": "收益法", "valuation_base_date": "2025-06-30"}],
     )
     materials: dict[str, str] = Field(
         default_factory=dict,
-        description="上传材料角色与保存路径，PDF和Excel均为可选",
-        examples=[{"pdf": "审计报告.pdf", "reporting_workbook": "资产清查.xlsx"}],
+        description="上传材料角色与保存路径；审计材料必选，可包含多份PDF、Word或Excel文件",
+        examples=[{"audit_materials": "审计报告.pdf", "reporting_workbook": "资产清查.xlsx"}],
     )
     template_path: str = Field(
         description="后台提供的只读 Word 模板路径",

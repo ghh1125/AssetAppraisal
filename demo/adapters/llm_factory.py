@@ -21,6 +21,8 @@ def build_bailian_adapters(
     models = resolve_llm_models(config, env or {})
     fallback_model = resolve_llm_fallback_model(config, env or {})
     narrative_prompt = (prompt_dir / "yellow_narratives.v3.txt").read_text(encoding="utf-8")
+    mapping_prompt = (prompt_dir / "mapping_agent.v1.txt").read_text(encoding="utf-8")
+    review_prompt = (prompt_dir / "evidence_review.v1.txt").read_text(encoding="utf-8")
     return {
         "narrative": BailianYellowNarrativeAdapter(
             client,
@@ -29,6 +31,9 @@ def build_bailian_adapters(
             base_url=base_url,
             model=models["narrative"],
             fallback_model=fallback_model,
+            mapping_prompt=mapping_prompt,
+            review_prompt=review_prompt,
+            review_model=models["evidence_review"],
         ),
         "models": models,
     }

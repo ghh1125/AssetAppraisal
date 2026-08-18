@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 from demo.domain import calculations, registry
+from demo.domain.comment_mapping import align_locations_to_output_template
 from demo.domain.field_validation import (
     normalize_narrative_modules,
     normalize_valuation_methods,
@@ -87,3 +88,69 @@ def test_derives_report_and_validity_fields_from_dates():
     assert actual["validity_end_year"] == 2026
     assert actual["validity_end_month"] == 6
     assert actual["validity_end_day"] == 29
+
+
+def test_derives_template_dates_from_the_manual_valuation_base_date():
+    actual = calculations.derive_system_fields(
+        {"valuation_base_date": "2025-06-30"},
+        report_date="2026-08-18",
+    )
+
+    assert actual["valuation_date_year"] == 2025
+    assert actual["valuation_date_month"] == 6
+    assert actual["valuation_date_day"] == 30
+    assert actual["validity_start_year"] == 2025
+    assert actual["validity_end_year"] == 2026
+    assert actual["validity_end_month"] == 6
+    assert actual["validity_end_day"] == 29
+
+
+def test_aligns_comment_derived_field_to_clean_template_after_paragraph_shift():
+    clean_locations = [
+        {
+            "location_id": "DOCUMENT-P0686-X01",
+            "context": "有效期（即20XX年XX月XX日至20XX年XX月XX日）",
+            "marker": "XX",
+            "occurrence_index": 1,
+            "part": "word/document.xml",
+            "paragraph_index": 686,
+            "record_type": "占位符",
+        }
+    ]
+    annotated_locations = [
+        {
+            "location_id": "DOCUMENT-P0687-X01",
+            "context": "有效期（即20XX年XX月XX日至20XX年XX月XX日）",
+            "marker": "XX",
+            "occurrence_index": 1,
+            "part": "word/document.xml",
+            "paragraph_index": 687,
+            "record_type": "占位符",
+            "field_key": "validity_start_year",
+            "comment_texts": ["数据来源：人工基础信息（评估基准日）"],
+        }
+    ]
+
+    aligned = align_locations_to_output_template(clean_locations, annotated_locations)
+
+    assert aligned[0]["location_id"] == "DOCUMENT-P0686-X01"
+    assert aligned[0]["field_key"] == "validity_start_year"
+
+
+def test_alignment_does_not_create_a_mapping_for_an_unannotated_output_placeholder():
+    aligned = align_locations_to_output_template(
+        [
+            {
+                "location_id": "DOCUMENT-P0100-X01",
+                "context": "未映射的XXX",
+                "marker": "XXX",
+                "occurrence_index": 1,
+                "part": "word/document.xml",
+                "paragraph_index": 100,
+                "record_type": "占位符",
+            }
+        ],
+        [],
+    )
+
+    assert aligned == []

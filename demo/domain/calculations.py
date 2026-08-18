@@ -93,8 +93,10 @@ def derive_system_fields(
         put_default(f"report_date_{part}", report_parts[part])
     put_default("report_number_year", report_parts["year"])
 
-    valuation_parts = None
+    valuation_parts = flexible_date_parts(result.get("valuation_base_date"))
     for key in ("valuation_date_year", "valuation_date_month", "valuation_date_day"):
+        if valuation_parts:
+            break
         valuation_parts = flexible_date_parts(result.get(key))
         if valuation_parts:
             break

@@ -7,6 +7,7 @@ from docx.enum.text import WD_COLOR_INDEX
 from docx.shared import Pt
 
 from demo.adapters.word import (
+    annotate_source_conflicts,
     fill_template,
     highlight_unresolved_placeholders,
     inventory_template,
@@ -149,7 +150,28 @@ def test_avoids_repeating_suffix_already_present_after_marker():
         {"location_id": "R-X01", "field_key": "company", "field_name": "公司", "context": "收购XXX有限责任公司股权", "marker": "XXX"},
     ]
     fields = {"method": "收益法", "subject": "股东全部权益价值", "company": "通富热处理（昆山）有限公司"}
-    assert list(build_replacements(locations, fields).values()) == ["收益", "股东全部权益", "通富热处理（昆山）"]
+    assert list(build_replacements(locations, fields).values()) == ["收益", "股东全部权益", "通富热处理（昆山）有限公司"]
+
+
+def test_company_name_placeholder_replaces_template_company_suffix(tmp_path: Path):
+    template = tmp_path / "company-name.docx"
+    doc = Document()
+    doc.add_paragraph("委托人名称：XXX有限责任公司（简称：XXX）")
+    doc.save(template)
+    locations = inventory_template(template)
+
+    output = tmp_path / "filled.docx"
+    fill_template(
+        template,
+        output,
+        {
+            locations[0]["location_id"]: "上海上大热处理有限公司",
+            locations[1]["location_id"]: "上海上大热处理",
+        },
+    )
+
+    text = Document(output).paragraphs[0].text
+    assert text == "委托人名称：上海上大热处理有限公司（简称：上海上大热处理）"
 
 
 def test_writes_matrix_into_existing_word_table_and_trims_unused_rows(tmp_path: Path):
@@ -428,3 +450,69 @@ def test_highlights_placeholder_split_across_runs(tmp_path: Path):
     )
     assert highlighted == "XXX"
     assert findings[0]["current_text"] == "XXX"
+
+
+def test_marks_pdf_workbook_conflict_red_and_adds_review_comment(tmp_path: Path):
+    """The report must retain the PDF value but make a mismatch reviewable."""
+    output = tmp_path / "conflict.docx"
+    document = Document()
+    document.add_paragraph("审计PDF金额：100.00")
+    document.save(output)
+
+    applied = annotate_source_conflicts(
+        output,
+        [
+            {
+                "field_key": "book_net_assets",
+                "field_name": "账面净资产",
+                "pdf_value": "100.00",
+                "excel_value": "90.00",
+                "pdf_file": "审计报告.pdf",
+                "pdf_locator": "第10页 资产负债表",
+                "excel_file": "资产基础法.xlsx",
+                "excel_locator": "汇总表!C8",
+                "llm_comment": "请核对《资产基础法.xlsx》“汇总表”C8与审计报告第10页的金额和口径。",
+            }
+        ],
+    )
+
+    assert len(applied) == 1
+    assert Document(output).paragraphs[0].text == "审计PDF金额：100.00"
+    with zipfile.ZipFile(output) as archive:
+        document_xml = archive.read("word/document.xml").decode("utf-8")
+        comments_xml = archive.read("word/comments.xml").decode("utf-8")
+    assert 'w:val="C00000"' in document_xml
+    assert "commentRangeStart" in document_xml
+    assert "请核对《资产基础法.xlsx》“汇总表”C8与审计报告第10页的金额和口径。" in comments_xml
+    assert "资产基础法.xlsx" in comments_xml
+
+
+def test_excel_fallback_adds_note_without_turning_value_red(tmp_path: Path):
+    output = tmp_path / "excel-fallback.docx"
+    document = Document()
+    document.add_paragraph("账面净资产：100.00")
+    document.save(output)
+
+    applied = annotate_source_conflicts(
+        output,
+        [
+            {
+                "review_kind": "excel_fallback",
+                "field_key": "book_net_assets",
+                "field_name": "账面净资产",
+                "excel_value": "100.00",
+                "excel_file": "资产基础法.xlsx",
+                "excel_locator": "汇总表!C8",
+                "pdf_uploaded": True,
+            }
+        ],
+    )
+
+    assert len(applied) == 1
+    with zipfile.ZipFile(output) as archive:
+        document_xml = archive.read("word/document.xml").decode("utf-8")
+        comments_xml = archive.read("word/comments.xml").decode("utf-8")
+    assert 'w:val="C00000"' not in document_xml
+    assert "审计PDF已上传，但OCR未定位到该字段" in comments_xml
+    assert "资产基础法.xlsx" in comments_xml
+    assert "汇总表!C8" in comments_xml
