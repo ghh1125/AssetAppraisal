@@ -222,6 +222,44 @@ def _artifact_list(run_dir: Path) -> list[dict[str, str]]:
     return [{"name": report.name, "label": "评估报告 Word"}] if report.is_file() else []
 
 
+def _candidate_payload_path(run_id: str) -> Path:
+    return RUNS_ROOT / run_id / "llm候选内容.json"
+
+
+def _candidate_evidence_path(run_id: str) -> Path:
+    return RUNS_ROOT / run_id / "llm候选证据.json"
+
+
+def _update_candidate_payload(path: Path, field_key: str, value: str) -> dict[str, Any]:
+    """Persist one candidate while leaving every other module unchanged."""
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    candidates = payload.get("candidates")
+    if not isinstance(candidates, list):
+        raise RuntimeError("候选文件结构无效")
+    for candidate in candidates:
+        if candidate.get("field_key") == field_key:
+            candidate["value"] = str(value or "").strip()
+            candidate["available"] = bool(candidate["value"])
+            candidate["updated_at"] = datetime.now(timezone.utc).isoformat()
+            path.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            return payload
+    raise KeyError(field_key)
+
+
+def _replace_job_candidate(run_id: str, field_key: str, value: str) -> None:
+    with JOBS_LOCK:
+        job = JOBS.setdefault(run_id, {})
+        for candidate in job.get("candidates", []):
+            if candidate.get("field_key") == field_key:
+                candidate["value"] = str(value or "").strip()
+                candidate["available"] = bool(candidate["value"])
+                candidate["updated_at"] = datetime.now(timezone.utc).isoformat()
+                break
+
+
 def _find_ocr_cache(pdf_path: Path) -> Path | None:
     """Find a prior OCR workbook whose manifest matches this PDF hash."""
     pdf_hash = hashlib.sha256(pdf_path.read_bytes()).hexdigest()
@@ -542,6 +580,84 @@ def _execute_fill(run_id: str, selected_fields: dict[str, Any]) -> None:
         _set_job(run_id, status="failed", progress=100, error=str(exc), artifacts=[])
 
 
+def _execute_regenerate_candidate(run_id: str, field_key: str, feedback: str) -> None:
+    """Regenerate one candidate from the persisted evidence and save it."""
+    _load_local_env()
+    try:
+        with JOBS_LOCK:
+            job = dict(JOBS.get(run_id, {}))
+            context = dict(job.get("selection_context", {}) or {})
+        evidence_path = _candidate_evidence_path(run_id)
+        candidate_path = _candidate_payload_path(run_id)
+        if not evidence_path.is_file() or not candidate_path.is_file():
+            raise RuntimeError("候选证据已不存在，请重新运行材料解析")
+        llm_adapter, _qichacha_adapter, _http_client = _build_external_adapters(True, False)
+        _set_job(run_id, status="running", progress=62, message=f"正在重新生成：{field_key}")
+        _set_node(run_id, "ocr_llm_candidates", "running", f"正在根据反馈重新生成 {field_key}")
+        _set_step(
+            run_id,
+            "ocr_llm_candidates",
+            "generate_candidates",
+            "running",
+            f"LLM 正在根据反馈重新生成：{field_key}",
+        )
+        evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+        evidence["selected_modules"] = [field_key]
+        evidence["regenerate_field"] = field_key
+        evidence["feedback"] = feedback
+        values, provider_issues = llm_adapter.generate(evidence)
+        value = str(values.get(field_key, "") or "").strip()
+        if not value:
+            raise RuntimeError(
+                f"LLM 未返回 {field_key} 的有效内容"
+                + (f"：{'；'.join(provider_issues)}" if provider_issues else "")
+            )
+        payload = _update_candidate_payload(candidate_path, field_key, value)
+        _replace_job_candidate(run_id, field_key, value)
+        with JOBS_LOCK:
+            current = JOBS.setdefault(run_id, {})
+            current["issues"] = list(current.get("issues", [])) + provider_issues
+            current["candidates"] = payload.get("candidates", current.get("candidates", []))
+        _set_step(
+            run_id,
+            "ocr_llm_candidates",
+            "generate_candidates",
+            "completed",
+            f"已根据反馈更新：{field_key}",
+        )
+        _set_node(run_id, "ocr_llm_candidates", "awaiting_selection", "候选内容已更新，请继续选择")
+        _set_step(
+            run_id,
+            "ocr_llm_candidates",
+            "wait_selection",
+            "running",
+            "候选内容已更新，等待人工选择",
+        )
+        _set_job(
+            run_id,
+            status="awaiting_selection",
+            progress=70,
+            message="候选内容已更新，请确认要写入 Word 的模块",
+        )
+    except Exception as exc:
+        _set_node(run_id, "ocr_llm_candidates", "awaiting_selection", f"重新生成失败：{exc}")
+        _set_step(run_id, "ocr_llm_candidates", "generate_candidates", "failed", str(exc))
+        _set_step(
+            run_id,
+            "ocr_llm_candidates",
+            "wait_selection",
+            "running",
+            "候选未更新，仍可继续选择或重试",
+        )
+        _set_job(
+            run_id,
+            status="awaiting_selection",
+            progress=70,
+            message=f"候选重新生成失败：{exc}",
+            error=str(exc),
+        )
+
+
 @app.post("/api/v1/asset-appraisal/runs", status_code=202)
 async def create_run(
     background_tasks: BackgroundTasks,
@@ -822,6 +938,74 @@ async def create_run(
         use_qichacha,
         reuse_ocr,
     )
+    return JOBS[run_id]
+
+
+@app.post("/api/v1/asset-appraisal/runs/{run_id}/candidates/{field_key}/edit", status_code=200)
+async def edit_run_candidate(
+    run_id: str,
+    field_key: str,
+    value: str = Form(""),
+):
+    """Persist a user edit to one candidate before final selection."""
+    with JOBS_LOCK:
+        job = JOBS.get(run_id)
+        status = job.get("status") if job else None
+        allowed = {
+            item.get("field_key")
+            for item in (job or {}).get("candidates", [])
+            if item.get("field_key")
+        }
+    if not job:
+        raise HTTPException(status_code=404, detail="任务不存在或服务已重启")
+    if status != "awaiting_selection":
+        raise HTTPException(status_code=409, detail="任务当前不在候选内容选择阶段")
+    if field_key not in allowed:
+        raise HTTPException(status_code=404, detail="候选模块不存在")
+    value = str(value or "").strip()
+    if not value:
+        raise HTTPException(status_code=422, detail="候选内容不能为空")
+    path = _candidate_payload_path(run_id)
+    try:
+        payload = _update_candidate_payload(path, field_key, value)
+    except (OSError, json.JSONDecodeError, KeyError, RuntimeError) as exc:
+        raise HTTPException(status_code=500, detail=f"保存候选内容失败：{exc}") from exc
+    _replace_job_candidate(run_id, field_key, value)
+    with JOBS_LOCK:
+        current = JOBS.setdefault(run_id, {})
+        current["candidates"] = payload.get("candidates", current.get("candidates", []))
+    return JOBS[run_id]
+
+
+@app.post("/api/v1/asset-appraisal/runs/{run_id}/candidates/{field_key}/regenerate", status_code=202)
+async def regenerate_run_candidate(
+    run_id: str,
+    field_key: str,
+    background_tasks: BackgroundTasks,
+    feedback: str = Form(""),
+):
+    """Ask the configured LLM to regenerate one candidate from its evidence."""
+    with JOBS_LOCK:
+        job = JOBS.get(run_id)
+        status = job.get("status") if job else None
+        allowed = {
+            item.get("field_key")
+            for item in (job or {}).get("candidates", [])
+            if item.get("field_key")
+        }
+    if not job:
+        raise HTTPException(status_code=404, detail="任务不存在或服务已重启")
+    if status != "awaiting_selection":
+        raise HTTPException(status_code=409, detail="任务当前不在候选内容选择阶段")
+    if field_key not in allowed:
+        raise HTTPException(status_code=404, detail="候选模块不存在")
+    feedback = str(feedback or "").strip()
+    if not feedback:
+        raise HTTPException(status_code=422, detail="请先填写重新生成的反馈")
+    if len(feedback) > 2000:
+        raise HTTPException(status_code=422, detail="反馈不能超过 2000 个字符")
+    _set_job(run_id, status="queued", progress=60, message=f"已提交重新生成：{field_key}")
+    background_tasks.add_task(_execute_regenerate_candidate, run_id, field_key, feedback)
     return JOBS[run_id]
 
 

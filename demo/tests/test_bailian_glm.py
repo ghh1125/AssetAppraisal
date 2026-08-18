@@ -161,6 +161,33 @@ def test_glm_accepts_flat_json_object_used_by_qwen_flash():
     assert issues == []
 
 
+def test_glm_passes_feedback_to_single_module_regeneration_request():
+    client = FieldwiseClient()
+    adapter = BailianYellowNarrativeAdapter(
+        client=client,
+        api_key="test-key",
+        prompt="规则",
+    )
+
+    values, issues = adapter.generate(
+        {
+            "selected_modules": ["main_products"],
+            "regenerate_field": "main_products",
+            "feedback": "补充产品应用场景并分段",
+            "evidence": [
+                {"evidence_id": "pdf:p1:b1", "text": "主要产品：工业滤波器。"}
+            ],
+        }
+    )
+
+    request = json.loads(client.requests[0]["json"]["messages"][-1]["content"])
+    assert request["user_feedback"] == "补充产品应用场景并分段"
+    assert request["requested_field"] == "main_products"
+    assert len(client.requests) == 1
+    assert values["main_products"] == "main_products内容"
+    assert issues == []
+
+
 def test_glm_reviews_extracted_data_without_returning_a_replacement_value():
     client = FakeClient(
         json.dumps(

@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import { useI18n } from 'vue-i18n'
 import { artifactUrl } from '../../api/request'
-import { checkAssetAppraisalOcrCache, createAssetAppraisalRun, getAssetAppraisalRun, selectAssetAppraisalCandidates } from '../../api/asset-appraisal'
+import { checkAssetAppraisalOcrCache, createAssetAppraisalRun, getAssetAppraisalRun, regenerateAssetAppraisalCandidate, selectAssetAppraisalCandidates, updateAssetAppraisalCandidate } from '../../api/asset-appraisal'
 import { canSubmitPartial } from '../../domain/submission'
 import { summarizeRunIssues } from '../../domain/run-issues'
 import { currentRunProgress } from '../../domain/run-progress'
@@ -34,6 +34,13 @@ const ocrCache = ref({ checking: false, hit: false, source: '' })
 const submitting = ref(false)
 const run = ref(null)
 const selectedCandidateKeys = ref([])
+const candidateSelectionInitialized = ref(false)
+const candidateModalOpen = ref(false)
+const activeCandidate = ref(null)
+const candidateDraft = ref('')
+const candidateFeedback = ref('')
+const candidateSaving = ref(false)
+const candidateRegenerating = ref(false)
 const manualModalOpen = ref(false)
 const materialsModalOpen = ref(false)
 const manualDraft = ref(null)
@@ -135,6 +142,73 @@ function saveMaterialsSection() {
   materialsModalOpen.value = false
 }
 
+function openCandidate(candidate) {
+  activeCandidate.value = candidate
+  candidateDraft.value = String(candidate?.value || '')
+  candidateFeedback.value = ''
+  candidateModalOpen.value = true
+}
+
+function toggleCandidate(fieldKey) {
+  selectedCandidateKeys.value = selectedCandidateKeys.value.includes(fieldKey)
+    ? selectedCandidateKeys.value.filter(key => key !== fieldKey)
+    : [...selectedCandidateKeys.value, fieldKey]
+}
+
+function patchCandidateInRun(updated) {
+  if (!updated?.candidates || !run.value) return
+  run.value = { ...run.value, candidates: updated.candidates }
+  if (activeCandidate.value?.field_key) {
+    activeCandidate.value = updated.candidates.find(
+      candidate => candidate.field_key === activeCandidate.value.field_key,
+    ) || activeCandidate.value
+    candidateDraft.value = String(activeCandidate.value.value || '')
+  }
+}
+
+async function saveCandidateEdit() {
+  if (!run.value?.run_id || !activeCandidate.value?.field_key || !candidateDraft.value.trim()) {
+    message.warning('候选内容不能为空')
+    return
+  }
+  candidateSaving.value = true
+  try {
+    const updated = await updateAssetAppraisalCandidate(
+      run.value.run_id,
+      activeCandidate.value.field_key,
+      candidateDraft.value.trim(),
+    )
+    patchCandidateInRun(updated)
+    message.success('候选内容已保存')
+  } catch (error) {
+    message.error(error.message || '候选内容保存失败')
+    throw error
+  } finally {
+    candidateSaving.value = false
+  }
+}
+
+async function regenerateCandidate() {
+  if (!run.value?.run_id || !activeCandidate.value?.field_key || !candidateFeedback.value.trim()) {
+    message.warning('请先填写重新生成的反馈')
+    return
+  }
+  candidateRegenerating.value = true
+  try {
+    run.value = await regenerateAssetAppraisalCandidate(
+      run.value.run_id,
+      activeCandidate.value.field_key,
+      candidateFeedback.value.trim(),
+    )
+    candidateFeedback.value = ''
+    await refreshRun(run.value.run_id)
+  } catch (error) {
+    message.error(error.message || '候选内容重新生成失败')
+  } finally {
+    candidateRegenerating.value = false
+  }
+}
+
 async function checkOcrCache(file) {
   ocrCache.value = { checking: true, hit: false, source: '' }
   try {
@@ -154,12 +228,27 @@ function clearPoll() {
 async function refreshRun(runId) {
   try {
     run.value = await getAssetAppraisalRun(runId)
+    if (activeCandidate.value?.field_key) {
+      const refreshedCandidate = (run.value.candidates || []).find(
+        candidate => candidate.field_key === activeCandidate.value.field_key,
+      )
+      if (refreshedCandidate) {
+        activeCandidate.value = refreshedCandidate
+        candidateDraft.value = String(refreshedCandidate.value || '')
+      }
+    }
     if (['queued', 'running'].includes(run.value.status)) {
       pollTimer = window.setTimeout(() => refreshRun(runId), RUN_STATUS_REFRESH_MS)
     } else if (run.value.status === 'awaiting_selection') {
-      selectedCandidateKeys.value = (run.value.candidates || [])
+      const availableKeys = (run.value.candidates || [])
         .filter(item => item.available !== false)
         .map(item => item.field_key)
+      if (!candidateSelectionInitialized.value) {
+        selectedCandidateKeys.value = availableKeys
+        candidateSelectionInitialized.value = true
+      } else {
+        selectedCandidateKeys.value = selectedCandidateKeys.value.filter(key => availableKeys.includes(key))
+      }
     } else if (run.value.status === 'completed') {
     message.success(t('asset.completeMessage'))
     }
@@ -178,6 +267,7 @@ async function submit() {
   submitting.value = true
   run.value = null
   selectedCandidateKeys.value = []
+  candidateSelectionInitialized.value = false
   try {
     const result = await createAssetAppraisalRun().mutationFn({
       auditMaterials: files.auditMaterials,
@@ -344,14 +434,53 @@ onBeforeUnmount(clearPoll)
           <strong>{{ t('asset.candidateIssues') }}</strong>
           <div v-for="issue in readableIssues" :key="issue">{{ issue }}</div>
         </div>
-        <a-checkbox-group v-model:value="selectedCandidateKeys" class="candidate-list">
-          <div v-for="candidate in run.candidates" :key="candidate.field_key" class="candidate-item">
-            <a-checkbox :value="candidate.field_key" :disabled="candidate.available === false">{{ candidate.field_name || candidate.field_key }}</a-checkbox>
-            <span v-if="candidate.location_ids?.length" class="candidate-location">{{ candidate.location_ids.join('、') }}</span>
-            <div class="candidate-value">{{ candidate.available === false ? '暂无可用证据；不写入时将保留黄色 XXX。' : candidate.value }}</div>
-          </div>
-        </a-checkbox-group>
-        <a-button type="primary" :loading="submitting" @click="confirmCandidates">{{ t('asset.confirmCandidates') }}</a-button>
+        <div class="candidate-grid">
+          <article
+            v-for="candidate in run.candidates"
+            :key="candidate.field_key"
+            :class="['candidate-card', { 'candidate-card-selected': selectedCandidateKeys.includes(candidate.field_key) }]"
+          >
+            <div class="candidate-card-head">
+              <button type="button" class="candidate-card-title" @click="openCandidate(candidate)">
+                {{ candidate.field_name || candidate.field_key }}
+              </button>
+              <a-button
+                size="small"
+                :disabled="candidate.available === false"
+                :type="selectedCandidateKeys.includes(candidate.field_key) ? 'primary' : 'default'"
+                @click="toggleCandidate(candidate.field_key)"
+              >
+                {{ selectedCandidateKeys.includes(candidate.field_key) ? '已选择' : '选择' }}
+              </a-button>
+            </div>
+            <div v-if="candidate.location_ids?.length" class="candidate-location">{{ candidate.location_ids.join('、') }}</div>
+            <div class="candidate-value">{{ candidate.available === false ? '暂无可用证据；点击标题查看详情。' : candidate.value }}</div>
+            <button type="button" class="candidate-edit-link" @click="openCandidate(candidate)">查看、编辑或反馈重生成</button>
+          </article>
+        </div>
+        <a-modal
+          v-model:open="candidateModalOpen"
+          :title="activeCandidate?.field_name || '候选内容'"
+          :ok-text="'保存修改'"
+          cancel-text="关闭"
+          :width="820"
+          :confirm-loading="candidateSaving"
+          @ok="saveCandidateEdit"
+        >
+          <a-form layout="vertical">
+            <a-form-item label="候选内容">
+              <a-textarea v-model:value="candidateDraft" :rows="12" placeholder="可以直接修改候选内容" />
+            </a-form-item>
+            <a-form-item label="给 LLM 的反馈（可选）">
+              <a-textarea v-model:value="candidateFeedback" :rows="4" placeholder="例如：补充产品应用场景，按行业、客户和竞争格局分段" />
+            </a-form-item>
+            <a-button type="dashed" :loading="candidateRegenerating" @click="regenerateCandidate">根据反馈重新生成当前模块</a-button>
+          </a-form>
+        </a-modal>
+        <div class="candidate-selection-actions">
+          <span>已选择 {{ selectedCandidateKeys.length }} / {{ run.candidates?.length || 0 }} 个模块</span>
+          <a-button type="primary" :loading="submitting" @click="confirmCandidates">{{ t('asset.confirmCandidates') }}</a-button>
+        </div>
       </div>
     </a-card>
   </main>
@@ -403,10 +532,16 @@ h1 { margin:8px 0 8px; font-size:34px; color:var(--c2m-text-primary); }
 .result-artifact { margin-bottom:20px; }
 .result-issues { margin-bottom:20px; white-space:pre-wrap; }
 .candidate-panel { margin-top:16px; display:grid; gap:14px; }
-.candidate-list { display:grid; gap:12px; }
-.candidate-item { padding:12px; border:1px solid var(--c2m-border-light); border-radius:10px; background:#fbfdff; }
-.candidate-value { margin:8px 0 0 24px; color:var(--c2m-text-secondary); white-space:pre-wrap; line-height:1.65; }
-.candidate-location { margin-left:10px; color:var(--c2m-text-secondary); font-size:12px; }
+.candidate-grid { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:12px; }
+.candidate-card { min-width:0; padding:13px 14px; border:1px solid var(--c2m-border-light); border-radius:12px; background:#fbfdff; transition:border-color .2s, box-shadow .2s; }
+.candidate-card-selected { border-color:#91caff; background:#f0f7ff; box-shadow:0 4px 14px rgba(22,119,255,.1); }
+.candidate-card-head { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; }
+.candidate-card-title { padding:0; border:0; background:transparent; color:var(--c2m-text-primary); font-weight:700; line-height:1.45; text-align:left; cursor:pointer; }
+.candidate-card-title:hover, .candidate-edit-link:hover { color:var(--c2m-color-primary); }
+.candidate-value { max-height:96px; margin:9px 0 0; overflow:hidden; color:var(--c2m-text-secondary); white-space:pre-wrap; line-height:1.6; font-size:12px; }
+.candidate-location { margin-top:6px; color:var(--c2m-text-secondary); font-size:11px; }
+.candidate-edit-link { margin-top:9px; padding:0; border:0; background:transparent; color:var(--c2m-color-primary); font-size:12px; cursor:pointer; }
+.candidate-selection-actions { display:flex; align-items:center; justify-content:space-between; gap:12px; color:var(--c2m-text-secondary); font-size:12px; }
 .candidate-issues { padding:12px; border-radius:10px; background:#fffbe6; color:#8c6d1f; font-size:12px; line-height:1.7; }
 .node-progress { display:grid; gap:0; margin:6px 0 20px; }
 .node-step { display:flex; gap:12px; position:relative; padding:0 0 18px; }
@@ -433,5 +568,5 @@ h1 { margin:8px 0 8px; font-size:34px; color:var(--c2m-text-primary); }
 .substep-failed .substep-icon { background:#fff1f0; color:#cf1322; }
 .substep-failed .substep-status { color:#cf1322; }
 @keyframes substep-pulse { 50% { opacity:.45; transform:scale(.85); } }
-@media (max-width: 900px) { .workspace-grid { grid-template-columns:1fr; } .topbar, .run-bar { flex-direction:column; } .form-row, .form-row.three, .source-strategy-grid, .upload-grid, .node1-entry-grid { grid-template-columns:1fr; } }
+@media (max-width: 900px) { .workspace-grid { grid-template-columns:1fr; } .topbar, .run-bar { flex-direction:column; } .form-row, .form-row.three, .source-strategy-grid, .upload-grid, .node1-entry-grid, .candidate-grid { grid-template-columns:1fr; } }
 </style>

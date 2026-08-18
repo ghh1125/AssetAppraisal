@@ -63,6 +63,81 @@ def test_finishing_candidate_node_closes_steps_replayed_during_fill():
     assert all(step["status"] != "running" for step in node["steps"])
 
 
+def test_update_candidate_payload_changes_only_requested_module(tmp_path):
+    path = tmp_path / "llm候选内容.json"
+    path.write_text(
+        json.dumps(
+            {
+                "candidates": [
+                    {"field_key": "main_products", "value": "旧产品"},
+                    {"field_key": "industry_overview", "value": "行业"},
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    payload = api_server._update_candidate_payload(path, "main_products", "新产品")
+
+    assert payload["candidates"][0]["value"] == "新产品"
+    assert payload["candidates"][1]["value"] == "行业"
+
+
+def test_regenerate_candidate_endpoint_queues_single_module(monkeypatch, tmp_path):
+    api_server.JOBS.clear()
+    api_server.RUNS_ROOT = tmp_path
+    run_id = "candidate-regenerate"
+    api_server.JOBS[run_id] = {
+        "run_id": run_id,
+        "status": "awaiting_selection",
+        "candidates": [{"field_key": "main_products", "value": "旧产品"}],
+        "selection_context": {"use_glm": True},
+    }
+    captured = {}
+
+    def fake_regenerate(run_id_arg, field_key, feedback):
+        captured.update(run_id=run_id_arg, field_key=field_key, feedback=feedback)
+
+    monkeypatch.setattr(api_server, "_execute_regenerate_candidate", fake_regenerate)
+    response = TestClient(api_server.app).post(
+        f"/api/v1/asset-appraisal/runs/{run_id}/candidates/main_products/regenerate",
+        data={"feedback": "补充产品应用场景"},
+    )
+
+    assert response.status_code == 202
+    assert captured == {
+        "run_id": run_id,
+        "field_key": "main_products",
+        "feedback": "补充产品应用场景",
+    }
+
+
+def test_edit_candidate_endpoint_persists_user_text(monkeypatch, tmp_path):
+    api_server.JOBS.clear()
+    api_server.RUNS_ROOT = tmp_path
+    run_id = "candidate-edit"
+    run_dir = tmp_path / run_id
+    run_dir.mkdir()
+    (run_dir / "llm候选内容.json").write_text(
+        json.dumps({"candidates": [{"field_key": "main_products", "value": "旧产品"}]}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    api_server.JOBS[run_id] = {
+        "run_id": run_id,
+        "status": "awaiting_selection",
+        "candidates": [{"field_key": "main_products", "value": "旧产品"}],
+    }
+
+    response = TestClient(api_server.app).post(
+        f"/api/v1/asset-appraisal/runs/{run_id}/candidates/main_products/edit",
+        data={"value": "人工修改后的产品描述"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["candidates"][0]["value"] == "人工修改后的产品描述"
+
+
 def test_second_node_substeps_follow_the_actual_parse_review_and_candidate_order():
     states = api_server._initial_node_states()
     node = next(item for item in states if item["key"] == "ocr_llm_candidates")

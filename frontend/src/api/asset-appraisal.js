@@ -49,3 +49,21 @@ export function selectAssetAppraisalCandidates(runId, selectedFields) {
   form.append('selected_fields', JSON.stringify(selectedFields || {}))
   return postForm(`/asset-appraisal/runs/${encodeURIComponent(runId)}/select`, form)
 }
+
+export function updateAssetAppraisalCandidate(runId, fieldKey, value) {
+  const form = new FormData()
+  form.append('value', value || '')
+  return postForm(
+    `/asset-appraisal/runs/${encodeURIComponent(runId)}/candidates/${encodeURIComponent(fieldKey)}/edit`,
+    form,
+  )
+}
+
+export function regenerateAssetAppraisalCandidate(runId, fieldKey, feedback) {
+  const form = new FormData()
+  form.append('feedback', feedback || '')
+  return postForm(
+    `/asset-appraisal/runs/${encodeURIComponent(runId)}/candidates/${encodeURIComponent(fieldKey)}/regenerate`,
+    form,
+  )
+}

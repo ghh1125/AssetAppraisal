@@ -39,3 +39,13 @@ test('opens node one input sections in compact dialogs and hides file-only sourc
   assert.match(source, /v-if="showUploadField\(field\)"/)
   assert.match(source, /form\.registry_info_strategy/)
 })
+
+test('renders compact candidate cards with persisted edit and feedback regeneration actions', () => {
+  assert.match(source, /candidate-grid/)
+  assert.match(source, /openCandidate\(candidate\)/)
+  assert.match(source, /toggleCandidate\(candidate\.field_key\)/)
+  assert.match(source, /saveCandidateEdit/)
+  assert.match(source, /regenerateCandidate/)
+  assert.match(source, /candidateFeedback/)
+  assert.match(source, /candidate-card-title/)
+})

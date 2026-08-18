@@ -72,6 +72,9 @@ def test_candidate_node_pauses_before_word_is_written(tmp_path: Path) -> None:
     )
 
     assert result.candidate_path is not None and result.candidate_path.exists()
+    evidence_path = tmp_path / "llm候选证据.json"
+    assert evidence_path.exists()
+    assert json.loads(evidence_path.read_text(encoding="utf-8"))["selected_modules"]
     assert not result.report_path.exists()
     trace = json.loads((tmp_path / "workflow_trace.json").read_text(encoding="utf-8"))
     assert [node["node_name"] for node in trace["nodes"]] == [

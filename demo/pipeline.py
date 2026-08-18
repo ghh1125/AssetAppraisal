@@ -2179,6 +2179,11 @@ def run_pipeline(
                 for item in [*normalized["text_blocks"], *normalized["table_cells"]]
             ] + structured_evidence,
         }
+        if prepare_only:
+            # Keep the exact, already-filtered evidence used for the first
+            # candidate generation so a later single-module regeneration can
+            # use the same source set without rerunning OCR and Excel parsing.
+            write_json(output_dir / "llm候选证据.json", llm_evidence)
         candidate_count = len(llm_request_modules) + (1 if "company_profile_section" in llm_allowed else 0)
         emit_progress(
             "ocr_llm_candidates",

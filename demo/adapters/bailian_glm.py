@@ -681,16 +681,22 @@ class BailianYellowNarrativeAdapter:
     def generate(self, evidence: dict[str, Any]) -> tuple[dict[str, str], list[str]]:
         selected_modules = evidence.get("selected_modules")
         if isinstance(selected_modules, list):
-            requested = [
-                field_key
-                for field_key in FIELD_ORDER
-                if field_key == "company_profile_section"
-                or field_key in selected_modules
-            ]
+            regenerate_field = str(evidence.get("regenerate_field", "") or "")
+            requested = (
+                [regenerate_field]
+                if regenerate_field in ALLOWED_FIELDS
+                else [
+                    field_key
+                    for field_key in FIELD_ORDER
+                    if field_key == "company_profile_section"
+                    or field_key in selected_modules
+                ]
+            )
             values: dict[str, str] = {}
             issues: list[str] = []
             all_evidence = list(evidence.get("evidence", []))
             target_context = self._target_context(all_evidence)
+            feedback = str(evidence.get("feedback", "") or "").strip()
             for field_key in requested:
                 field_evidence = self._relevant_evidence(field_key, all_evidence)
                 if not field_evidence:
@@ -706,6 +712,8 @@ class BailianYellowNarrativeAdapter:
                     "target_context": target_context,
                     "evidence": field_evidence,
                 }
+                if feedback:
+                    field_payload["user_feedback"] = feedback
                 try:
                     payload = self._request(
                         field_payload,
