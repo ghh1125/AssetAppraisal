@@ -842,7 +842,16 @@ def test_glm_failure_returns_empty_fields_without_exposing_api_key():
 
 
 def test_word_comment_locator_accepts_only_a_real_candidate_id():
-    client = FakeClient(json.dumps({"candidate_id": "C2", "reason": "科目和期间一致"}))
+    client = FakeClient(
+        json.dumps(
+            {
+                "candidate_id": "C2",
+                "location_status": "accept",
+                "reason": "科目和期间一致",
+                "comment": "【取数复核】该金额位于2024年度销售费用行，请按来源证据核对。",
+            }
+        )
+    )
     adapter = BailianYellowNarrativeAdapter(
         client=client,
         api_key="test-key",
@@ -875,7 +884,16 @@ def test_word_comment_locator_accepts_only_a_real_candidate_id():
 
 
 def test_word_comment_locator_rejects_an_invented_candidate_id():
-    client = FakeClient(json.dumps({"candidate_id": "INVENTED", "reason": ""}))
+    client = FakeClient(
+        json.dumps(
+            {
+                "candidate_id": "INVENTED",
+                "location_status": "accept",
+                "reason": "",
+                "comment": "不应接受的批注",
+            }
+        )
+    )
     adapter = BailianYellowNarrativeAdapter(
         client=client,
         api_key="test-key",
@@ -896,6 +914,7 @@ def test_word_comment_agent_returns_real_location_and_human_comment():
         json.dumps(
             {
                 "candidate_id": "C2",
+                "location_status": "accept",
                 "comment": "【数据不一致，需人工复核】报告采用审计PDF第10页的100.00元；Excel对照值为90.00元，请核对口径。",
                 "reason": "科目和期间一致",
             }
@@ -929,6 +948,7 @@ def test_word_comment_agent_returns_real_location_and_human_comment():
 
     assert result is not None
     assert result["candidate_id"] == "C2"
+    assert result["location_status"] == "accept"
     assert "审计PDF第10页" in result["comment"]
     request = json.loads(client.request["kwargs"]["json"]["messages"][-1]["content"])
     assert request["review_target"]["pdf"]["location"] == "第10页 资产负债表"

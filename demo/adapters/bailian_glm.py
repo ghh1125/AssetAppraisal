@@ -386,7 +386,7 @@ class BailianYellowNarrativeAdapter:
         candidates: list[dict[str, Any]],
         recommended_candidate_ids: list[str] | None = None,
     ) -> dict[str, str] | None:
-        """Select a real Word anchor and draft the reviewer-facing comment."""
+        """Validate one exact Word value position and draft its review comment."""
         if not candidates or not self.comment_locator_prompt:
             return None
         request = build_word_comment_locator_request(

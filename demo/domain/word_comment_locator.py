@@ -28,8 +28,6 @@ def build_word_comment_locator_request(
                 "period_text": str(item.get("period_text", ""))[:300],
                 "table_context": str(item.get("table_context", ""))[:500],
                 "matched_value": str(item.get("matched_value", "")),
-                "candidate_kind": str(item.get("candidate_kind", "value")),
-                "anchor_text": str(item.get("anchor_text", ""))[:500],
             }
         )
     allowed_ids = {item["candidate_id"] for item in candidate_rows}
@@ -77,17 +75,30 @@ def validate_word_comment_draft_response(
     *,
     allowed_candidate_ids: Iterable[str],
 ) -> dict[str, str] | None:
-    """Accept a real Word location plus a human-readable review comment."""
+    """Accept an exact value location, validation status and readable comment."""
     allowed = {str(item) for item in allowed_candidate_ids if str(item)}
     if not isinstance(payload, dict):
         return None
     candidate_id = str(payload.get("candidate_id", "")).strip()
-    if candidate_id not in allowed:
+    location_status = str(payload.get("location_status", "")).strip()
+    if location_status not in {"accept", "needs_review"}:
         return None
     comment = str(payload.get("comment", "")).strip()
     reason = str(payload.get("reason", "")).strip()
+    if not candidate_id:
+        # The model may reject every exact numeric occurrence.  The caller
+        # then skips this annotation rather than moving it to a row/header.
+        return {
+            "candidate_id": "",
+            "location_status": "needs_review",
+            "comment": comment[:2000],
+            "reason": reason[:500],
+        }
+    if candidate_id not in allowed or not comment:
+        return None
     return {
         "candidate_id": candidate_id,
+        "location_status": location_status,
         "comment": comment[:2000],
         "reason": reason[:500],
     }

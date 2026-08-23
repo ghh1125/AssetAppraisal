@@ -605,7 +605,7 @@ def test_llm_confirms_one_existing_duplicate_amount_location(tmp_path: Path):
     )
 
 
-def test_ambiguous_amount_keeps_review_comment_when_llm_cannot_confirm(tmp_path: Path):
+def test_ambiguous_amount_is_skipped_when_llm_cannot_confirm_exact_value(tmp_path: Path):
     class RejectingSelector:
         def locate_word_comment_target(self, review_item, candidates, recommended_candidate_ids):
             return None
@@ -622,20 +622,20 @@ def test_ambiguous_amount_keeps_review_comment_when_llm_cannot_confirm(tmp_path:
         location_selector=RejectingSelector(),
     )
 
-    assert len(applied) == 1
+    assert applied == []
     with zipfile.ZipFile(output) as archive:
-        comments_xml = archive.read("word/comments.xml").decode("utf-8")
-    assert "数据不一致，需人工复核" in comments_xml
+        assert "word/comments.xml" not in archive.namelist()
 
 
-def test_llm_selects_anchor_and_writes_final_human_comment(tmp_path: Path):
+def test_llm_validates_exact_value_and_writes_final_human_comment(tmp_path: Path):
     class ReviewingSelector:
         def locate_word_review_comment(self, review_item, candidates, recommended_candidate_ids):
-            row_anchor = next(
-                item for item in candidates if item.get("candidate_kind") == "text_anchor"
+            exact_value = next(
+                item for item in candidates if "销售费用" in item["paragraph_text"]
             )
             return {
-                "candidate_id": row_anchor["candidate_id"],
+                "candidate_id": exact_value["candidate_id"],
+                "location_status": "accept",
                 "comment": "【数据不一致，需人工复核】2024年度销售费用的PDF值为0.00元，Excel对照值为1.00元，请核对期间、口径和单位。",
                 "reason": "销售费用段落与目标字段一致",
             }
@@ -661,11 +661,55 @@ def test_llm_selects_anchor_and_writes_final_human_comment(tmp_path: Path):
 
     assert len(applied) == 1
     assert applied[0]["comment_generated_by_llm"] is True
-    assert applied[0]["word_candidate_kind"] == "text_anchor"
+    assert applied[0]["word_candidate_kind"] == "value"
+    assert applied[0]["location_review_status"] == "accept"
     with zipfile.ZipFile(output) as archive:
         comments_xml = archive.read("word/comments.xml").decode("utf-8")
     assert "2024年度销售费用的PDF值为0.00元" in comments_xml
     assert "sales_expense" not in comments_xml
+
+
+def test_llm_rejects_rule_match_marks_exact_value_red_and_explains_reason(tmp_path: Path):
+    class NeedsReviewSelector:
+        def locate_word_review_comment(self, review_item, candidates, recommended_candidate_ids):
+            assert len(recommended_candidate_ids) == 1
+            return {
+                "candidate_id": recommended_candidate_ids[0],
+                "location_status": "needs_review",
+                "comment": "【定位复核提示】金额已定位到销售费用行，但期间表头不完整，请人工确认是否2024年度。",
+                "reason": "期间表头不完整",
+            }
+
+    output = tmp_path / "llm-needs-review.docx"
+    document = Document()
+    document.add_paragraph("销售费用：0.00")
+    document.save(output)
+
+    applied = annotate_source_conflicts(
+        output,
+        [
+            {
+                "review_kind": "excel_fallback",
+                "field_key": "sales_expense",
+                "field_name": "销售费用 / 2024年度",
+                "excel_value": "0.00",
+                "word_context_hint": "销售费用",
+            }
+        ],
+        location_selector=NeedsReviewSelector(),
+    )
+
+    assert len(applied) == 1
+    assert applied[0]["location_review_status"] == "needs_review"
+    reopened = Document(output)
+    assert any(
+        run.font.color.rgb == RGBColor(0xC0, 0x00, 0x00)
+        for run in reopened.paragraphs[0].runs
+        if run.text == "0.00"
+    )
+    with zipfile.ZipFile(output) as archive:
+        comments_xml = archive.read("word/comments.xml").decode("utf-8")
+    assert "期间表头不完整" in comments_xml
 
 
 def test_multiple_findings_at_same_word_location_become_review_items(tmp_path: Path):
@@ -705,3 +749,34 @@ def test_multiple_findings_at_same_word_location_become_review_items(tmp_path: P
     assert comments_xml.count("<w:comment w:id=") == 1
     assert "复核项 2：" in comments_xml
     assert document_xml.count("commentRangeStart") == 1
+
+
+def test_distinct_values_in_same_paragraph_keep_separate_comment_ranges(tmp_path: Path):
+    output = tmp_path / "separate-value-comments.docx"
+    document = Document()
+    document.add_paragraph("账面值100.00，评估值120.00")
+    document.save(output)
+
+    applied = annotate_source_conflicts(
+        output,
+        [
+            {
+                "field_key": "book_value",
+                "field_name": "账面值",
+                "pdf_value": "100.00",
+                "excel_value": "90.00",
+            },
+            {
+                "field_key": "appraised_value",
+                "field_name": "评估值",
+                "pdf_value": "120.00",
+                "excel_value": "110.00",
+            },
+        ],
+    )
+
+    assert len(applied) == 2
+    assert applied[0]["comment_id"] != applied[1]["comment_id"]
+    with zipfile.ZipFile(output) as archive:
+        document_xml = archive.read("word/document.xml").decode("utf-8")
+    assert document_xml.count("commentRangeStart") == 2
