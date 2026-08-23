@@ -28,6 +28,8 @@ def build_word_comment_locator_request(
                 "period_text": str(item.get("period_text", ""))[:300],
                 "table_context": str(item.get("table_context", ""))[:500],
                 "matched_value": str(item.get("matched_value", "")),
+                "candidate_kind": str(item.get("candidate_kind", "value")),
+                "anchor_text": str(item.get("anchor_text", ""))[:500],
             }
         )
     allowed_ids = {item["candidate_id"] for item in candidate_rows}
@@ -49,9 +51,45 @@ def build_word_comment_locator_request(
             "expected_row_label": str(review_item.get("word_context_hint", "")),
             "expected_period_label": str(review_item.get("word_period_hint", "")),
             "mapped_word_anchors": review_item.get("word_anchor_hints", []),
+            "review_kind": str(review_item.get("review_kind", "")),
+            "review_status": str(review_item.get("review_status", "")),
+            "review_reason": str(review_item.get("review_reason", "")),
+            "pdf": {
+                "file": str(review_item.get("pdf_file", "")),
+                "location": str(review_item.get("pdf_locator", "")),
+                "value": str(review_item.get("pdf_value", "")),
+                "uploaded": bool(review_item.get("pdf_uploaded")),
+            },
+            "excel": {
+                "file": str(review_item.get("excel_file", "")),
+                "location": str(review_item.get("excel_locator", "")),
+                "value": str(review_item.get("excel_value", "")),
+            },
+            "existing_review_summary": str(review_item.get("llm_comment", ""))[:2000],
         },
         "recommended_candidate_ids": recommended,
         "candidates": candidate_rows,
+    }
+
+
+def validate_word_comment_draft_response(
+    payload: Any,
+    *,
+    allowed_candidate_ids: Iterable[str],
+) -> dict[str, str] | None:
+    """Accept a real Word location plus a human-readable review comment."""
+    allowed = {str(item) for item in allowed_candidate_ids if str(item)}
+    if not isinstance(payload, dict):
+        return None
+    candidate_id = str(payload.get("candidate_id", "")).strip()
+    if candidate_id not in allowed:
+        return None
+    comment = str(payload.get("comment", "")).strip()
+    reason = str(payload.get("reason", "")).strip()
+    return {
+        "candidate_id": candidate_id,
+        "comment": comment[:2000],
+        "reason": reason[:500],
     }
 
 
@@ -66,8 +104,6 @@ def validate_word_comment_locator_response(
         return None
     candidate_id = str(payload.get("candidate_id", "")).strip()
     if not candidate_id:
-        # A valid empty choice means the model actively rejected every real
-        # candidate.  Keep it distinct from a failed/unparseable request.
         return ""
     if candidate_id not in allowed:
         return None

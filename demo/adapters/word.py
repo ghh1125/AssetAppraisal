@@ -705,11 +705,160 @@ def _word_numeric_candidates(
                     "period_text": period_text,
                     "table_context": table_context,
                     "matched_value": run_target,
+                    "candidate_kind": "value",
+                    "anchor_text": run_target,
                     "_run": run,
                     "_root": root,
                 }
             )
     return candidates
+
+
+def _first_visible_run(container, preferred: str = ""):
+    runs = [run for run in container.xpath(".//w:r", namespaces=NS) if _run_text(run).strip()]
+    if preferred:
+        for run in runs:
+            if _contains_semantic_text(_run_text(run), preferred):
+                return run
+    return runs[0] if runs else None
+
+
+def _word_semantic_anchor_candidates(
+    roots: dict[str, Any],
+    review_item: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Find real row labels/headings that remain safe when a value is repeated."""
+    anchors: list[dict[str, Any]] = []
+    seen: set[tuple[str, int]] = set()
+    expected_table = review_item.get("word_table_index")
+    try:
+        expected_table = int(expected_table) if expected_table not in (None, "") else None
+    except (TypeError, ValueError):
+        expected_table = None
+    row_hint = str(review_item.get("word_context_hint", "")).strip()
+    paragraph_hint = str(review_item.get("word_paragraph_hint", "")).strip()
+    field_name = str(review_item.get("field_name", "")).strip()
+    terms = [row_hint, paragraph_hint]
+    terms.extend(
+        item.strip()
+        for item in re.split(r"[/／|｜·：:]", field_name)
+        if len(_compact_match_text(item)) >= 2
+    )
+    for item in review_item.get("word_anchor_hints", []) or []:
+        if isinstance(item, dict):
+            terms.extend([str(item.get("prefix", "")).strip(), str(item.get("suffix", "")).strip()])
+    terms = [item for item in terms if item]
+
+    for part in sorted(roots):
+        root = roots[part]
+        paragraphs = root.xpath(".//w:p", namespaces=NS)
+        tables = root.xpath(".//w:tbl", namespaces=NS)
+        for table_index, table in enumerate(tables, 1):
+            if expected_table is not None and table_index != expected_table:
+                continue
+            rows = table.xpath("./w:tr", namespaces=NS)
+            row_matches: list[tuple[int, Any, str]] = []
+            for row_index, row in enumerate(rows, 1):
+                row_text = re.sub(
+                    r"\s+", " ", "".join(row.xpath(".//w:t/text()", namespaces=NS))
+                ).strip()
+                if row_hint and _contains_semantic_text(row_text, row_hint):
+                    row_matches.append((row_index, row, row_text))
+            if not row_matches and expected_table == table_index and rows:
+                # A mapped table is itself a safe review anchor even when the
+                # exact row label changed between template versions.
+                row_matches = [(1, rows[0], re.sub(
+                    r"\s+", " ", "".join(rows[0].xpath(".//w:t/text()", namespaces=NS))
+                ).strip())]
+            for row_index, row, row_text in row_matches:
+                cells = row.xpath("./w:tc", namespaces=NS)
+                cell = cells[0] if cells else row
+                run = _first_visible_run(cell, row_hint)
+                if run is None:
+                    continue
+                run_id = (part, id(run))
+                if run_id in seen:
+                    continue
+                seen.add(run_id)
+                paragraph_nodes = run.xpath("ancestor::w:p[1]", namespaces=NS)
+                paragraph = paragraph_nodes[0] if paragraph_nodes else None
+                paragraph_index = next(
+                    (index for index, node in enumerate(paragraphs, 1) if node is paragraph),
+                    0,
+                )
+                column_index = 1
+                coordinates = _table_coordinates(root, paragraph) if paragraph is not None else None
+                if coordinates is not None:
+                    _, _, column_index = coordinates
+                text = _run_text(run).strip()
+                anchors.append(
+                    {
+                        "candidate_id": (
+                            f"{Path(part).stem.upper()}-T{table_index:02d}-R{row_index:02d}"
+                            f"-C{int(column_index):02d}-A-ROW"
+                        ),
+                        "part": part,
+                        "paragraph_index": paragraph_index,
+                        "paragraph_text": _paragraph_text(paragraph).strip() if paragraph is not None else text,
+                        "table_index": table_index,
+                        "row_index": row_index,
+                        "column_index": column_index,
+                        "row_text": row_text,
+                        "period_text": "",
+                        "table_context": _word_table_context(table),
+                        "matched_value": text,
+                        "candidate_kind": "row_label_anchor",
+                        "anchor_text": text,
+                        "_run": run,
+                        "_root": root,
+                    }
+                )
+
+        for paragraph_index, paragraph in enumerate(paragraphs, 1):
+            paragraph_text = re.sub(r"\s+", " ", _paragraph_text(paragraph)).strip()
+            matching_term = next(
+                (term for term in terms if _contains_semantic_text(paragraph_text, term)),
+                "",
+            )
+            if not matching_term:
+                continue
+            run = _first_visible_run(paragraph, matching_term)
+            if run is None or (part, id(run)) in seen:
+                continue
+            seen.add((part, id(run)))
+            coordinates = _table_coordinates(root, paragraph)
+            table_index = row_index = column_index = ""
+            row_text = period_text = table_context = ""
+            if coordinates is not None:
+                table_index, row_index, column_index = coordinates
+                table = paragraph.xpath("ancestor::w:tbl[1]", namespaces=NS)[0]
+                rows = table.xpath("./w:tr", namespaces=NS)
+                if row_index <= len(rows):
+                    row_text = re.sub(
+                        r"\s+", " ", "".join(rows[row_index - 1].xpath(".//w:t/text()", namespaces=NS))
+                    ).strip()
+                table_context = _word_table_context(table)
+            text = _run_text(run).strip()
+            anchors.append(
+                {
+                    "candidate_id": f"{Path(part).stem.upper()}-P{paragraph_index:04d}-A-TEXT",
+                    "part": part,
+                    "paragraph_index": paragraph_index,
+                    "paragraph_text": paragraph_text,
+                    "table_index": table_index,
+                    "row_index": row_index,
+                    "column_index": column_index,
+                    "row_text": row_text,
+                    "period_text": period_text,
+                    "table_context": table_context,
+                    "matched_value": text,
+                    "candidate_kind": "text_anchor",
+                    "anchor_text": text,
+                    "_run": run,
+                    "_root": root,
+                }
+            )
+    return anchors
 
 
 def _semantic_word_candidates(
@@ -773,6 +922,96 @@ def _matched_run_value(run, target: str) -> str | None:
     return None
 
 
+def _document_review_anchor(roots: dict[str, Any]) -> dict[str, Any] | None:
+    """Return a last-resort real heading anchor so review findings are never lost."""
+    for part in sorted(roots, key=lambda item: (item != "word/document.xml", item)):
+        root = roots[part]
+        paragraphs = root.xpath(".//w:p", namespaces=NS)
+        for paragraph_index, paragraph in enumerate(paragraphs, 1):
+            run = _first_visible_run(paragraph)
+            if run is None:
+                continue
+            text = _run_text(run).strip()
+            if not text:
+                continue
+            return {
+                "candidate_id": f"{Path(part).stem.upper()}-P{paragraph_index:04d}-A-DOCUMENT",
+                "part": part,
+                "paragraph_index": paragraph_index,
+                "paragraph_text": _paragraph_text(paragraph).strip(),
+                "table_index": "",
+                "row_index": "",
+                "column_index": "",
+                "row_text": "",
+                "period_text": "",
+                "table_context": "",
+                "matched_value": text,
+                "candidate_kind": "document_review_anchor",
+                "anchor_text": text,
+                "_run": run,
+                "_root": root,
+            }
+    return None
+
+
+def _default_review_comment(conflict: dict[str, Any], target: str) -> str:
+    """Service-unavailable fallback; normal online runs use the LLM draft."""
+    is_fallback = conflict.get("review_kind") == "excel_fallback"
+    is_llm_review = conflict.get("review_kind") == "llm_review"
+    if conflict.get("llm_comment"):
+        value = str(conflict["llm_comment"]).strip()
+        return value if value.startswith("【") else f"【LLM取数复核提示】{value}"
+    if is_llm_review:
+        return (
+            "【LLM取数复核提示】"
+            f"{conflict.get('field_name') or conflict.get('field_key', '')}当前采用 {target}，"
+            f"来源为《{conflict.get('excel_file', '')}》“{conflict.get('excel_locator', '')}”。"
+            f"复核结论为 {conflict.get('review_status', '')}："
+            f"{conflict.get('review_reason', '') or '请核对原始材料'}。"
+        )
+    if is_fallback:
+        pdf_status = (
+            "审计PDF已上传，但该字段未从PDF中可靠识别，尚未完成PDF对照。"
+            if conflict.get("pdf_uploaded")
+            else "本次未上传审计PDF，尚未完成PDF对照。"
+        )
+        return (
+            "【数据来源提示】"
+            f"{conflict.get('field_name') or conflict.get('field_key', '')}暂采用"
+            f"《{conflict.get('excel_file', '')}》“{conflict.get('excel_locator', '')}”中的 {target}。"
+            f"{pdf_status}请核对期间、单体/合并口径、金额单位及科目定义。"
+        )
+    return (
+        "【数据不一致，需人工复核】"
+        f"{conflict.get('field_name') or conflict.get('field_key', '')}在审计PDF"
+        f"《{conflict.get('pdf_file', '')}》“{conflict.get('pdf_locator', '')}”中的识别值为 {target}，"
+        f"与《{conflict.get('excel_file', '')}》“{conflict.get('excel_locator', '')}”中的"
+        f" {conflict.get('excel_value', '')} 不一致。报告按来源规则采用PDF值；"
+        "请核对期间、单体/合并口径、金额单位及科目定义后确认。"
+    )
+
+
+def _append_comment_paragraph(comment, text: str, *, item_number: int = 1) -> None:
+    paragraph = etree.SubElement(comment, f"{{{W}}}p")
+    run = etree.SubElement(paragraph, f"{{{W}}}r")
+    value = etree.SubElement(run, f"{{{W}}}t")
+    value.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+    prefix = "" if item_number == 1 else f"复核项 {item_number}："
+    value.text = f"{prefix}{text.strip()}"
+
+
+def _candidate_location_key(candidate: dict[str, Any]) -> tuple[Any, ...]:
+    if candidate.get("table_index") not in (None, ""):
+        return (
+            candidate.get("part"),
+            "table",
+            candidate.get("table_index"),
+            candidate.get("row_index"),
+            candidate.get("column_index"),
+        )
+    return (candidate.get("part"), "paragraph", candidate.get("paragraph_index"))
+
+
 def annotate_source_conflicts(
     path: Path,
     conflicts: list[dict[str, Any]],
@@ -811,7 +1050,7 @@ def annotate_source_conflicts(
         part: etree.fromstring(contents[part])
         for part in sorted(name for name in contents if PART_RE.fullmatch(name))
     }
-    used_candidate_ids: set[str] = set()
+    comment_groups: dict[tuple[Any, ...], dict[str, Any]] = {}
 
     for conflict in actionable:
         is_fallback = conflict.get("review_kind") == "excel_fallback"
@@ -819,11 +1058,13 @@ def annotate_source_conflicts(
         target = str(
             conflict.get("excel_value") if (is_fallback or is_llm_review) else conflict.get("pdf_value")
         ).strip()
-        all_candidates = [
-            item
-            for item in _word_numeric_candidates(roots, target)
-            if item["candidate_id"] not in used_candidate_ids
-        ]
+        numeric_candidates = _word_numeric_candidates(roots, target)
+        anchor_candidates = _word_semantic_anchor_candidates(roots, conflict)
+        all_candidates = [*numeric_candidates, *anchor_candidates]
+        if not all_candidates:
+            fallback_anchor = _document_review_anchor(roots)
+            if fallback_anchor is not None:
+                all_candidates = [fallback_anchor]
         has_semantic_hints = any(
             conflict.get(key)
             for key in (
@@ -834,43 +1075,74 @@ def annotate_source_conflicts(
                 "word_anchor_hints",
             )
         )
-        semantic_candidates = (
-            _semantic_word_candidates(conflict, all_candidates)
+        semantic_numeric = (
+            _semantic_word_candidates(conflict, numeric_candidates)
             if has_semantic_hints
             else []
         )
+        semantic_anchors = (
+            _semantic_word_candidates(conflict, anchor_candidates)
+            if has_semantic_hints
+            else []
+        )
+        recommended_candidates = semantic_numeric or semantic_anchors
         chosen: dict[str, Any] | None = None
+        llm_comment = ""
         if location_selector is not None and hasattr(
+            location_selector, "locate_word_review_comment"
+        ):
+            try:
+                selection = location_selector.locate_word_review_comment(
+                    conflict,
+                    [
+                        {key: value for key, value in item.items() if not key.startswith("_")}
+                        for item in all_candidates
+                    ],
+                    [item["candidate_id"] for item in recommended_candidates],
+                )
+            except Exception:
+                selection = None
+            if isinstance(selection, dict):
+                selected_id = str(selection.get("candidate_id", ""))
+                llm_comment = str(selection.get("comment", "")).strip()
+                chosen = next(
+                    (item for item in all_candidates if item["candidate_id"] == selected_id),
+                    None,
+                )
+        elif location_selector is not None and hasattr(
             location_selector, "locate_word_comment_target"
         ):
-            # A unique rule match is still checked by the model.  When rules
-            # cannot decide, the model receives the complete list of real
-            # Word candidates and may select only one of their IDs.
-            llm_candidates = semantic_candidates if len(semantic_candidates) == 1 else all_candidates
             try:
                 selected_id = location_selector.locate_word_comment_target(
                     conflict,
                     [
                         {key: value for key, value in item.items() if not key.startswith("_")}
-                        for item in llm_candidates
+                        for item in all_candidates
                     ],
-                    [item["candidate_id"] for item in semantic_candidates],
+                    [item["candidate_id"] for item in recommended_candidates],
                 )
             except Exception:
                 selected_id = None
             chosen = next(
-                (item for item in llm_candidates if item["candidate_id"] == selected_id),
+                (item for item in all_candidates if item["candidate_id"] == selected_id),
                 None,
             )
-            if selected_id is None and len(semantic_candidates) == 1:
-                # The model service was unavailable or returned an invalid
-                # structure.  A unique table+row+period match is safe to keep;
-                # an explicit empty selection still rejects the location.
-                chosen = semantic_candidates[0]
-        elif len(semantic_candidates) == 1:
-            chosen = semantic_candidates[0]
-        elif not has_semantic_hints and len(all_candidates) == 1:
-            chosen = all_candidates[0]
+        if chosen is None:
+            # LLM outages or malformed output must not erase a review finding.
+            # Prefer a uniquely identified value, then a real semantic anchor,
+            # and only then the first stable real candidate.
+            for pool in (
+                semantic_numeric,
+                semantic_anchors,
+                numeric_candidates if len(numeric_candidates) == 1 else [],
+                anchor_candidates if len(anchor_candidates) == 1 else [],
+                anchor_candidates,
+                numeric_candidates,
+                all_candidates,
+            ):
+                if pool:
+                    chosen = pool[0]
+                    break
         if chosen is None:
             continue
         part = str(chosen["part"])
@@ -885,76 +1157,50 @@ def annotate_source_conflicts(
         parent = run.getparent()
         if parent is None or parent.tag != f"{{{W}}}p":
             continue
-        comment_id = str(next_id)
-        next_id += 1
+        location_key = _candidate_location_key(chosen)
         # Excel-only fallback is a source-availability note and stays black.
-        has_llm_warning = bool(conflict.get("llm_comment")) and conflict.get(
+        has_llm_warning = bool(llm_comment or conflict.get("llm_comment")) and conflict.get(
             "review_status"
         ) in {"needs_review", "conflict"}
         if (not is_fallback or has_llm_warning) and not (
             is_llm_review and conflict.get("review_status") == "missing"
         ):
             _set_red_font(run)
-        start = etree.Element(f"{{{W}}}commentRangeStart")
-        start.set(f"{{{W}}}id", comment_id)
-        end = etree.Element(f"{{{W}}}commentRangeEnd")
-        end.set(f"{{{W}}}id", comment_id)
-        parent.insert(parent.index(run), start)
-        parent.insert(parent.index(run) + 1, end)
-        reference_run = etree.Element(f"{{{W}}}r")
-        reference = etree.SubElement(reference_run, f"{{{W}}}commentReference")
-        reference.set(f"{{{W}}}id", comment_id)
-        paragraph.insert(paragraph.index(end) + 1, reference_run)
+        review_text = llm_comment or _default_review_comment(conflict, target)
+        group = comment_groups.get(location_key)
+        if group is None:
+            comment_id = str(next_id)
+            next_id += 1
+            start = etree.Element(f"{{{W}}}commentRangeStart")
+            start.set(f"{{{W}}}id", comment_id)
+            end = etree.Element(f"{{{W}}}commentRangeEnd")
+            end.set(f"{{{W}}}id", comment_id)
+            parent.insert(parent.index(run), start)
+            parent.insert(parent.index(run) + 1, end)
+            reference_run = etree.Element(f"{{{W}}}r")
+            reference = etree.SubElement(reference_run, f"{{{W}}}commentReference")
+            reference.set(f"{{{W}}}id", comment_id)
+            paragraph.insert(paragraph.index(end) + 1, reference_run)
 
-        comment = etree.SubElement(comments, f"{{{W}}}comment")
-        comment.set(f"{{{W}}}id", comment_id)
-        comment.set(f"{{{W}}}author", "数据核对")
-        comment.set(f"{{{W}}}initials", "核对")
-        comment_paragraph = etree.SubElement(comment, f"{{{W}}}p")
-        comment_run = etree.SubElement(comment_paragraph, f"{{{W}}}r")
-        comment_text = etree.SubElement(comment_run, f"{{{W}}}t")
-        comment_text.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
-        if conflict.get("llm_comment"):
-            llm_comment = str(conflict["llm_comment"]).strip()
-            if not llm_comment.startswith("【LLM取数复核提示】"):
-                llm_comment = f"【LLM取数复核提示】{llm_comment}"
-            comment_text.text = llm_comment
-        elif is_llm_review:
-            comment_text.text = (
-                "【LLM取数复核提示】"
-                f"字段：{conflict.get('field_name') or conflict.get('field_key', '')}。"
-                f"当前值 {target} 来源于{conflict.get('excel_file', '')}"
-                f"（{conflict.get('excel_locator', '')}）。"
-                f"LLM复核结论：{conflict.get('review_status', '')}；"
-                f"原因：{conflict.get('review_reason', '') or '未说明'}。"
-                "LLM不修改金额或来源，请人工核对原始材料后确认。"
-            )
-        elif is_fallback:
-            pdf_status = (
-                "审计PDF已上传，但OCR未定位到该字段，暂无法完成交叉核对。"
-                if conflict.get("pdf_uploaded")
-                else "本次未上传审计PDF，暂无法完成交叉核对。"
-            )
-            comment_text.text = (
-                "【数据来源提示】"
-                f"字段：{conflict.get('field_name') or conflict.get('field_key', '')}。"
-                f"报告暂采用《{conflict.get('excel_file', '')}》中“{conflict.get('excel_locator', '')}”的数据 {target}。"
-                f"{pdf_status}"
-                "建议核对评估基准日、单体/合并口径、金额单位及科目定义后确认。"
-            )
+            comment = etree.SubElement(comments, f"{{{W}}}comment")
+            comment.set(f"{{{W}}}id", comment_id)
+            comment.set(f"{{{W}}}author", "数据核对")
+            comment.set(f"{{{W}}}initials", "核对")
+            _append_comment_paragraph(comment, review_text)
+            group = {"comment_id": comment_id, "comment": comment, "count": 1}
+            comment_groups[location_key] = group
         else:
-            comment_text.text = (
-                "【数据不一致，需人工复核】"
-                f"字段：{conflict.get('field_name') or conflict.get('field_key', '')}。"
-                f"审计PDF《{conflict.get('pdf_file', '')}》“{conflict.get('pdf_locator', '')}”识别值为 {target}，与《{conflict.get('excel_file', '')}》“{conflict.get('excel_locator', '')}”的"
-                f"对照值 {conflict.get('excel_value', '')} 不一致。"
-                "当前按模板来源规则采用审计PDF值。请核对评估基准日、单体/合并口径、金额单位及科目定义；确认后保留或更正。"
+            comment_id = str(group["comment_id"])
+            group["count"] = int(group["count"]) + 1
+            _append_comment_paragraph(
+                group["comment"],
+                review_text,
+                item_number=int(group["count"]),
             )
         contents[part] = etree.tostring(
             root, xml_declaration=True, encoding="UTF-8", standalone=True
         )
         changed_parts.add(part)
-        used_candidate_ids.add(str(chosen["candidate_id"]))
         applied.append(
             {
                 **conflict,
@@ -964,6 +1210,9 @@ def annotate_source_conflicts(
                 "word_table_index": chosen.get("table_index", ""),
                 "word_row_index": chosen.get("row_index", ""),
                 "word_column_index": chosen.get("column_index", ""),
+                "word_candidate_kind": chosen.get("candidate_kind", "value"),
+                "comment_group_item": int(group["count"]),
+                "comment_generated_by_llm": bool(llm_comment),
             }
         )
 

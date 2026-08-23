@@ -18,7 +18,7 @@ from demo.domain.pdf_page_locator import (
 )
 from demo.domain.word_comment_locator import (
     build_word_comment_locator_request,
-    validate_word_comment_locator_response,
+    validate_word_comment_draft_response,
 )
 
 
@@ -372,7 +372,21 @@ class BailianYellowNarrativeAdapter:
         candidates: list[dict[str, Any]],
         recommended_candidate_ids: list[str] | None = None,
     ) -> str | None:
-        """Confirm one existing Word position without creating new positions."""
+        """Backward-compatible wrapper returning only the selected location."""
+        result = self.locate_word_review_comment(
+            review_item,
+            candidates,
+            recommended_candidate_ids,
+        )
+        return None if result is None else result["candidate_id"]
+
+    def locate_word_review_comment(
+        self,
+        review_item: dict[str, Any],
+        candidates: list[dict[str, Any]],
+        recommended_candidate_ids: list[str] | None = None,
+    ) -> dict[str, str] | None:
+        """Select a real Word anchor and draft the reviewer-facing comment."""
         if not candidates or not self.comment_locator_prompt:
             return None
         request = build_word_comment_locator_request(
@@ -400,7 +414,7 @@ class BailianYellowNarrativeAdapter:
             response_payload = json.loads(response.json()["choices"][0]["message"]["content"])
         except Exception:
             return None
-        return validate_word_comment_locator_response(
+        return validate_word_comment_draft_response(
             response_payload,
             allowed_candidate_ids=[item["candidate_id"] for item in request["candidates"]],
         )

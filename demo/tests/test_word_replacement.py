@@ -513,7 +513,7 @@ def test_excel_fallback_adds_note_without_turning_value_red(tmp_path: Path):
         document_xml = archive.read("word/document.xml").decode("utf-8")
         comments_xml = archive.read("word/comments.xml").decode("utf-8")
     assert 'w:val="C00000"' not in document_xml
-    assert "审计PDF已上传，但OCR未定位到该字段" in comments_xml
+    assert "审计PDF已上传，但该字段未从PDF中可靠识别" in comments_xml
     assert "资产基础法.xlsx" in comments_xml
     assert "汇总表!C8" in comments_xml
 
@@ -605,7 +605,7 @@ def test_llm_confirms_one_existing_duplicate_amount_location(tmp_path: Path):
     )
 
 
-def test_ambiguous_amount_is_not_annotated_when_llm_cannot_confirm(tmp_path: Path):
+def test_ambiguous_amount_keeps_review_comment_when_llm_cannot_confirm(tmp_path: Path):
     class RejectingSelector:
         def locate_word_comment_target(self, review_item, candidates, recommended_candidate_ids):
             return None
@@ -622,6 +622,86 @@ def test_ambiguous_amount_is_not_annotated_when_llm_cannot_confirm(tmp_path: Pat
         location_selector=RejectingSelector(),
     )
 
-    assert applied == []
+    assert len(applied) == 1
     with zipfile.ZipFile(output) as archive:
-        assert "word/comments.xml" not in archive.namelist()
+        comments_xml = archive.read("word/comments.xml").decode("utf-8")
+    assert "数据不一致，需人工复核" in comments_xml
+
+
+def test_llm_selects_anchor_and_writes_final_human_comment(tmp_path: Path):
+    class ReviewingSelector:
+        def locate_word_review_comment(self, review_item, candidates, recommended_candidate_ids):
+            row_anchor = next(
+                item for item in candidates if item.get("candidate_kind") == "text_anchor"
+            )
+            return {
+                "candidate_id": row_anchor["candidate_id"],
+                "comment": "【数据不一致，需人工复核】2024年度销售费用的PDF值为0.00元，Excel对照值为1.00元，请核对期间、口径和单位。",
+                "reason": "销售费用段落与目标字段一致",
+            }
+
+    output = tmp_path / "llm-comment.docx"
+    document = Document()
+    document.add_paragraph("管理费用：0.00")
+    document.add_paragraph("销售费用：0.00")
+    document.save(output)
+
+    applied = annotate_source_conflicts(
+        output,
+        [
+            {
+                "field_key": "sales_expense",
+                "field_name": "销售费用 / 2024年度",
+                "pdf_value": "0.00",
+                "excel_value": "1.00",
+            }
+        ],
+        location_selector=ReviewingSelector(),
+    )
+
+    assert len(applied) == 1
+    assert applied[0]["comment_generated_by_llm"] is True
+    assert applied[0]["word_candidate_kind"] == "text_anchor"
+    with zipfile.ZipFile(output) as archive:
+        comments_xml = archive.read("word/comments.xml").decode("utf-8")
+    assert "2024年度销售费用的PDF值为0.00元" in comments_xml
+    assert "sales_expense" not in comments_xml
+
+
+def test_multiple_findings_at_same_word_location_become_review_items(tmp_path: Path):
+    output = tmp_path / "grouped-comments.docx"
+    document = Document()
+    document.add_paragraph("账面净资产：100.00")
+    document.save(output)
+
+    applied = annotate_source_conflicts(
+        output,
+        [
+            {
+                "field_key": "book_net_assets",
+                "field_name": "账面净资产",
+                "pdf_value": "100.00",
+                "excel_value": "90.00",
+                "pdf_file": "审计报告.pdf",
+                "excel_file": "资产基础法.xlsx",
+            },
+            {
+                "review_kind": "llm_review",
+                "field_key": "book_net_assets",
+                "field_name": "账面净资产",
+                "excel_value": "100.00",
+                "review_status": "needs_review",
+                "review_reason": "金额单位需要确认",
+            },
+        ],
+    )
+
+    assert len(applied) == 2
+    assert applied[0]["comment_id"] == applied[1]["comment_id"]
+    assert applied[1]["comment_group_item"] == 2
+    with zipfile.ZipFile(output) as archive:
+        comments_xml = archive.read("word/comments.xml").decode("utf-8")
+        document_xml = archive.read("word/document.xml").decode("utf-8")
+    assert comments_xml.count("<w:comment w:id=") == 1
+    assert "复核项 2：" in comments_xml
+    assert document_xml.count("commentRangeStart") == 1

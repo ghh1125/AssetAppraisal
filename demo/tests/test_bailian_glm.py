@@ -889,3 +889,47 @@ def test_word_comment_locator_rejects_an_invented_candidate_id():
     )
 
     assert selected is None
+
+
+def test_word_comment_agent_returns_real_location_and_human_comment():
+    client = FakeClient(
+        json.dumps(
+            {
+                "candidate_id": "C2",
+                "comment": "【数据不一致，需人工复核】报告采用审计PDF第10页的100.00元；Excel对照值为90.00元，请核对口径。",
+                "reason": "科目和期间一致",
+            }
+        )
+    )
+    adapter = BailianYellowNarrativeAdapter(
+        client=client,
+        api_key="test-key",
+        prompt="叙述规则",
+        review_model="review-model",
+        comment_locator_prompt="批注生成规则",
+    )
+
+    result = adapter.locate_word_review_comment(
+        {
+            "field_key": "book_net_assets",
+            "field_name": "账面净资产",
+            "pdf_value": "100.00",
+            "pdf_file": "审计报告.pdf",
+            "pdf_locator": "第10页 资产负债表",
+            "excel_value": "90.00",
+            "excel_file": "资产基础法.xlsx",
+            "excel_locator": "汇总表!C8",
+        },
+        [
+            {"candidate_id": "C1", "paragraph_text": "总资产：100.00"},
+            {"candidate_id": "C2", "paragraph_text": "账面净资产：100.00"},
+        ],
+        ["C2"],
+    )
+
+    assert result is not None
+    assert result["candidate_id"] == "C2"
+    assert "审计PDF第10页" in result["comment"]
+    request = json.loads(client.request["kwargs"]["json"]["messages"][-1]["content"])
+    assert request["review_target"]["pdf"]["location"] == "第10页 资产负债表"
+    assert request["review_target"]["excel"]["location"] == "汇总表!C8"
