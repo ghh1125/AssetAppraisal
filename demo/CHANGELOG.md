@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- LLM 取数复核新增失败关闭兜底：模型超时、返回空结果、非法状态或结构无效时，程序保留原值和来源并自动生成 `needs_review` 及人工核对批注；规则已标记多来源差异或非主来源时，不接受模型返回 `accept`。
 - LLM 取数复核的 `needs_review`/`conflict` 结果现在会在对应 Word 数值旁标红并写入带“LLM取数复核提示”标签的批注；`missing` 不改数值颜色，继续由黄色 `XXX` 规则处理。PDF 页码定位先使用 OCR 表格/文本证据，未定位项再由受限页码定位器从已有 OCR 页码中选择，用户界面不再显示“页码未定位”或内部 OCR 工作簿名称。
 - 默认百炼模型更新为 `deepseek-v4-pro-0813`；请求失败时仍自动降级到 `qwen3.8-max`，也可通过环境变量或项目配置覆盖。
 - 新增 `evidence_review.v1` LLM 取数复核：对每个已找到的 PDF/OCR 或 Excel 逻辑字段/表格审阅候选的科目、期间、单位、口径和定位证据，返回受控的 `accept/needs_review/conflict/missing` 结论。模型没有改数、改来源或新增字段权限；疑点只以 Word 批注提示人工复核，并保留完整 JSON 记录。

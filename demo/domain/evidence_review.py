@@ -15,6 +15,42 @@ from demo.domain.source_labels import human_source_locator
 REVIEW_STATUSES = frozenset({"accept", "needs_review", "conflict", "missing"})
 
 
+def needs_review_fallback(
+    field: dict[str, Any],
+    *,
+    reason: str = "LLM未返回有效复核结论，已转为人工复核。",
+) -> dict[str, str]:
+    """Return a closed-world review when the model response is unusable.
+
+    The fallback deliberately preserves the already selected value and source.
+    It only guarantees that every submitted evidence item has a controlled
+    review status and a human-readable review action.
+    """
+    field_key = str(field.get("field_key", ""))
+    field_name = str(field.get("field_name") or field_key or "该字段")
+    selected = field.get("selected", {})
+    selected = selected if isinstance(selected, dict) else {}
+    source_file = str(selected.get("source_file", "")).strip()
+    source_locator = str(selected.get("source_locator", "")).strip()
+    if source_file and source_locator:
+        source_text = f"当前值来源于《{source_file}》“{source_locator}”"
+    elif source_file:
+        source_text = f"当前值来源于《{source_file}》"
+    elif source_locator:
+        source_text = f"当前值定位为“{source_locator}”"
+    else:
+        source_text = "当前值缺少可核验的来源定位"
+    return {
+        "field_key": field_key,
+        "status": "needs_review",
+        "reason": reason,
+        "comment": (
+            f"{field_name}的自动取数复核未返回有效结论。{source_text}。"
+            "请人工核对原始材料中的科目、期间、金额单位及单体/合并口径后确认。"
+        ),
+    }
+
+
 def _review_locator(source_file: Any, locator: Any, field_name: str) -> str:
     """Expose a reviewer-facing table name instead of an internal field key."""
     return human_source_locator(str(source_file or ""), locator, field_name)

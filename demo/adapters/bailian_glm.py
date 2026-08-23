@@ -9,6 +9,7 @@ from demo.domain.llm_config import DEFAULT_LLM_FALLBACK_MODEL, DEFAULT_LLM_MODEL
 from demo.domain.mapping_agent import mapping_agent_request, validate_mapping_agent_response
 from demo.domain.evidence_review import (
     build_evidence_review_request,
+    needs_review_fallback,
     validate_evidence_review_response,
 )
 from demo.domain.pdf_page_locator import (
@@ -250,6 +251,9 @@ class BailianYellowNarrativeAdapter:
             except Exception as primary_error:
                 if not self.fallback_model or self.fallback_model == self.review_model:
                     all_issues.append(f"LLM 取数复核调用失败：{field_name}：{primary_error}")
+                    all_reviews.append(needs_review_fallback(field))
+                    if progress_callback is not None:
+                        progress_callback(index, total, field_name)
                     continue
                 try:
                     fallback_payload = {**payload, "model": self.fallback_model}
@@ -268,6 +272,9 @@ class BailianYellowNarrativeAdapter:
                     all_issues.append(
                         f"LLM 取数复核调用失败：{field_name}：主模型 {primary_error}；降级模型 {fallback_error}"
                     )
+                    all_reviews.append(needs_review_fallback(field))
+                    if progress_callback is not None:
+                        progress_callback(index, total, field_name)
                     continue
             reviews, issues = validate_evidence_review_response(
                 response_payload,
@@ -275,6 +282,17 @@ class BailianYellowNarrativeAdapter:
             )
             if not reviews:
                 all_issues.append(f"LLM 取数复核未返回有效结论：{field_name}")
+                reviews = [needs_review_fallback(field)]
+            elif field.get("review_required") and reviews[0].get("status") == "accept":
+                all_issues.append(
+                    f"LLM 取数复核字段 {field_name} 存在规则标记的差异，但模型返回 accept，已转为 needs_review"
+                )
+                reviews = [
+                    needs_review_fallback(
+                        field,
+                        reason="规则已识别到多来源差异或非主来源，需人工复核。",
+                    )
+                ]
             all_reviews.extend(reviews)
             all_issues.extend(issues)
             if progress_callback is not None:

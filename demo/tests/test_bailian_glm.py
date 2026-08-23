@@ -89,6 +89,11 @@ class EvidenceReviewClient:
         )
 
 
+class FailingClient:
+    def post(self, *args, **kwargs):
+        raise RuntimeError("service unavailable")
+
+
 def test_glm_accepts_only_seven_fields_and_known_evidence_ids():
     client = FakeClient(
         json.dumps(
@@ -238,6 +243,104 @@ def test_glm_reviews_extracted_data_without_returning_a_replacement_value():
     assert issues == []
     assert client.request["kwargs"]["json"]["model"] == "review-model"
     assert client.request["kwargs"]["json"]["messages"][0]["content"] == "复核规则"
+
+
+def test_glm_uses_needs_review_when_evidence_review_response_is_invalid():
+    client = FakeClient(json.dumps({"reviews": []}, ensure_ascii=False))
+    adapter = BailianYellowNarrativeAdapter(
+        client=client,
+        api_key="test-key",
+        prompt="叙述规则",
+        review_prompt="复核规则",
+        review_model="review-model",
+    )
+
+    reviews, issues = adapter.review_extracted_evidence(
+        [
+            {
+                "field_key": "book_net_assets",
+                "selected": {
+                    "value": "100.00",
+                    "source_kind": "pdf_ocr",
+                    "source_file": "审计报告.pdf",
+                    "source_locator": "第10页",
+                },
+                "candidates": [],
+            }
+        ],
+        {"book_net_assets": "账面净资产"},
+    )
+
+    assert reviews[0]["status"] == "needs_review"
+    assert "《审计报告.pdf》" in reviews[0]["comment"]
+    assert any("未返回有效结论" in issue for issue in issues)
+
+
+def test_glm_uses_needs_review_when_evidence_review_call_fails():
+    adapter = BailianYellowNarrativeAdapter(
+        client=FailingClient(),
+        api_key="test-key",
+        prompt="叙述规则",
+        review_prompt="复核规则",
+        review_model="review-model",
+    )
+
+    reviews, issues = adapter.review_extracted_evidence(
+        [
+            {
+                "field_key": "book_net_assets",
+                "selected": {
+                    "value": "100.00",
+                    "source_kind": "pdf_ocr",
+                    "source_file": "审计报告.pdf",
+                    "source_locator": "第10页",
+                },
+                "candidates": [],
+            }
+        ],
+        {"book_net_assets": "账面净资产"},
+    )
+
+    assert reviews[0]["status"] == "needs_review"
+    assert any("调用失败" in issue for issue in issues)
+
+
+def test_glm_rejects_accept_when_rules_require_review():
+    client = EvidenceReviewClient()
+    adapter = BailianYellowNarrativeAdapter(
+        client=client,
+        api_key="test-key",
+        prompt="叙述规则",
+        review_prompt="复核规则",
+        review_model="review-model",
+    )
+
+    reviews, issues = adapter.review_extracted_evidence(
+        [
+            {
+                "field_key": "book_net_assets",
+                "selected": {
+                    "value": "100.00",
+                    "source_kind": "pdf_ocr",
+                    "source_file": "审计报告.pdf",
+                    "source_locator": "第10页",
+                },
+                "candidates": [
+                    {
+                        "value": "90.00",
+                        "source_kind": "asset_workbook",
+                        "source_file": "资产基础法.xlsx",
+                        "source_locator": "汇总表!C8",
+                    }
+                ],
+            }
+        ],
+        {"book_net_assets": "账面净资产"},
+    )
+
+    assert reviews[0]["status"] == "needs_review"
+    assert "多来源差异" in reviews[0]["reason"]
+    assert any("已转为 needs_review" in issue for issue in issues)
 
 
 def test_glm_reviews_each_table_group_with_a_separate_request():

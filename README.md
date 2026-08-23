@@ -83,7 +83,7 @@ APPRAISAL_LLM_FALLBACK_MODEL=qwen3.8-max
 - `demo/prompts/evidence_review.v1.txt`
 - `demo/prompts/evidence_review_output.v1.json`
 
-取数复核会对每个已找到的 PDF/OCR 或 Excel 逻辑字段/表格，读取候选的科目、期间、单位、口径、文件及定位信息，返回 `accept`、`needs_review`、`conflict` 或 `missing`。它没有修改数值、修改来源或生成新字段的权限；出现 `needs_review`/`conflict`/`missing` 时，报告会增加带“LLM取数复核提示”标签的 Word 批注供人工查看。批注使用真实文件名、PDF 页码或 Excel 工作表，不展示 `asset_scope_summary_table`、`income_workbook.xlsx` 等内部临时名称。
+取数复核会对每个已找到的 PDF/OCR 或 Excel 逻辑字段/表格，读取候选的科目、期间、单位、口径、文件及定位信息，返回 `accept`、`needs_review`、`conflict` 或 `missing`。它没有修改数值、修改来源或生成新字段的权限；出现 `needs_review`/`conflict`/`missing` 时，报告会增加带“LLM取数复核提示”标签的 Word 批注供人工查看。模型超时、返回空结果、非法状态或不符合结构时，程序会保留原值和原来源并自动生成 `needs_review`，保证每个已送审字段都有受控状态；规则已经标记存在差异的字段也不接受模型返回的 `accept`。批注使用真实文件名、PDF 页码或 Excel 工作表，不展示 `asset_scope_summary_table`、`income_workbook.xlsx` 等内部临时名称。
 
 修改模型时应保持输出字段白名单和 JSON 结构；如项目后端配置了参考资料，叙述生成会先检索相关证据，再按公司概况和六个可选模块分别调用模型并在本地校验证据编号。参考报告不是前端运行时上传项。业务代码不会读取 `.env` 创建全局客户端，凭证只在 CLI/API 入口注入。
 

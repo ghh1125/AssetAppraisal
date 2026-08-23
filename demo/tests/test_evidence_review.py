@@ -1,5 +1,6 @@
 from demo.domain.evidence_review import (
     build_evidence_review_request,
+    needs_review_fallback,
     validate_evidence_review_response,
 )
 from demo.pipeline import _llm_review_rows
@@ -119,6 +120,24 @@ def test_evidence_review_rejects_unknown_fields_and_invalid_statuses():
         }
     ]
     assert len(issues) == 2
+
+
+def test_needs_review_fallback_preserves_human_readable_source():
+    review = needs_review_fallback(
+        {
+            "field_key": "book_net_assets",
+            "field_name": "账面净资产",
+            "selected": {
+                "source_file": "审计报告.pdf",
+                "source_locator": "审计 PDF 第10页：资产负债表",
+            },
+        }
+    )
+
+    assert review["status"] == "needs_review"
+    assert review["field_key"] == "book_net_assets"
+    assert "《审计报告.pdf》" in review["comment"]
+    assert "第10页" in review["comment"]
 
 
 def test_llm_review_rows_include_every_resolved_pdf_or_workbook_field_once():
