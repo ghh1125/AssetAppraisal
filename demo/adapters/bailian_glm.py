@@ -16,6 +16,10 @@ from demo.domain.pdf_page_locator import (
     build_pdf_page_locator_request,
     validate_pdf_page_locator_response,
 )
+from demo.domain.word_comment_locator import (
+    build_word_comment_locator_request,
+    validate_word_comment_locator_response,
+)
 
 
 ALLOWED_FIELDS = frozenset(
@@ -107,6 +111,7 @@ class BailianYellowNarrativeAdapter:
         mapping_prompt: str = "",
         review_prompt: str = "",
         review_model: str = "",
+        comment_locator_prompt: str = "",
     ):
         self.client = client
         self.api_key = api_key
@@ -118,6 +123,7 @@ class BailianYellowNarrativeAdapter:
         self.mapping_prompt = mapping_prompt
         self.review_prompt = review_prompt
         self.review_model = review_model or model
+        self.comment_locator_prompt = comment_locator_prompt
 
     def _request_for_model(
         self,
@@ -358,6 +364,45 @@ class BailianYellowNarrativeAdapter:
             response_payload,
             allowed_field_keys=field_keys,
             available_pages=available_pages,
+        )
+
+    def locate_word_comment_target(
+        self,
+        review_item: dict[str, Any],
+        candidates: list[dict[str, Any]],
+        recommended_candidate_ids: list[str] | None = None,
+    ) -> str | None:
+        """Confirm one existing Word position without creating new positions."""
+        if not candidates or not self.comment_locator_prompt:
+            return None
+        request = build_word_comment_locator_request(
+            review_item,
+            candidates,
+            recommended_candidate_ids or [],
+        )
+        payload = {
+            "model": self.review_model,
+            "messages": [
+                {"role": "system", "content": self.comment_locator_prompt},
+                {"role": "user", "content": json.dumps(request, ensure_ascii=False)},
+            ],
+            "response_format": {"type": "json_object"},
+        }
+        if self.review_model not in THINKING_ONLY_MODELS:
+            payload["enable_thinking"] = False
+        try:
+            response = self.client.post(
+                f"{self.base_url}/chat/completions",
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                json=payload,
+            )
+            response.raise_for_status()
+            response_payload = json.loads(response.json()["choices"][0]["message"]["content"])
+        except Exception:
+            return None
+        return validate_word_comment_locator_response(
+            response_payload,
+            allowed_candidate_ids=[item["candidate_id"] for item in request["candidates"]],
         )
 
     @staticmethod

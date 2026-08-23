@@ -839,3 +839,53 @@ def test_glm_failure_returns_empty_fields_without_exposing_api_key():
     assert "主模型 deepseek-v4-pro-0813 失败" in issues[0]
     assert "降级模型 qwen3.8-max 失败" in issues[0]
     assert "secret-never-print" not in issues[0]
+
+
+def test_word_comment_locator_accepts_only_a_real_candidate_id():
+    client = FakeClient(json.dumps({"candidate_id": "C2", "reason": "科目和期间一致"}))
+    adapter = BailianYellowNarrativeAdapter(
+        client=client,
+        api_key="test-key",
+        prompt="叙述规则",
+        review_model="review-model",
+        comment_locator_prompt="批注定位规则",
+    )
+
+    selected = adapter.locate_word_comment_target(
+        {
+            "field_key": "historical_income_statement_table",
+            "field_name": "历史利润表 / 销售费用 / 2024年度",
+            "pdf_value": "0.00",
+            "word_table_index": 5,
+            "word_context_hint": "销售费用",
+            "word_period_hint": "2024年度",
+        },
+        [
+            {"candidate_id": "C1", "row_text": "销售费用", "period_text": "2023年度"},
+            {"candidate_id": "C2", "row_text": "销售费用", "period_text": "2024年度"},
+        ],
+        ["C2"],
+    )
+
+    assert selected == "C2"
+    payload = client.request["kwargs"]["json"]
+    assert payload["model"] == "review-model"
+    user_request = json.loads(payload["messages"][-1]["content"])
+    assert user_request["recommended_candidate_ids"] == ["C2"]
+
+
+def test_word_comment_locator_rejects_an_invented_candidate_id():
+    client = FakeClient(json.dumps({"candidate_id": "INVENTED", "reason": ""}))
+    adapter = BailianYellowNarrativeAdapter(
+        client=client,
+        api_key="test-key",
+        prompt="叙述规则",
+        comment_locator_prompt="批注定位规则",
+    )
+
+    selected = adapter.locate_word_comment_target(
+        {"field_key": "book_net_assets", "pdf_value": "100.00"},
+        [{"candidate_id": "REAL", "paragraph_text": "账面净资产：100.00"}],
+    )
+
+    assert selected is None

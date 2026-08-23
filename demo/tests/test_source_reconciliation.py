@@ -123,6 +123,8 @@ def test_excel_fallback_produces_a_non_conflict_word_note():
                     "excel_locator": "《资产基础法.xlsx》工作表“汇总表”（账面净资产）",
                 "pdf_uploaded": False,
                 "word_context_hint": "",
+                "word_period_hint": "",
+                "word_paragraph_hint": "账面净资产",
         }
     ]
 
@@ -290,6 +292,7 @@ def test_reviewable_table_conflict_keeps_row_and_period_for_word_annotation():
             "pdf_value": "100.00",
             "excel_value": "90.00",
             "word_context_hint": "一、营业收入",
+            "word_period_hint": "2024年度",
             "pdf_file": "审计报告.pdf",
                 "pdf_locator": "审计 PDF 第58页 利润表：历史利润表",
                 "excel_file": "收益法.xlsx",

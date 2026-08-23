@@ -615,18 +615,148 @@ def _isolate_run_text(run, target: str):
     return middle
 
 
-def _run_matches_conflict_context(run, context_hint: str) -> bool:
-    """Limit a repeated amount to its intended table row when possible."""
-    if not context_hint:
-        return True
-    cells = run.xpath("ancestor::w:tc[1]", namespaces=NS)
-    if not cells:
-        return True
-    row = cells[0].xpath("ancestor::w:tr[1]", namespaces=NS)
-    if not row:
-        return True
-    row_text = "".join(row[0].xpath(".//w:t/text()", namespaces=NS))
-    return context_hint in row_text
+def _compact_match_text(value: Any) -> str:
+    return re.sub(r"[\s：:，,、\\/（）()\-]", "", str(value or ""))
+
+
+def _contains_semantic_text(actual: Any, expected: Any) -> bool:
+    left, right = _compact_match_text(actual), _compact_match_text(expected)
+    return bool(left and right and (left in right or right in left))
+
+
+def _word_table_context(table) -> str:
+    """Return the nearest visible paragraph before a table."""
+    node = table.getprevious()
+    while node is not None:
+        if node.tag == f"{{{W}}}p":
+            text = re.sub(r"\s+", " ", _paragraph_text(node)).strip()
+            if text:
+                return text
+        node = node.getprevious()
+    return ""
+
+
+def _word_numeric_candidates(
+    roots: dict[str, Any],
+    target: str,
+) -> list[dict[str, Any]]:
+    """Collect every real Word occurrence and its table/row/period metadata."""
+    candidates: list[dict[str, Any]] = []
+    occurrence_counts: dict[str, int] = {}
+    for part in sorted(roots):
+        root = roots[part]
+        paragraphs = root.xpath(".//w:p", namespaces=NS)
+        runs = root.xpath(".//w:r", namespaces=NS)
+        for run in runs:
+            run_target = _matched_run_value(run, target)
+            if run_target is None:
+                continue
+            paragraph_nodes = run.xpath("ancestor::w:p[1]", namespaces=NS)
+            if not paragraph_nodes:
+                continue
+            paragraph = paragraph_nodes[0]
+            coordinates = _table_coordinates(root, paragraph)
+            table_index = row_index = column_index = ""
+            row_text = period_text = table_context = ""
+            if coordinates is not None:
+                table_index, row_index, column_index = coordinates
+                table = paragraph.xpath("ancestor::w:tbl[1]", namespaces=NS)[0]
+                table_rows = table.xpath("./w:tr", namespaces=NS)
+                if row_index <= len(table_rows):
+                    row_text = re.sub(
+                        r"\s+",
+                        " ",
+                        "".join(table_rows[row_index - 1].xpath(".//w:t/text()", namespaces=NS)),
+                    ).strip()
+                if table_rows:
+                    header_cells = table_rows[0].xpath("./w:tc", namespaces=NS)
+                    if column_index <= len(header_cells):
+                        period_text = re.sub(
+                            r"\s+",
+                            " ",
+                            "".join(header_cells[column_index - 1].xpath(".//w:t/text()", namespaces=NS)),
+                        ).strip()
+                table_context = _word_table_context(table)
+            paragraph_index = next(
+                (index for index, item in enumerate(paragraphs, 1) if item is paragraph),
+                0,
+            )
+            short = Path(part).stem.upper()
+            if table_index:
+                candidate_base = (
+                    f"{short}-T{int(table_index):02d}-R{int(row_index):02d}"
+                    f"-C{int(column_index):02d}"
+                )
+            else:
+                candidate_base = f"{short}-P{paragraph_index:04d}"
+            occurrence_counts[candidate_base] = occurrence_counts.get(candidate_base, 0) + 1
+            candidates.append(
+                {
+                    "candidate_id": (
+                        f"{candidate_base}-V{occurrence_counts[candidate_base]:02d}"
+                    ),
+                    "part": part,
+                    "paragraph_index": paragraph_index,
+                    "paragraph_text": re.sub(r"\s+", " ", _paragraph_text(paragraph)).strip(),
+                    "table_index": table_index,
+                    "row_index": row_index,
+                    "column_index": column_index,
+                    "row_text": row_text,
+                    "period_text": period_text,
+                    "table_context": table_context,
+                    "matched_value": run_target,
+                    "_run": run,
+                    "_root": root,
+                }
+            )
+    return candidates
+
+
+def _semantic_word_candidates(
+    conflict: dict[str, Any],
+    candidates: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Filter with the stable Word table, row and period identity."""
+    matched = list(candidates)
+    expected_table = conflict.get("word_table_index")
+    if expected_table not in (None, ""):
+        try:
+            expected_table = int(expected_table)
+        except (TypeError, ValueError):
+            expected_table = None
+        if expected_table is not None:
+            matched = [item for item in matched if item.get("table_index") == expected_table]
+    row_hint = str(conflict.get("word_context_hint", "")).strip()
+    if row_hint:
+        matched = [item for item in matched if _contains_semantic_text(item.get("row_text"), row_hint)]
+    period_hint = str(conflict.get("word_period_hint", "")).strip()
+    if period_hint:
+        matched = [item for item in matched if _contains_semantic_text(item.get("period_text"), period_hint)]
+    anchor_hints = conflict.get("word_anchor_hints", [])
+    if isinstance(anchor_hints, list) and anchor_hints:
+        for anchor in anchor_hints:
+            if not isinstance(anchor, dict):
+                continue
+            prefix = str(anchor.get("prefix", "")).strip()
+            suffix = str(anchor.get("suffix", "")).strip()
+            anchored = [
+                item
+                for item in matched
+                if (not prefix or _contains_semantic_text(item.get("paragraph_text"), prefix))
+                and (not suffix or _contains_semantic_text(item.get("paragraph_text"), suffix))
+            ]
+            if anchored:
+                matched = anchored
+                break
+    paragraph_hint = str(conflict.get("word_paragraph_hint", "")).strip()
+    if paragraph_hint and not anchor_hints:
+        matched = [
+            item
+            for item in matched
+            if _contains_semantic_text(item.get("paragraph_text"), paragraph_hint)
+            or _contains_semantic_text(item.get("table_context"), paragraph_hint)
+        ]
+    return matched
 
 
 def _matched_run_value(run, target: str) -> str | None:
@@ -643,7 +773,12 @@ def _matched_run_value(run, target: str) -> str | None:
     return None
 
 
-def annotate_source_conflicts(path: Path, conflicts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def annotate_source_conflicts(
+    path: Path,
+    conflicts: list[dict[str, Any]],
+    *,
+    location_selector: Any | None = None,
+) -> list[dict[str, Any]]:
     """Attach concise reconciliation notes, marking true conflicts in red.
 
     The report retains the authoritative audit-PDF value.  A red font is used
@@ -672,6 +807,11 @@ def annotate_source_conflicts(path: Path, conflicts: list[dict[str, Any]]) -> li
     next_id = max(existing_ids, default=-1) + 1
     applied: list[dict[str, Any]] = []
     changed_parts: set[str] = set()
+    roots = {
+        part: etree.fromstring(contents[part])
+        for part in sorted(name for name in contents if PART_RE.fullmatch(name))
+    }
+    used_candidate_ids: set[str] = set()
 
     for conflict in actionable:
         is_fallback = conflict.get("review_kind") == "excel_fallback"
@@ -679,106 +819,153 @@ def annotate_source_conflicts(path: Path, conflicts: list[dict[str, Any]]) -> li
         target = str(
             conflict.get("excel_value") if (is_fallback or is_llm_review) else conflict.get("pdf_value")
         ).strip()
-        matched = False
-        for part in sorted(name for name in contents if PART_RE.fullmatch(name)):
-            if matched:
-                break
-            root = etree.fromstring(contents[part])
-            for run in root.xpath(".//w:r", namespaces=NS):
-                run_target = _matched_run_value(run, target)
-                if (
-                    run_target is None
-                    or not _run_matches_conflict_context(
-                        run, str(conflict.get("word_context_hint", ""))
-                    )
-                ):
-                    continue
-                run = _isolate_run_text(run, run_target)
-                if run is None:
-                    continue
-                paragraph = run.xpath("ancestor::w:p[1]", namespaces=NS)
-                if not paragraph:
-                    continue
-                paragraph = paragraph[0]
-                parent = run.getparent()
-                if parent is None or parent.tag != f"{{{W}}}p":
-                    continue
-                comment_id = str(next_id)
-                next_id += 1
-                # Excel-only fallback is a source-availability note and stays
-                # black.  Any LLM needs_review/conflict finding is an actual
-                # review warning and must be visibly red beside its comment.
-                if not is_fallback and not (
-                    is_llm_review and conflict.get("review_status") == "missing"
-                ):
-                    _set_red_font(run)
-                start = etree.Element(f"{{{W}}}commentRangeStart")
-                start.set(f"{{{W}}}id", comment_id)
-                end = etree.Element(f"{{{W}}}commentRangeEnd")
-                end.set(f"{{{W}}}id", comment_id)
-                parent.insert(parent.index(run), start)
-                parent.insert(parent.index(run) + 1, end)
-                reference_run = etree.Element(f"{{{W}}}r")
-                reference = etree.SubElement(reference_run, f"{{{W}}}commentReference")
-                reference.set(f"{{{W}}}id", comment_id)
-                paragraph.insert(paragraph.index(end) + 1, reference_run)
-
-                comment = etree.SubElement(comments, f"{{{W}}}comment")
-                comment.set(f"{{{W}}}id", comment_id)
-                comment.set(f"{{{W}}}author", "数据核对")
-                comment.set(f"{{{W}}}initials", "核对")
-                comment_paragraph = etree.SubElement(comment, f"{{{W}}}p")
-                comment_run = etree.SubElement(comment_paragraph, f"{{{W}}}r")
-                comment_text = etree.SubElement(comment_run, f"{{{W}}}t")
-                comment_text.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
-                if conflict.get("llm_comment"):
-                    # The complete human-facing annotation comes from the
-                    # evidence-review LLM. This branch never adds a rule-
-                    # generated evidence judgement around it.  Add only a
-                    # stable visible label so reviewers can distinguish the
-                    # model's review note from the template's own comments.
-                    llm_comment = str(conflict["llm_comment"]).strip()
-                    if not llm_comment.startswith("【LLM取数复核提示】"):
-                        llm_comment = f"【LLM取数复核提示】{llm_comment}"
-                    comment_text.text = llm_comment
-                elif is_llm_review:
-                    comment_text.text = (
-                        "【LLM取数复核提示】"
-                        f"字段：{conflict.get('field_name') or conflict.get('field_key', '')}。"
-                        f"当前值 {target} 来源于{conflict.get('excel_file', '')}"
-                        f"（{conflict.get('excel_locator', '')}）。"
-                        f"LLM复核结论：{conflict.get('review_status', '')}；"
-                        f"原因：{conflict.get('review_reason', '') or '未说明'}。"
-                        "LLM不修改金额或来源，请人工核对原始材料后确认。"
-                    )
-                elif is_fallback:
-                    pdf_status = (
-                        "审计PDF已上传，但OCR未定位到该字段，暂无法完成交叉核对。"
-                        if conflict.get("pdf_uploaded")
-                        else "本次未上传审计PDF，暂无法完成交叉核对。"
-                    )
-                    comment_text.text = (
-                        "【数据来源提示】"
-                        f"字段：{conflict.get('field_name') or conflict.get('field_key', '')}。"
-                        f"报告暂采用《{conflict.get('excel_file', '')}》中“{conflict.get('excel_locator', '')}”的数据 {target}。"
-                        f"{pdf_status}"
-                        "建议核对评估基准日、单体/合并口径、金额单位及科目定义后确认。"
-                    )
-                else:
-                    comment_text.text = (
-                        "【数据不一致，需人工复核】"
-                        f"字段：{conflict.get('field_name') or conflict.get('field_key', '')}。"
-                        f"审计PDF《{conflict.get('pdf_file', '')}》“{conflict.get('pdf_locator', '')}”识别值为 {target}，与《{conflict.get('excel_file', '')}》“{conflict.get('excel_locator', '')}”的"
-                        f"对照值 {conflict.get('excel_value', '')} 不一致。"
-                        "当前按模板来源规则采用审计PDF值。请核对评估基准日、单体/合并口径、金额单位及科目定义；确认后保留或更正。"
-                    )
-                contents[part] = etree.tostring(
-                    root, xml_declaration=True, encoding="UTF-8", standalone=True
+        all_candidates = [
+            item
+            for item in _word_numeric_candidates(roots, target)
+            if item["candidate_id"] not in used_candidate_ids
+        ]
+        has_semantic_hints = any(
+            conflict.get(key)
+            for key in (
+                "word_table_index",
+                "word_context_hint",
+                "word_period_hint",
+                "word_paragraph_hint",
+                "word_anchor_hints",
+            )
+        )
+        semantic_candidates = (
+            _semantic_word_candidates(conflict, all_candidates)
+            if has_semantic_hints
+            else []
+        )
+        chosen: dict[str, Any] | None = None
+        if location_selector is not None and hasattr(
+            location_selector, "locate_word_comment_target"
+        ):
+            # A unique rule match is still checked by the model.  When rules
+            # cannot decide, the model receives the complete list of real
+            # Word candidates and may select only one of their IDs.
+            llm_candidates = semantic_candidates if len(semantic_candidates) == 1 else all_candidates
+            try:
+                selected_id = location_selector.locate_word_comment_target(
+                    conflict,
+                    [
+                        {key: value for key, value in item.items() if not key.startswith("_")}
+                        for item in llm_candidates
+                    ],
+                    [item["candidate_id"] for item in semantic_candidates],
                 )
-                changed_parts.add(part)
-                applied.append({**conflict, "part": part, "comment_id": comment_id})
-                matched = True
-                break
+            except Exception:
+                selected_id = None
+            chosen = next(
+                (item for item in llm_candidates if item["candidate_id"] == selected_id),
+                None,
+            )
+            if selected_id is None and len(semantic_candidates) == 1:
+                # The model service was unavailable or returned an invalid
+                # structure.  A unique table+row+period match is safe to keep;
+                # an explicit empty selection still rejects the location.
+                chosen = semantic_candidates[0]
+        elif len(semantic_candidates) == 1:
+            chosen = semantic_candidates[0]
+        elif not has_semantic_hints and len(all_candidates) == 1:
+            chosen = all_candidates[0]
+        if chosen is None:
+            continue
+        part = str(chosen["part"])
+        root = chosen["_root"]
+        run = _isolate_run_text(chosen["_run"], str(chosen["matched_value"]))
+        if run is None:
+            continue
+        paragraph = run.xpath("ancestor::w:p[1]", namespaces=NS)
+        if not paragraph:
+            continue
+        paragraph = paragraph[0]
+        parent = run.getparent()
+        if parent is None or parent.tag != f"{{{W}}}p":
+            continue
+        comment_id = str(next_id)
+        next_id += 1
+        # Excel-only fallback is a source-availability note and stays black.
+        has_llm_warning = bool(conflict.get("llm_comment")) and conflict.get(
+            "review_status"
+        ) in {"needs_review", "conflict"}
+        if (not is_fallback or has_llm_warning) and not (
+            is_llm_review and conflict.get("review_status") == "missing"
+        ):
+            _set_red_font(run)
+        start = etree.Element(f"{{{W}}}commentRangeStart")
+        start.set(f"{{{W}}}id", comment_id)
+        end = etree.Element(f"{{{W}}}commentRangeEnd")
+        end.set(f"{{{W}}}id", comment_id)
+        parent.insert(parent.index(run), start)
+        parent.insert(parent.index(run) + 1, end)
+        reference_run = etree.Element(f"{{{W}}}r")
+        reference = etree.SubElement(reference_run, f"{{{W}}}commentReference")
+        reference.set(f"{{{W}}}id", comment_id)
+        paragraph.insert(paragraph.index(end) + 1, reference_run)
+
+        comment = etree.SubElement(comments, f"{{{W}}}comment")
+        comment.set(f"{{{W}}}id", comment_id)
+        comment.set(f"{{{W}}}author", "数据核对")
+        comment.set(f"{{{W}}}initials", "核对")
+        comment_paragraph = etree.SubElement(comment, f"{{{W}}}p")
+        comment_run = etree.SubElement(comment_paragraph, f"{{{W}}}r")
+        comment_text = etree.SubElement(comment_run, f"{{{W}}}t")
+        comment_text.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+        if conflict.get("llm_comment"):
+            llm_comment = str(conflict["llm_comment"]).strip()
+            if not llm_comment.startswith("【LLM取数复核提示】"):
+                llm_comment = f"【LLM取数复核提示】{llm_comment}"
+            comment_text.text = llm_comment
+        elif is_llm_review:
+            comment_text.text = (
+                "【LLM取数复核提示】"
+                f"字段：{conflict.get('field_name') or conflict.get('field_key', '')}。"
+                f"当前值 {target} 来源于{conflict.get('excel_file', '')}"
+                f"（{conflict.get('excel_locator', '')}）。"
+                f"LLM复核结论：{conflict.get('review_status', '')}；"
+                f"原因：{conflict.get('review_reason', '') or '未说明'}。"
+                "LLM不修改金额或来源，请人工核对原始材料后确认。"
+            )
+        elif is_fallback:
+            pdf_status = (
+                "审计PDF已上传，但OCR未定位到该字段，暂无法完成交叉核对。"
+                if conflict.get("pdf_uploaded")
+                else "本次未上传审计PDF，暂无法完成交叉核对。"
+            )
+            comment_text.text = (
+                "【数据来源提示】"
+                f"字段：{conflict.get('field_name') or conflict.get('field_key', '')}。"
+                f"报告暂采用《{conflict.get('excel_file', '')}》中“{conflict.get('excel_locator', '')}”的数据 {target}。"
+                f"{pdf_status}"
+                "建议核对评估基准日、单体/合并口径、金额单位及科目定义后确认。"
+            )
+        else:
+            comment_text.text = (
+                "【数据不一致，需人工复核】"
+                f"字段：{conflict.get('field_name') or conflict.get('field_key', '')}。"
+                f"审计PDF《{conflict.get('pdf_file', '')}》“{conflict.get('pdf_locator', '')}”识别值为 {target}，与《{conflict.get('excel_file', '')}》“{conflict.get('excel_locator', '')}”的"
+                f"对照值 {conflict.get('excel_value', '')} 不一致。"
+                "当前按模板来源规则采用审计PDF值。请核对评估基准日、单体/合并口径、金额单位及科目定义；确认后保留或更正。"
+            )
+        contents[part] = etree.tostring(
+            root, xml_declaration=True, encoding="UTF-8", standalone=True
+        )
+        changed_parts.add(part)
+        used_candidate_ids.add(str(chosen["candidate_id"]))
+        applied.append(
+            {
+                **conflict,
+                "part": part,
+                "comment_id": comment_id,
+                "word_candidate_id": chosen["candidate_id"],
+                "word_table_index": chosen.get("table_index", ""),
+                "word_row_index": chosen.get("row_index", ""),
+                "word_column_index": chosen.get("column_index", ""),
+            }
+        )
 
     if not applied:
         return []

@@ -4,7 +4,7 @@ from pathlib import Path
 
 from docx import Document
 from docx.enum.text import WD_COLOR_INDEX
-from docx.shared import Pt
+from docx.shared import Pt, RGBColor
 
 from demo.adapters.word import (
     annotate_source_conflicts,
@@ -516,3 +516,112 @@ def test_excel_fallback_adds_note_without_turning_value_red(tmp_path: Path):
     assert "审计PDF已上传，但OCR未定位到该字段" in comments_xml
     assert "资产基础法.xlsx" in comments_xml
     assert "汇总表!C8" in comments_xml
+
+
+def test_duplicate_amount_is_located_by_table_row_and_period(tmp_path: Path):
+    output = tmp_path / "period-target.docx"
+    document = Document()
+    table = document.add_table(rows=2, cols=3)
+    table.rows[0].cells[0].text = "项目"
+    table.rows[0].cells[1].text = "2023年度"
+    table.rows[0].cells[2].text = "2024年度"
+    table.rows[1].cells[0].text = "销售费用"
+    table.rows[1].cells[1].text = "0.00"
+    table.rows[1].cells[2].text = "0.00"
+    document.save(output)
+
+    applied = annotate_source_conflicts(
+        output,
+        [
+            {
+                "field_key": "historical_income_statement_table",
+                "field_name": "历史利润表 / 销售费用 / 2024年度",
+                "pdf_value": "0.00",
+                "excel_value": "1.00",
+                "word_table_index": 1,
+                "word_context_hint": "销售费用",
+                "word_period_hint": "2024年度",
+            }
+        ],
+    )
+
+    assert len(applied) == 1
+    assert applied[0]["word_table_index"] == 1
+    assert applied[0]["word_row_index"] == 2
+    assert applied[0]["word_column_index"] == 3
+    reopened = Document(output)
+    assert all(
+        run.font.color.rgb != RGBColor(0xC0, 0x00, 0x00)
+        for run in reopened.tables[0].rows[1].cells[1].paragraphs[0].runs
+        if run.text
+    )
+    assert any(
+        run.font.color.rgb == RGBColor(0xC0, 0x00, 0x00)
+        for run in reopened.tables[0].rows[1].cells[2].paragraphs[0].runs
+        if run.text
+    )
+
+
+def test_llm_confirms_one_existing_duplicate_amount_location(tmp_path: Path):
+    class Selector:
+        def locate_word_comment_target(self, review_item, candidates, recommended_candidate_ids):
+            assert recommended_candidate_ids == []
+            return next(
+                item["candidate_id"]
+                for item in candidates
+                if "销售费用" in item["paragraph_text"]
+            )
+
+    output = tmp_path / "llm-location.docx"
+    document = Document()
+    document.add_paragraph("管理费用：0.00")
+    document.add_paragraph("销售费用：0.00")
+    document.save(output)
+
+    applied = annotate_source_conflicts(
+        output,
+        [
+            {
+                "field_key": "sales_expense",
+                "field_name": "销售费用",
+                "pdf_value": "0.00",
+                "excel_value": "1.00",
+            }
+        ],
+        location_selector=Selector(),
+    )
+
+    assert len(applied) == 1
+    reopened = Document(output)
+    assert all(
+        run.font.color.rgb != RGBColor(0xC0, 0x00, 0x00)
+        for run in reopened.paragraphs[0].runs
+        if run.text
+    )
+    assert any(
+        run.font.color.rgb == RGBColor(0xC0, 0x00, 0x00)
+        for run in reopened.paragraphs[1].runs
+        if run.text
+    )
+
+
+def test_ambiguous_amount_is_not_annotated_when_llm_cannot_confirm(tmp_path: Path):
+    class RejectingSelector:
+        def locate_word_comment_target(self, review_item, candidates, recommended_candidate_ids):
+            return None
+
+    output = tmp_path / "ambiguous-location.docx"
+    document = Document()
+    document.add_paragraph("管理费用：0.00")
+    document.add_paragraph("销售费用：0.00")
+    document.save(output)
+
+    applied = annotate_source_conflicts(
+        output,
+        [{"field_key": "sales_expense", "pdf_value": "0.00", "excel_value": "1.00"}],
+        location_selector=RejectingSelector(),
+    )
+
+    assert applied == []
+    with zipfile.ZipFile(output) as archive:
+        assert "word/comments.xml" not in archive.namelist()

@@ -82,8 +82,12 @@ APPRAISAL_LLM_FALLBACK_MODEL=qwen3.8-max
 - `demo/prompts/yellow_narratives_output.v3.json`
 - `demo/prompts/evidence_review.v1.txt`
 - `demo/prompts/evidence_review_output.v1.json`
+- `demo/prompts/word_comment_locator.v1.txt`
+- `demo/prompts/word_comment_locator_output.v1.json`
 
 取数复核会对每个已找到的 PDF/OCR 或 Excel 逻辑字段/表格，读取候选的科目、期间、单位、口径、文件及定位信息，返回 `accept`、`needs_review`、`conflict` 或 `missing`。它没有修改数值、修改来源或生成新字段的权限；出现 `needs_review`/`conflict`/`missing` 时，报告会增加带“LLM取数复核提示”标签的 Word 批注供人工查看。模型超时、返回空结果、非法状态或不符合结构时，程序会保留原值和原来源并自动生成 `needs_review`，保证每个已送审字段都有受控状态；规则已经标记存在差异的字段也不接受模型返回的 `accept`。批注使用真实文件名、PDF 页码或 Excel 工作表，不展示 `asset_scope_summary_table`、`income_workbook.xlsx` 等内部临时名称。
+
+批注不会再按“第一个相同金额”定位。程序先用目标 Word 表格、科目行、期间列和段落上下文形成真实位置候选，再由受限 LLM 确认候选编号；LLM 只能从实际 Word 候选中选择或拒绝，不能生成位置。LLM 服务不可用时，仅接受唯一的“表格＋科目＋期间”高置信位置；仍有歧义时不把批注挂到错误数字，也不会向最终用户显示“批注位置未匹配”之类的内部提示。
 
 修改模型时应保持输出字段白名单和 JSON 结构；如项目后端配置了参考资料，叙述生成会先检索相关证据，再按公司概况和六个可选模块分别调用模型并在本地校验证据编号。参考报告不是前端运行时上传项。业务代码不会读取 `.env` 创建全局客户端，凭证只在 CLI/API 入口注入。
 
@@ -229,7 +233,7 @@ OCR 所处的完整资产评估工作流为：
 
 ## 本地运行示例
 
-命令行的 `--pdf` 可省略以便离线调试；Web 工作台按 0817 需求要求至少上传一份审计报告材料。没有可 OCR 的 PDF 时，批注要求从审计 PDF 获取的字段会明确保留黄色 `XXX`，不会由业务 Excel 代填。
+命令行的 `--pdf` 可省略以便离线调试；Web 工作台按 0817 需求要求至少上传一份审计报告材料。没有可 OCR 的 PDF，或 PDF 未识别到某字段时，若业务 Excel 存在唯一语义匹配值，则采用该值并增加“未完成 PDF 对照”的来源批注；所有材料都没有可靠值时才保留黄色 `XXX`。
 
 ```bash
 uv run --python 3.11 python -m demo.run demo/projects/tongfu.yaml \

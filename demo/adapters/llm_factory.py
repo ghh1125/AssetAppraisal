@@ -23,6 +23,9 @@ def build_bailian_adapters(
     narrative_prompt = (prompt_dir / "yellow_narratives.v3.txt").read_text(encoding="utf-8")
     mapping_prompt = (prompt_dir / "mapping_agent.v1.txt").read_text(encoding="utf-8")
     review_prompt = (prompt_dir / "evidence_review.v1.txt").read_text(encoding="utf-8")
+    comment_locator_prompt = (prompt_dir / "word_comment_locator.v1.txt").read_text(
+        encoding="utf-8"
+    )
     return {
         "narrative": BailianYellowNarrativeAdapter(
             client,
@@ -34,6 +37,7 @@ def build_bailian_adapters(
             mapping_prompt=mapping_prompt,
             review_prompt=review_prompt,
             review_model=models["evidence_review"],
+            comment_locator_prompt=comment_locator_prompt,
         ),
         "models": models,
     }

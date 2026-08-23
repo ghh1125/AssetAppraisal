@@ -529,7 +529,7 @@ def _execute_fill(run_id: str, selected_fields: dict[str, Any]) -> None:
         # The pipeline reuses valid roles and only uses this client when the
         # snapshot is absent or incomplete, prioritizing report completeness.
         llm_adapter, qichacha_adapter, _http_client = _build_external_adapters(
-            False, bool(context.get("use_qichacha"))
+            bool(context.get("use_glm")), bool(context.get("use_qichacha"))
         )
         ocr_workbook = run_dir / "OCR结构化结果.xlsx"
         def report_progress(node: str, step: str, message: str, percent: int | None = None) -> None:
@@ -545,6 +545,7 @@ def _execute_fill(run_id: str, selected_fields: dict[str, Any]) -> None:
             ocr_adapter=None,
             ocr_workbook_path=ocr_workbook if ocr_workbook.is_file() else None,
             llm_adapter=None,
+            word_comment_locator_adapter=llm_adapter,
             qichacha_adapter=qichacha_adapter,
             manual_inputs_override=context.get("inputs", {}),
             node_inputs={

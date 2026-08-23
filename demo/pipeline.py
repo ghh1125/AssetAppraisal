@@ -212,6 +212,81 @@ def _reconcile_pdf_authoritative_fields(
 _RECONCILE_NUMBER = re.compile(r"[-+]?\d[\d,]*(?:\.\d+)?%?")
 
 
+def _word_table_indices(config: dict[str, Any]) -> dict[str, int]:
+    """Map logical fields to the 1-based table indexes visible in Word XML."""
+    result: dict[str, int] = {}
+    specs = list(config.get("financial_tables", []))
+    for key in ("asset_scope_summary_table", "long_term_assets_table"):
+        item = config.get(key)
+        if isinstance(item, dict):
+            specs.append(item)
+    for spec in specs:
+        if not isinstance(spec, dict):
+            continue
+        field_key = str(spec.get("field_key", "")).strip()
+        if not field_key and spec is config.get("long_term_assets_table"):
+            field_key = "long_term_assets_table"
+        try:
+            # Project/table replacement config is zero based; OOXML inventory
+            # and reviewer-facing table identity are one based.
+            table_index = int(spec["target_table_index"]) + 1
+        except (KeyError, TypeError, ValueError):
+            continue
+        if field_key:
+            result[field_key] = table_index
+    return result
+
+
+def _word_field_anchor_hints(
+    locations: list[dict[str, Any]],
+) -> dict[str, list[dict[str, str]]]:
+    """Build stable before/after text anchors for mapped Word placeholders."""
+    result: dict[str, list[dict[str, str]]] = defaultdict(list)
+    marker_pattern = re.compile(r"20XX|X{2,}", re.I)
+    for location in locations:
+        field_key = str(location.get("field_key", "")).strip()
+        context = str(location.get("context", ""))
+        if not field_key or not context:
+            continue
+        markers = list(marker_pattern.finditer(context))
+        try:
+            occurrence = int(location.get("occurrence_index", 1)) - 1
+        except (TypeError, ValueError):
+            occurrence = 0
+        if occurrence < 0 or occurrence >= len(markers):
+            continue
+        marker = markers[occurrence]
+        previous_end = markers[occurrence - 1].end() if occurrence > 0 else 0
+        next_start = markers[occurrence + 1].start() if occurrence + 1 < len(markers) else len(context)
+        prefix = context[previous_end:marker.start()].strip()
+        suffix = context[marker.end():next_start].strip()
+        if len(_compact_anchor(prefix)) < 2 and len(_compact_anchor(suffix)) < 2:
+            continue
+        anchor = {
+            "location_id": str(location.get("location_id", "")),
+            "prefix": prefix[-80:],
+            "suffix": suffix[:80],
+        }
+        if anchor not in result[field_key]:
+            result[field_key].append(anchor)
+    return dict(result)
+
+
+def _compact_anchor(value: Any) -> str:
+    return re.sub(r"[\s：:，,、（）()]", "", str(value or ""))
+
+
+def _attach_word_anchor_hints(
+    annotations: list[dict[str, Any]],
+    anchors: dict[str, list[dict[str, str]]],
+) -> list[dict[str, Any]]:
+    for item in annotations:
+        field_anchors = anchors.get(str(item.get("field_key", "")), [])
+        if field_anchors:
+            item["word_anchor_hints"] = field_anchors
+    return annotations
+
+
 def _numeric_value(value: Any) -> str | None:
     """Return a display value only for a standalone amount/rate cell."""
     if isinstance(value, bool):
@@ -235,6 +310,7 @@ def _table_value_conflicts(
     other: Any,
     *,
     field_name: str,
+    word_table_index: int | None = None,
 ) -> list[dict[str, str]]:
     """Return only differing numeric cells from two similarly shaped tables.
 
@@ -259,14 +335,16 @@ def _table_value_conflicts(
             if selected_rows and column_index < len(selected_rows[0]):
                 header = str(selected_rows[0][column_index]).strip()
             label = " / ".join(item for item in (field_name, row_label, header) if item)
-            differences.append(
-                {
-                    "pdf_value": left,
-                    "excel_value": right,
-                    "field_name": label or field_name,
-                    "word_context_hint": row_label,
-                }
-            )
+            item = {
+                "pdf_value": left,
+                "excel_value": right,
+                "field_name": label or field_name,
+                "word_context_hint": row_label,
+                "word_period_hint": header,
+            }
+            if word_table_index is not None:
+                item["word_table_index"] = word_table_index
+            differences.append(item)
     return differences
 
 
@@ -318,6 +396,7 @@ def _resolve_unresolved_pdf_page_locators(
 def _reviewable_source_conflicts(
     reconciliation_rows: list[dict[str, Any]],
     field_names: dict[str, str],
+    word_table_indices: dict[str, int] | None = None,
 ) -> list[dict[str, str]]:
     """Turn reconciliation records into precise red-font/Word-comment tasks."""
     findings: list[dict[str, str]] = []
@@ -325,6 +404,7 @@ def _reviewable_source_conflicts(
     for row in reconciliation_rows:
         field_key = str(row.get("field_key", ""))
         display_name = field_names.get(field_key, field_key)
+        word_table_index = (word_table_indices or {}).get(field_key)
         for discrepancy in row.get("discrepancies", []):
             if not isinstance(discrepancy, dict):
                 continue
@@ -346,13 +426,18 @@ def _reviewable_source_conflicts(
             pdf_value = _numeric_value(discrepancy.get("selected_value"))
             excel_value = _numeric_value(discrepancy.get("other_value"))
             if pdf_value is not None and excel_value is not None:
-                candidates = [{
+                scalar_candidate = {
                     **common,
                     "field_name": display_name,
                     "pdf_value": pdf_value,
                     "excel_value": excel_value,
                     "word_context_hint": "",
-                }]
+                    "word_period_hint": "",
+                    "word_paragraph_hint": display_name,
+                }
+                if word_table_index is not None:
+                    scalar_candidate["word_table_index"] = word_table_index
+                candidates = [scalar_candidate]
             else:
                 candidates = [
                     {**common, **item}
@@ -360,6 +445,7 @@ def _reviewable_source_conflicts(
                         discrepancy.get("selected_value"),
                         discrepancy.get("other_value"),
                         field_name=display_name,
+                        word_table_index=word_table_index,
                     )
                 ]
             for candidate in candidates:
@@ -391,6 +477,7 @@ def _first_table_numeric_value(value: Any) -> dict[str, str] | None:
             return {
                 "excel_value": numeric,
                 "word_context_hint": row_label,
+                "word_period_hint": header,
                 "field_suffix": " / ".join(item for item in (row_label, header) if item),
             }
     return None
@@ -399,6 +486,7 @@ def _first_table_numeric_value(value: Any) -> dict[str, str] | None:
 def _reviewable_source_fallbacks(
     reconciliation_rows: list[dict[str, Any]],
     field_names: dict[str, str],
+    word_table_indices: dict[str, int] | None = None,
 ) -> list[dict[str, str]]:
     """Record one Word note whenever a PDF-required field falls back to Excel.
 
@@ -416,10 +504,10 @@ def _reviewable_source_fallbacks(
             continue
         field_key = str(row.get("field_key", ""))
         field_name = field_names.get(field_key, field_key)
+        word_table_index = (word_table_indices or {}).get(field_key)
         numeric = _numeric_value(value)
         if numeric is not None:
-            findings.append(
-                {
+            item = {
                     "review_kind": "excel_fallback",
                     "field_key": field_key,
                     "field_name": field_name,
@@ -432,13 +520,16 @@ def _reviewable_source_fallbacks(
                     ),
                     "pdf_uploaded": bool(row.get("pdf_uploaded", False)),
                     "word_context_hint": "",
+                    "word_period_hint": "",
+                    "word_paragraph_hint": field_name,
                 }
-            )
+            if word_table_index is not None:
+                item["word_table_index"] = word_table_index
+            findings.append(item)
             continue
         first_value = _first_table_numeric_value(value)
         if first_value is not None:
-            findings.append(
-                {
+            item = {
                     "review_kind": "excel_fallback",
                     "field_key": field_key,
                     "field_name": " / ".join(
@@ -453,8 +544,11 @@ def _reviewable_source_fallbacks(
                     ),
                     "pdf_uploaded": bool(row.get("pdf_uploaded", False)),
                     "word_context_hint": first_value["word_context_hint"],
+                    "word_period_hint": first_value["word_period_hint"],
                 }
-            )
+            if word_table_index is not None:
+                item["word_table_index"] = word_table_index
+            findings.append(item)
     return findings
 
 
@@ -462,6 +556,7 @@ def _reviewable_llm_notes(
     reviews: list[dict[str, str]],
     reconciliation_rows: list[dict[str, Any]],
     field_names: dict[str, str],
+    word_table_indices: dict[str, int] | None = None,
 ) -> list[dict[str, str]]:
     """Attach LLM caution notes without letting the LLM recolour or alter data."""
     selected_by_field = {
@@ -481,17 +576,20 @@ def _reviewable_llm_notes(
         numeric = _numeric_value(value)
         field_name = field_names.get(field_key, field_key)
         word_context_hint = ""
+        word_period_hint = ""
+        word_paragraph_hint = field_name
         if numeric is None:
             first_value = _first_table_numeric_value(value)
             if first_value is None:
                 continue
             numeric = first_value["excel_value"]
             word_context_hint = first_value["word_context_hint"]
+            word_period_hint = first_value["word_period_hint"]
+            word_paragraph_hint = ""
             field_name = " / ".join(
                 item for item in (field_name, first_value["field_suffix"]) if item
             )
-        notes.append(
-            {
+        note = {
                 "review_kind": "llm_review",
                 "field_key": field_key,
                 "field_name": field_name,
@@ -505,11 +603,16 @@ def _reviewable_llm_notes(
                     field_name,
                 ),
                 "word_context_hint": word_context_hint,
+                "word_period_hint": word_period_hint,
+                "word_paragraph_hint": word_paragraph_hint,
                 "review_status": str(review.get("status", "")),
                 "review_reason": str(review.get("reason", "")),
                 "llm_comment": str(review.get("comment", "")),
             }
-        )
+        word_table_index = (word_table_indices or {}).get(field_key)
+        if word_table_index is not None:
+            note["word_table_index"] = word_table_index
+        notes.append(note)
     return notes
 
 
@@ -518,17 +621,19 @@ def _attach_llm_comments(
     llm_notes: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     """Attach the model's complete human-facing comment to source findings."""
-    comments_by_field = {
-        str(item.get("field_key", "")): str(item.get("llm_comment", ""))
+    notes_by_field = {
+        str(item.get("field_key", "")): item
         for item in llm_notes
         if item.get("llm_comment")
     }
     enriched: list[dict[str, Any]] = []
     for item in annotations:
         copy = dict(item)
-        comment = comments_by_field.get(str(item.get("field_key", "")))
-        if comment:
-            copy["llm_comment"] = comment
+        note = notes_by_field.get(str(item.get("field_key", "")))
+        if note:
+            copy["llm_comment"] = str(note.get("llm_comment", ""))
+            copy["review_status"] = str(note.get("review_status", ""))
+            copy["review_reason"] = str(note.get("review_reason", ""))
         enriched.append(copy)
     return enriched
 
@@ -1108,6 +1213,7 @@ def run_pipeline(
     output_dir: Path,
     ocr_adapter: Any,
     llm_adapter: Any = None,
+    word_comment_locator_adapter: Any = None,
     qichacha_adapter: Any = None,
     node_inputs: dict[str, Any] | None = None,
     ocr_field_resolver: OcrFieldResolver | None = None,
@@ -1123,6 +1229,8 @@ def run_pipeline(
     llm_values_override: dict[str, Any] | None = None,
     progress_callback: Callable[[str, str, str, int | None], None] | None = None,
 ) -> PipelineResult:
+    if word_comment_locator_adapter is None:
+        word_comment_locator_adapter = llm_adapter
     config_path = project_config.resolve()
     config = json.loads(config_path.read_text(encoding="utf-8"))
     workflow_file = (
@@ -1669,13 +1777,23 @@ def run_pipeline(
     )
     issues.extend(reconciliation_issues)
     emit_progress("ocr_llm_candidates", "reconcile_sources", "来源整合完成，差异已记录", 52)
-    reviewable_source_conflicts = _reviewable_source_conflicts(
-        reconciliation_rows,
-        field_names,
+    word_table_indices = _word_table_indices(config)
+    word_anchor_hints = _word_field_anchor_hints([*locations, *static_locations])
+    reviewable_source_conflicts = _attach_word_anchor_hints(
+        _reviewable_source_conflicts(
+            reconciliation_rows,
+            field_names,
+            word_table_indices,
+        ),
+        word_anchor_hints,
     )
-    reviewable_source_fallbacks = _reviewable_source_fallbacks(
-        reconciliation_rows,
-        field_names,
+    reviewable_source_fallbacks = _attach_word_anchor_hints(
+        _reviewable_source_fallbacks(
+            reconciliation_rows,
+            field_names,
+            word_table_indices,
+        ),
+        word_anchor_hints,
     )
     llm_evidence_reviews: list[dict[str, str]] = []
     llm_evidence_review_issues: list[str] = []
@@ -1721,10 +1839,14 @@ def run_pipeline(
                 f"LLM取数复核：{item.get('field_key', '')}={item.get('status', '')}；"
                 f"{item.get('reason', '')}"
             )
-    reviewable_llm_notes = _reviewable_llm_notes(
-        llm_evidence_reviews,
-        llm_review_rows,
-        field_names,
+    reviewable_llm_notes = _attach_word_anchor_hints(
+        _reviewable_llm_notes(
+            llm_evidence_reviews,
+            llm_review_rows,
+            field_names,
+            word_table_indices,
+        ),
+        word_anchor_hints,
     )
     emit_progress(
         "ocr_llm_candidates",
@@ -2673,7 +2795,12 @@ def run_pipeline(
     replace_transaction_type_literals(report, fields.get("transaction_type"))
     replace_image_markers(report)
     replace_report_number_year(report, fields.get("report_number_year"))
-    emit_progress("fill_word", "write_comments", "正在写入 LLM 生成的审核批注", 88)
+    emit_progress(
+        "fill_word",
+        "write_comments",
+        "正在按表格、科目和期间定位批注，并由 LLM 确认目标位置",
+        88,
+    )
     emit_progress("fill_word", "check_placeholders", "正在检查未找到证据的 XXX 并保留黄色高亮", 91)
     unresolved_findings = highlight_unresolved_placeholders(report)
     source_conflict_annotations = annotate_source_conflicts(
@@ -2685,17 +2812,9 @@ def run_pipeline(
             ),
             *reviewable_llm_notes,
         ],
+        location_selector=word_comment_locator_adapter,
     )
     emit_progress("output", "save_word", "评估报告 Word 已保存，正在做最终文件检查", 96)
-    if len(source_conflict_annotations) < (
-        len(reviewable_source_conflicts)
-        + len(reviewable_source_fallbacks)
-        + len(reviewable_llm_notes)
-    ):
-        issues.append(
-            "部分PDF与表格不一致的数值未能在Word中精确定位；"
-            "已按审计PDF填入，详见来源整合与差异记录。"
-        )
     generation_issues = issues_from_word_findings(
         unresolved_findings,
         [*locations, *static_locations],
