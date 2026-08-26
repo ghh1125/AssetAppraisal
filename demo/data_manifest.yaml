@@ -1,5 +1,5 @@
 {
-  "version": "2026-08-23.1",
+  "version": "2026-08-26.1",
   "rule_versions": {
     "workflow_contract": "workflow_contract.v2",
     "workflow_trace": "workflow_trace.v1",
@@ -16,7 +16,8 @@
     "source_reconciliation": "source_reconciliation.v1",
     "mapping_agent": "mapping_agent.v1",
     "evidence_review": "evidence_review.v1",
-    "word_review_comment": "word_review_comment.v2"
+    "word_review_comment": "word_review_comment.v2",
+    "traceability_comments": "traceability_comments.v1"
   },
   "sources": [
     {"name":"评估报告版式_0817确认.docx","purpose":"只读资产评估报告输出模板","version":"0817确认版","update_method":"项目负责人替换模板并同步更新批注映射","missing_behavior":"终止运行，无法生成 Word"},
@@ -65,6 +66,8 @@
       "review_output_schema_version": "evidence_review_output.v1",
       "comment_locator_prompt_version": "word_review_comment.v2",
       "comment_locator_output_schema_version": "word_review_comment_output.v2",
+      "traceability_comment_prompt_version": "traceability_comments.v1",
+      "traceability_comment_output_schema_version": "traceability_comments_output.v1",
       "update_method": "模型或 Prompt 变更时同步叙述及取数复核的结构化输出契约和样例",
       "missing_behavior": "叙述字段保留黄色占位符；取数复核失败不改写已按来源规则填入的字段"
     }

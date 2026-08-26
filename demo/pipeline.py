@@ -30,6 +30,7 @@ from demo.adapters.workflow_trace import (
     trace_resolved_fields,
 )
 from demo.adapters.word import (
+    annotate_traceable_content,
     annotate_source_conflicts,
     document_paragraph_texts,
     fill_template,
@@ -73,6 +74,7 @@ from demo.domain.source_reconciliation import SourceCandidate, reconcile_field
 from demo.domain.source_labels import human_source_locator as render_source_locator
 from demo.domain.source_labels import pdf_field_locators
 from demo.domain.template_pagination import map_location_pages
+from demo.domain.traceability_comments import TRACE_TITLES
 from demo.domain.workflow_contracts import validate_workflow_contract
 from demo.domain.yellow_routing import (
     RouteKind,
@@ -703,6 +705,219 @@ def _keep_unresolved_ocr_issues(
         if value in (None, "", [], {}):
             kept.append(issue)
     return kept
+
+
+def _trace_status_by_field(
+    evidence: dict[str, dict[str, Any]],
+    llm_reviews: list[dict[str, Any]],
+    conflicts: list[dict[str, Any]],
+    fallbacks: list[dict[str, Any]],
+) -> dict[str, str]:
+    """Reduce source/review evidence to the four Word display states."""
+    review_by_field = {
+        str(item.get("field_key", "")): str(item.get("status", ""))
+        for item in llm_reviews
+        if item.get("field_key")
+    }
+    fallback_fields = {str(item.get("field_key", "")) for item in fallbacks}
+    result: dict[str, str] = {}
+    for field_key, source in evidence.items():
+        source = source if isinstance(source, dict) else {}
+        if source.get("kind") == "missing":
+            result[field_key] = "missing"
+        elif review_by_field.get(field_key) in {
+            "needs_review",
+            "conflict",
+            "missing",
+        }:
+            result[field_key] = "review"
+        elif field_key in fallback_fields:
+            result[field_key] = "fallback"
+        else:
+            result[field_key] = "verified"
+    return result
+
+
+def _trace_comment(
+    *,
+    field_key: str,
+    field_name: str,
+    status: str,
+    source: dict[str, Any] | None,
+    llm_review: dict[str, Any] | None,
+    model_name: str,
+) -> str:
+    """Create a concise reviewer-facing provenance note with a clear title."""
+    source = source if isinstance(source, dict) else {}
+    llm_review = llm_review if isinstance(llm_review, dict) else {}
+    source_kind = str(source.get("kind", ""))
+    source_file = str(source.get("file", ""))
+    source_locator = render_source_locator(
+        source_file,
+        source.get("locator", ""),
+        field_name,
+    )
+    if status == "missing":
+        return (
+            f"【未找到数据】{field_name}已检索本次上传的审计PDF、Excel、补充材料及已启用的企业信息接口，"
+            "仍未找到可可靠采用的数据，因此保留黄色XXX。请人工补充或核对原始材料。"
+        )
+    if source_kind in {"node_input", "manual", "manual_input"}:
+        source_text = "来源：人工基础信息；该值由用户输入并确认采用。"
+    elif source_kind == "qichacha_api":
+        source_text = "来源：企查查API；接口返回结果已通过查询主体名称匹配后采用。"
+    elif source_kind.startswith("bailian_glm"):
+        model = model_name or "百炼大模型"
+        source_text = (
+            f"来源：百炼模型 {model}；模型基于已解析材料和企业信息证据生成，"
+            "并经用户选择后写入报告。"
+        )
+    elif source_kind in {"computed", "derived", "system_calculation"}:
+        source_text = "来源：系统计算；由报告中已选定且可追溯的基础字段计算得到。"
+    else:
+        if source_locator.startswith(("《", "审计 PDF")):
+            source_text = f"来源：{source_locator}。"
+        else:
+            file_prefix = f"《{source_file}》" if source_file else "本次上传材料"
+            source_text = f"来源：{file_prefix}{source_locator}。"
+    review_status = str(llm_review.get("status", ""))
+    review_reason = str(llm_review.get("reason", "")).strip()
+    if status == "verified":
+        title = "【来源已核验】"
+        if review_status == "accept":
+            review_text = "LLM已核对科目、期间、单位和来源定位，复核结论为通过。"
+        elif source_kind in {"node_input", "manual", "manual_input"}:
+            review_text = "本字段属于人工输入，不对其真实性作自动推断。"
+        elif source_kind == "qichacha_api":
+            review_text = "系统已完成API主体匹配校验。"
+        elif source_kind.startswith("bailian_glm"):
+            review_text = "该内容属于模型生成叙述，不作为审计数值依据。"
+        else:
+            review_text = "系统语义规则已完成唯一匹配；未发现需提示的来源冲突。"
+    elif status == "fallback":
+        title = "【来源待补充核验】"
+        review_text = "当前已采用Excel或其他可用材料，但尚未完成审计PDF对照，请人工复核口径。"
+    else:
+        title = "【数据冲突，需人工复核】"
+        review_text = (
+            f"LLM/规则复核结论：{review_reason or '来源间存在差异或口径歧义，请核对原始材料。'}"
+        )
+    return f"{title}{field_name}。{source_text}{review_text}"
+
+
+def _paragraph_trace_annotations(
+    locations: list[dict[str, Any]],
+    replacements: dict[str, str],
+    evidence: dict[str, dict[str, Any]],
+    field_names: dict[str, str],
+    status_by_field: dict[str, str],
+    review_by_field: dict[str, dict[str, Any]],
+    model_name: str,
+) -> list[dict[str, Any]]:
+    annotations: list[dict[str, Any]] = []
+    for location in locations:
+        location_id = str(location.get("location_id", ""))
+        if location_id not in replacements:
+            continue
+        field_key = str(location.get("field_key", ""))
+        value = str(replacements.get(location_id, "") or "").strip()
+        if not value:
+            continue
+        source = evidence.get(field_key, {})
+        missing = bool(re.search(r"20XX|X{2,}", value, re.I))
+        status = "missing" if missing else status_by_field.get(field_key, "verified")
+        field_name = (
+            field_names.get(field_key)
+            or str(location.get("field_name") or field_key or "该字段")
+        )
+        comment = _trace_comment(
+            field_key=field_key,
+            field_name=field_name,
+            status=status,
+            source=source,
+            llm_review=review_by_field.get(field_key),
+            model_name=model_name,
+        )
+        marker = str(location.get("marker") or "")
+        context = str(location.get("context") or "")
+        context_hint = (
+            ""
+            if location.get("record_type") == "黄色标注内容块"
+            else context.replace(marker, "") if marker else ""
+        )
+        lines = [line.strip() for line in value.splitlines() if line.strip()] or [value]
+        for line in lines:
+            annotations.append(
+                {
+                    "field_key": field_key,
+                    "field_name": field_name,
+                    "target": line,
+                    "part": str(location.get("part") or "word/document.xml"),
+                    "paragraph_index_hint": int(location.get("paragraph_index") or 0),
+                    "target_occurrence": int(location.get("occurrence_index") or 1),
+                    "context_hint": context_hint if len(lines) == 1 else "",
+                    "status": status,
+                    "comment": comment,
+                }
+            )
+    return annotations
+
+
+def _table_trace_annotations(
+    table_replacements: dict[int, list[list[str]]],
+    table_fields: dict[int, tuple[str, int, set[int]]],
+    evidence: dict[str, dict[str, Any]],
+    field_names: dict[str, str],
+    status_by_field: dict[str, str],
+    review_by_field: dict[str, dict[str, Any]],
+    model_name: str,
+) -> list[dict[str, Any]]:
+    annotations: list[dict[str, Any]] = []
+    for table_index, matrix in table_replacements.items():
+        field_key, first_data_row, data_columns = table_fields.get(
+            table_index,
+            (f"word_table_{table_index}", 0, set()),
+        )
+        if table_index not in table_fields:
+            continue
+        field_name = field_names.get(field_key, field_key)
+        source = evidence.get(field_key, {})
+        base_status = status_by_field.get(field_key, "verified")
+        for row_index, row in enumerate(matrix):
+            if row_index < first_data_row:
+                continue
+            columns = data_columns or set(range(len(row)))
+            for column_index, value in enumerate(row):
+                if column_index not in columns:
+                    continue
+                target = str(value or "").strip()
+                if not target:
+                    continue
+                status = "missing" if re.search(r"20XX|X{2,}", target, re.I) else base_status
+                cell_name = field_name
+                if row and column_index > 0 and str(row[0]).strip():
+                    cell_name = f"{field_name} / {str(row[0]).strip()}"
+                comment = _trace_comment(
+                    field_key=field_key,
+                    field_name=cell_name,
+                    status=status,
+                    source=source,
+                    llm_review=review_by_field.get(field_key),
+                    model_name=model_name,
+                )
+                annotations.append(
+                    {
+                        "field_key": field_key,
+                        "field_name": cell_name,
+                        "target": target,
+                        "table_index": table_index,
+                        "row_index": row_index,
+                        "column_index": column_index,
+                        "status": status,
+                        "comment": comment,
+                    }
+                )
+    return annotations
 
 
 @dataclass(frozen=True)
@@ -1352,6 +1567,9 @@ def run_pipeline(
         for item in [*mapping.get("locations", []), *locations, *static_locations]
         if item.get("field_key")
     }
+    for field_key, model_field in schemas.ManualBasicInputs.model_fields.items():
+        if model_field.description and field_names.get(field_key) in (None, "", field_key):
+            field_names[field_key] = str(model_field.description)
     # Internal keys must never leak into Word comments or user-facing review
     # messages. These table fields are configured outside the mapping list,
     # so give them the same business labels a reviewer sees in the template.
@@ -1361,6 +1579,11 @@ def run_pipeline(
             "long_term_assets_table": "主要长期资产账面记录表",
             "major_long_term_assets": "主要长期资产账面记录",
             "book_net_assets": "审计后账面净资产",
+            "commissioning_party_profile": "委托人工商信息",
+            "target_company_profile": "被评估单位工商信息",
+            "ownership_at_valuation_date": "评估基准日股权结构",
+            "trademark_summary": "已申请注册的商标",
+            "software_copyrights": "软件著作权",
         }
     )
     routes = load_yellow_routes(config["yellow_routes"])
@@ -2094,6 +2317,24 @@ def run_pipeline(
         emit_progress("ocr_llm_candidates", "query_qichacha", "企查查 API 查询完成，正在整理返回证据", 64)
     else:
         emit_progress("ocr_llm_candidates", "query_qichacha", "未启用企查查 API，跳过企业信息查询", 64)
+    if qcc_profiles.get("commissioning"):
+        evidence.setdefault(
+            "commissioning_party_profile",
+            {
+                "kind": "qichacha_api",
+                "file": "企查查 API（735）",
+                "locator": "委托人工商信息",
+            },
+        )
+    if qcc_profiles.get("target"):
+        evidence.setdefault(
+            "target_company_profile",
+            {
+                "kind": "qichacha_api",
+                "file": "企查查 API（735）",
+                "locator": "被评估单位工商信息",
+            },
+        )
     target_profile = qcc_profiles.get("target", {})
     if (
         fields.get("registered_capital") in (None, "", [])
@@ -2373,6 +2614,10 @@ def run_pipeline(
             evidence_file = pdf_name
         elif source_kind == "qichacha_api" and value:
             evidence_file = "企查查 API（735/231/514/233）"
+        elif source_kind == "node_input" and value:
+            evidence_file = "人工基础信息"
+        elif source_kind.startswith("bailian_glm") and value:
+            evidence_file = "百炼大模型"
         else:
             evidence_file = ""
         evidence[route.field_key] = {
@@ -2383,6 +2628,8 @@ def run_pipeline(
                 if preserve_material_locator
                 else "PDF OCR 证据化叙述回填"
                 if evidence_fallback
+                else field_names.get(route.field_key, route.field_key)
+                if source_kind in {"node_input", "qichacha_api"} or source_kind.startswith("bailian_glm")
                 else route.location_id if value not in (None, "", []) else ""
             ),
         }
@@ -2814,6 +3061,119 @@ def run_pipeline(
         ],
         location_selector=word_comment_locator_adapter,
     )
+    review_by_field = {
+        str(item.get("field_key", "")): item
+        for item in llm_evidence_reviews
+        if item.get("field_key")
+    }
+    status_by_field = _trace_status_by_field(
+        evidence,
+        llm_evidence_reviews,
+        reviewable_source_conflicts,
+        reviewable_source_fallbacks,
+    )
+    table_fields: dict[int, tuple[str, int, set[int]]] = {}
+    for spec in table_specs:
+        target_index = int(spec["target_table_index"])
+        field_key = str(spec["field_key"])
+        # The asset-scope table has no header row; financial history tables do.
+        first_data_row = 0 if field_key == "asset_scope_summary_table" else 1
+        data_columns = {1} if field_key == "asset_scope_summary_table" else set()
+        table_fields[target_index] = (field_key, first_data_row, data_columns)
+    if isinstance(ownership_table_spec, dict):
+        table_fields[int(ownership_table_spec["target_table_index"])] = (
+            "ownership_at_valuation_date",
+            1,
+            set(),
+        )
+        table_fields[valuation_date_table_index] = (
+            "ownership_at_valuation_date",
+            1,
+            set(),
+        )
+    table_fields[0] = ("commissioning_party_profile", 0, set())
+    table_fields[1] = ("target_company_profile", 0, set())
+    if isinstance(long_term_table, dict):
+        table_fields[int(long_term_table["target_table_index"])] = (
+            "long_term_assets_table",
+            1,
+            {1, 2, 3},
+        )
+    table_fields[8] = ("trademark_summary", 1, set())
+    table_fields[9] = ("software_copyrights", 1, set())
+    model_name = str(getattr(llm_adapter, "model", "") or "")
+    trace_annotations = [
+        *_paragraph_trace_annotations(
+            locations,
+            replacements,
+            evidence,
+            field_names,
+            status_by_field,
+            review_by_field,
+            model_name,
+        ),
+        *_table_trace_annotations(
+            table_replacements,
+            table_fields,
+            evidence,
+            field_names,
+            status_by_field,
+            review_by_field,
+            model_name,
+        ),
+    ]
+    # Cover static/unmapped placeholders as well: every visible yellow XXX gets
+    # a titled missing-data comment even when the template has no field mapping.
+    trace_annotations.extend(
+        {
+            "field_key": "unresolved_word_location",
+            "field_name": "该未填位置",
+            "target": str(item.get("current_text", "XXX")),
+            "part": str(item.get("part") or "word/document.xml"),
+            "paragraph_index_hint": int(item.get("paragraph_index") or 0),
+            "target_occurrence": int(item.get("occurrence_index") or 1),
+            "context_hint": str(item.get("context") or "").replace(
+                str(item.get("current_text", "XXX")),
+                "",
+            ),
+            **(
+                {
+                    "table_index": int(item["table_index"]) - 1,
+                    "row_index": int(item["row_index"]) - 1,
+                    "column_index": int(item["column_index"]) - 1,
+                }
+                if item.get("table_index") not in (None, "")
+                else {}
+            ),
+            "status": "missing",
+            "comment": (
+                "【未找到数据】该位置已检索本次上传的审计PDF、Excel、补充材料及已启用的企业信息接口，"
+                "仍未找到可可靠采用的数据，因此保留黄色XXX。请人工补充或核对原始材料。"
+            ),
+        }
+        for item in unresolved_findings
+    )
+    if llm_adapter is not None and hasattr(llm_adapter, "write_traceability_comments"):
+        emit_progress(
+            "fill_word",
+            "write_traceability_comments",
+            "LLM 正在根据已确认的文件、页码、工作表和复核状态撰写来源批注",
+            93,
+        )
+        try:
+            generated_comments, trace_comment_issues = (
+                llm_adapter.write_traceability_comments(trace_annotations)
+            )
+            issues.extend(trace_comment_issues)
+            for annotation_index, body in generated_comments.items():
+                if not 0 <= annotation_index < len(trace_annotations):
+                    continue
+                annotation = trace_annotations[annotation_index]
+                title = TRACE_TITLES.get(str(annotation.get("status", "")), "")
+                annotation["comment"] = f"{title}{body}"
+        except Exception as exc:
+            issues.append(f"LLM 来源批注撰写失败，已使用规则正文：{exc}")
+    traceability_annotations = annotate_traceable_content(report, trace_annotations)
     emit_progress("output", "save_word", "评估报告 Word 已保存，正在做最终文件检查", 96)
     generation_issues = issues_from_word_findings(
         unresolved_findings,

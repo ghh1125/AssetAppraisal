@@ -9,7 +9,7 @@ from docx import Document
 from openpyxl import Workbook, load_workbook
 
 import demo.pipeline as pipeline_module
-from demo.pipeline import _apply_ocr_overrides_to_table, _company_profile_table, _default_ocr_field_resolver, _human_source_locator, _ocr_ownership_matrix, _ownership_matrix_summary, _resolve_unresolved_pdf_page_locators, _validated_qcc_payload, _valuation_date_ownership_matrix, run_pipeline
+from demo.pipeline import _apply_ocr_overrides_to_table, _company_profile_table, _default_ocr_field_resolver, _human_source_locator, _ocr_ownership_matrix, _ownership_matrix_summary, _resolve_unresolved_pdf_page_locators, _trace_comment, _validated_qcc_payload, _valuation_date_ownership_matrix, run_pipeline
 
 
 def test_internal_ocr_locator_is_rendered_as_a_business_table_label():
@@ -127,6 +127,31 @@ def test_company_profile_table_formats_qcc_dates_for_word():
     assert rows[4][1] == "核准日期：2025年06月30日"
 
 
+def test_qichacha_and_llm_trace_comments_name_the_real_provider_and_review_scope():
+    qcc_comment = _trace_comment(
+        field_key="target_company_profile",
+        field_name="被评估单位工商信息",
+        status="verified",
+        source={"kind": "qichacha_api", "file": "企查查 API", "locator": "735"},
+        llm_review=None,
+        model_name="deepseek-v4-pro-0813",
+    )
+    llm_comment = _trace_comment(
+        field_key="industry_overview",
+        field_name="所处行业及行业介绍",
+        status="verified",
+        source={"kind": "bailian_glm", "file": "百炼大模型", "locator": "行业介绍"},
+        llm_review=None,
+        model_name="deepseek-v4-pro-0813",
+    )
+
+    assert qcc_comment.startswith("【来源已核验】")
+    assert "企查查API" in qcc_comment and "主体名称匹配" in qcc_comment
+    assert llm_comment.startswith("【来源已核验】")
+    assert "deepseek-v4-pro-0813" in llm_comment
+    assert "经用户选择" in llm_comment
+
+
 def test_qcc_identity_mismatch_is_rejected_instead_of_filling_wrong_profile():
     issues = []
     assert _validated_qcc_payload(
@@ -226,6 +251,7 @@ class FixtureOcrAdapter:
 
 class FixtureLlmAdapter:
     prompt_version = "yellow_narratives.test"
+    model = "fixture-model"
 
     def generate(self, evidence):
         assert evidence["evidence"][0]["evidence_id"] == "pdf:p1:b1"
@@ -234,6 +260,12 @@ class FixtureLlmAdapter:
             "main_products": "热处理服务。",
             "ownership_history": "不应采用的 LLM 越权内容",
         }, ["模拟 LLM 返回了越权字段"]
+
+    def write_traceability_comments(self, annotations):
+        return {
+            index: "由测试模型根据已确认的来源证据组织；" + str(item["comment"]).split("】", 1)[-1]
+            for index, item in enumerate(annotations)
+        }, []
 
 
 class NoPdfEvidenceLlmAdapter:
@@ -358,6 +390,15 @@ def test_pipeline_creates_ocr_xlsx_and_word_with_excel_fallback_when_pdf_field_i
     # A missing LLM module is never backfilled from a different company's
     # project configuration; it remains unresolved for the reviewer.
     assert fields["industry_overview"] == ""
+    with zipfile.ZipFile(result.report_path) as archive:
+        document_xml = archive.read("word/document.xml").decode("utf-8")
+        comments_xml = archive.read("word/comments.xml").decode("utf-8")
+    assert 'w:fill="E2F0D9"' in document_xml
+    assert "【来源已核验】" in comments_xml
+    assert "【未找到数据】" in comments_xml
+    assert "人工基础信息" in comments_xml
+    assert "百炼模型" in comments_xml
+    assert "由测试模型根据已确认的来源证据组织" in comments_xml
     assert "增值税税率" in fields["tax_rates"]
     assert "13%" in fields["tax_rates"]
     assert "15%" in fields["tax_rates"]

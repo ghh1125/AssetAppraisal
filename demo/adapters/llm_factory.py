@@ -26,6 +26,9 @@ def build_bailian_adapters(
     comment_locator_prompt = (prompt_dir / "word_review_comment.v2.txt").read_text(
         encoding="utf-8"
     )
+    traceability_comment_prompt = (prompt_dir / "traceability_comments.v1.txt").read_text(
+        encoding="utf-8"
+    )
     return {
         "narrative": BailianYellowNarrativeAdapter(
             client,
@@ -38,6 +41,7 @@ def build_bailian_adapters(
             review_prompt=review_prompt,
             review_model=models["evidence_review"],
             comment_locator_prompt=comment_locator_prompt,
+            traceability_comment_prompt=traceability_comment_prompt,
         ),
         "models": models,
     }

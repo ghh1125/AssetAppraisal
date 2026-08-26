@@ -276,6 +276,45 @@ def test_glm_uses_needs_review_when_evidence_review_response_is_invalid():
     assert any("未返回有效结论" in issue for issue in issues)
 
 
+def test_glm_writes_traceability_comments_from_supplied_source_only():
+    client = FakeClient(
+        json.dumps(
+            {
+                "comments": [
+                    {
+                        "comment_id": "trace-1",
+                        "comment": "该值取自《审计报告.pdf》第28页，科目、期间和单位已核对。",
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        )
+    )
+    adapter = BailianYellowNarrativeAdapter(
+        client=client,
+        api_key="test-key",
+        prompt="叙述规则",
+        review_prompt="复核规则",
+        review_model="review-model",
+        traceability_comment_prompt="来源批注规则",
+    )
+
+    comments, issues = adapter.write_traceability_comments(
+        [
+            {
+                "field_key": "historical_income_table",
+                "field_name": "历史利润表",
+                "status": "verified",
+                "comment": "【来源已核验】来源：《审计报告.pdf》第28页。",
+            }
+        ]
+    )
+
+    assert issues == []
+    assert comments == {0: "该值取自《审计报告.pdf》第28页，科目、期间和单位已核对。"}
+    assert client.request["kwargs"]["json"]["messages"][0]["content"] == "来源批注规则"
+
+
 def test_glm_uses_needs_review_when_evidence_review_call_fails():
     adapter = BailianYellowNarrativeAdapter(
         client=FailingClient(),

@@ -7,6 +7,7 @@ from docx.enum.text import WD_COLOR_INDEX
 from docx.shared import Pt, RGBColor
 
 from demo.adapters.word import (
+    annotate_traceable_content,
     annotate_source_conflicts,
     fill_template,
     highlight_unresolved_placeholders,
@@ -780,3 +781,106 @@ def test_distinct_values_in_same_paragraph_keep_separate_comment_ranges(tmp_path
     with zipfile.ZipFile(output) as archive:
         document_xml = archive.read("word/document.xml").decode("utf-8")
     assert document_xml.count("commentRangeStart") == 2
+
+
+def test_every_filled_value_gets_status_shading_and_titled_source_comment(tmp_path: Path):
+    output = tmp_path / "traceable.docx"
+    document = Document()
+    document.add_paragraph("委托方：上海上大热处理有限公司")
+    table = document.add_table(rows=2, cols=2)
+    table.cell(0, 0).text = "项目"
+    table.cell(0, 1).text = "金额"
+    table.cell(1, 0).text = "总资产"
+    table.cell(1, 1).text = "163,719,131.79"
+    document.save(output)
+
+    applied = annotate_traceable_content(
+        output,
+        [
+            {
+                "field_key": "commissioning_party_name",
+                "field_name": "委托方全称",
+                "target": "上海上大热处理有限公司",
+                "context_hint": "委托方：",
+                "status": "verified",
+                "comment": "【来源已核验】委托方全称来自人工基础信息，经用户确认采用。",
+            },
+            {
+                "field_key": "asset_scope_summary_table",
+                "field_name": "资产总计账面金额",
+                "target": "163,719,131.79",
+                "table_index": 0,
+                "row_index": 1,
+                "column_index": 1,
+                "status": "verified",
+                "comment": "【来源已核验】资产总计账面金额来自《审计报告.pdf》第42页，LLM取数复核通过。",
+            },
+        ],
+    )
+
+    assert len(applied) == 2
+    with zipfile.ZipFile(output) as archive:
+        document_xml = archive.read("word/document.xml").decode("utf-8")
+        comments_xml = archive.read("word/comments.xml").decode("utf-8")
+    assert document_xml.count('w:fill="E2F0D9"') >= 2
+    assert "【来源已核验】" in comments_xml
+    assert "人工基础信息" in comments_xml
+    assert "审计报告.pdf" in comments_xml
+    assert "LLM取数复核通过" in comments_xml
+
+
+def test_missing_xxx_keeps_yellow_highlight_and_gets_red_missing_comment(tmp_path: Path):
+    output = tmp_path / "missing-trace.docx"
+    document = Document()
+    document.add_paragraph("办公地址：XXX")
+    document.save(output)
+
+    findings = highlight_unresolved_placeholders(output)
+    applied = annotate_traceable_content(
+        output,
+        [
+            {
+                "field_key": "office_address",
+                "field_name": "办公地址",
+                "target": "XXX",
+                "context_hint": "办公地址：",
+                "status": "missing",
+                "comment": "【未找到数据】办公地址已检索审计PDF、上传Excel和企查查API，未找到可靠数据，请人工补充。",
+            }
+        ],
+    )
+
+    assert findings and len(applied) == 1
+    reopened = Document(output)
+    missing_run = next(run for run in reopened.paragraphs[0].runs if run.text == "XXX")
+    assert missing_run.font.highlight_color == WD_COLOR_INDEX.YELLOW
+    assert missing_run.font.color.rgb == RGBColor(0xC0, 0x00, 0x00)
+    with zipfile.ZipFile(output) as archive:
+        comments_xml = archive.read("word/comments.xml").decode("utf-8")
+    assert "【未找到数据】" in comments_xml
+    assert "审计PDF、上传Excel和企查查API" in comments_xml
+
+
+def test_traceability_statuses_use_distinct_background_colours(tmp_path: Path):
+    output = tmp_path / "trace-colours.docx"
+    document = Document()
+    document.add_paragraph("已核验：100.00")
+    document.add_paragraph("待对照：200.00")
+    document.add_paragraph("有冲突：300.00")
+    document.save(output)
+
+    applied = annotate_traceable_content(
+        output,
+        [
+            {"field_key": "a", "target": "100.00", "context_hint": "已核验", "status": "verified", "comment": "【来源已核验】测试。"},
+            {"field_key": "b", "target": "200.00", "context_hint": "待对照", "status": "fallback", "comment": "【来源待补充核验】测试。"},
+            {"field_key": "c", "target": "300.00", "context_hint": "有冲突", "status": "review", "comment": "【数据冲突，需人工复核】测试。"},
+        ],
+    )
+
+    assert len(applied) == 3
+    with zipfile.ZipFile(output) as archive:
+        xml = archive.read("word/document.xml").decode("utf-8")
+    assert 'w:fill="E2F0D9"' in xml
+    assert 'w:fill="FFF2CC"' in xml
+    assert 'w:fill="F4CCCC"' in xml

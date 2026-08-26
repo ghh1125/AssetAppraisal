@@ -1,0 +1,20 @@
+{
+  "version": "traceability_comments_output.v1",
+  "type": "object",
+  "required": ["comments"],
+  "properties": {
+    "comments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["comment_id", "comment"],
+        "properties": {
+          "comment_id": {"type": "string"},
+          "comment": {"type": "string"}
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

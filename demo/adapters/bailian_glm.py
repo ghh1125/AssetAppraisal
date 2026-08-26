@@ -20,6 +20,10 @@ from demo.domain.word_comment_locator import (
     build_word_comment_locator_request,
     validate_word_comment_draft_response,
 )
+from demo.domain.traceability_comments import (
+    build_traceability_comment_request,
+    validate_traceability_comment_response,
+)
 
 
 ALLOWED_FIELDS = frozenset(
@@ -112,6 +116,7 @@ class BailianYellowNarrativeAdapter:
         review_prompt: str = "",
         review_model: str = "",
         comment_locator_prompt: str = "",
+        traceability_comment_prompt: str = "",
     ):
         self.client = client
         self.api_key = api_key
@@ -124,6 +129,68 @@ class BailianYellowNarrativeAdapter:
         self.review_prompt = review_prompt
         self.review_model = review_model or model
         self.comment_locator_prompt = comment_locator_prompt
+        self.traceability_comment_prompt = traceability_comment_prompt
+
+    def write_traceability_comments(
+        self,
+        annotations: list[dict[str, Any]],
+    ) -> tuple[dict[int, str], list[str]]:
+        """Rewrite provenance drafts without allowing the model to alter evidence."""
+        request, index_map = build_traceability_comment_request(annotations)
+        if not request["comments"] or not self.traceability_comment_prompt:
+            return {}, []
+        payload = {
+            "model": self.review_model,
+            "messages": [
+                {"role": "system", "content": self.traceability_comment_prompt},
+                {"role": "user", "content": json.dumps(request, ensure_ascii=False)},
+            ],
+            "response_format": {"type": "json_object"},
+        }
+        if self.review_model not in THINKING_ONLY_MODELS:
+            payload["enable_thinking"] = False
+        issues: list[str] = []
+        try:
+            response = self.client.post(
+                f"{self.base_url}/chat/completions",
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                json=payload,
+            )
+            response.raise_for_status()
+            response_payload = json.loads(response.json()["choices"][0]["message"]["content"])
+        except Exception as primary_error:
+            if not self.fallback_model or self.fallback_model == self.review_model:
+                return {}, [f"LLM 来源批注撰写失败，已使用规则正文：{primary_error}"]
+            try:
+                fallback_payload = {**payload, "model": self.fallback_model}
+                if self.fallback_model in THINKING_ONLY_MODELS:
+                    fallback_payload.pop("enable_thinking", None)
+                else:
+                    fallback_payload["enable_thinking"] = False
+                response = self.client.post(
+                    f"{self.base_url}/chat/completions",
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    json=fallback_payload,
+                )
+                response.raise_for_status()
+                response_payload = json.loads(
+                    response.json()["choices"][0]["message"]["content"]
+                )
+            except Exception as fallback_error:
+                return {}, [
+                    "LLM 来源批注撰写失败，已使用规则正文："
+                    f"主模型 {primary_error}；降级模型 {fallback_error}"
+                ]
+        comments, validation_issues = validate_traceability_comment_response(
+            response_payload,
+            allowed_comment_ids=set(index_map),
+        )
+        issues.extend(validation_issues)
+        by_annotation: dict[int, str] = {}
+        for comment_id, body in comments.items():
+            for index in index_map.get(comment_id, []):
+                by_annotation[index] = body
+        return by_annotation, issues
 
     def _request_for_model(
         self,

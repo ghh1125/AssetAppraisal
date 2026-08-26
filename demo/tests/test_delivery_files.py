@@ -40,6 +40,19 @@ def test_evidence_review_prompt_has_a_closed_status_contract():
     }
 
 
+def test_traceability_comment_prompt_has_a_closed_comment_contract():
+    schema = json.loads(
+        Path("demo/prompts/traceability_comments_output.v1.json").read_text(encoding="utf-8")
+    )
+    assert schema["version"] == "traceability_comments_output.v1"
+    assert set(schema["properties"]["comments"]["items"]["required"]) == {
+        "comment_id", "comment"
+    }
+    prompt = Path("demo/prompts/traceability_comments.v1.txt").read_text(encoding="utf-8")
+    assert "不得修改、计算、猜测" in prompt
+    assert "required_title" in prompt
+
+
 def test_prompt_compatibility_schema_uses_the_same_field_names():
     schema = json.loads(Path("demo/prompts/narrative_output.v1.json").read_text(encoding="utf-8"))
     assert set(schema["properties"]["fields"]["properties"]) == set(ALLOWED_FIELDS)

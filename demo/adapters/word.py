@@ -538,6 +538,246 @@ def _set_red_font(run) -> None:
     color.set(f"{{{W}}}val", "C00000")
 
 
+TRACE_STATUS_FILLS = {
+    "verified": "E2F0D9",
+    "fallback": "FFF2CC",
+    "review": "F4CCCC",
+}
+
+
+def _set_run_shading(run, fill: str) -> None:
+    """Apply a light custom background without changing the run typography."""
+    properties = run.find("w:rPr", namespaces=NS)
+    if properties is None:
+        properties = etree.Element(f"{{{W}}}rPr")
+        run.insert(0, properties)
+    for shading in properties.findall("w:shd", namespaces=NS):
+        properties.remove(shading)
+    shading = etree.SubElement(properties, f"{{{W}}}shd")
+    shading.set(f"{{{W}}}val", "clear")
+    shading.set(f"{{{W}}}color", "auto")
+    shading.set(f"{{{W}}}fill", fill)
+
+
+def _compact_context(value: Any) -> str:
+    return re.sub(r"\s+", "", str(value or ""))
+
+
+def _trace_target_runs(
+    roots: dict[str, Any],
+    annotation: dict[str, Any],
+    used: set[tuple[str, int, str, int]],
+) -> tuple[str, Any, list[Any]] | None:
+    """Locate one generated value using its table coordinate or semantic context."""
+    target = str(annotation.get("target", "")).strip()
+    if not target:
+        return None
+    part_hint = str(annotation.get("part") or "word/document.xml")
+    root = roots.get(part_hint)
+    if root is None:
+        return None
+    table_index = annotation.get("table_index")
+    row_index = annotation.get("row_index")
+    column_index = annotation.get("column_index")
+    if all(value not in (None, "") for value in (table_index, row_index, column_index)):
+        tables = root.xpath(".//w:tbl", namespaces=NS)
+        try:
+            table = tables[int(table_index)]
+            row = table.xpath("./w:tr", namespaces=NS)[int(row_index)]
+            cell = row.xpath("./w:tc", namespaces=NS)[int(column_index)]
+        except (IndexError, TypeError, ValueError):
+            return None
+        runs = [run for run in cell.xpath(".//w:r", namespaces=NS) if _run_text(run)]
+        exact = [run for run in runs if _matched_run_value(run, target) is not None]
+        if exact:
+            isolated = _isolate_run_text(exact[0], _matched_run_value(exact[0], target) or target)
+            return (part_hint, root, [isolated] if isolated is not None else exact[:1])
+        if target in _paragraph_text(cell) or _compact_context(target) == _compact_context(_paragraph_text(cell)):
+            return part_hint, root, runs
+        return None
+
+    context_hint = _compact_context(annotation.get("context_hint"))
+    paragraph_index_hint = int(annotation.get("paragraph_index_hint") or 0)
+    target_occurrence = max(1, int(annotation.get("target_occurrence") or 1))
+    candidates: list[tuple[int, Any, list[Any]]] = []
+    for paragraph_index, paragraph in enumerate(root.xpath(".//w:p", namespaces=NS), 1):
+        paragraph_text = _paragraph_text(paragraph)
+        compact_paragraph = _compact_context(paragraph_text)
+        if target not in paragraph_text and _compact_context(target) not in compact_paragraph:
+            continue
+        if context_hint and context_hint not in compact_paragraph:
+            continue
+        runs = [run for run in paragraph.xpath(".//w:r", namespaces=NS) if _run_text(run)]
+        exact = [run for run in runs if _matched_run_value(run, target) is not None]
+        if exact:
+            chosen_runs = [exact[min(target_occurrence - 1, len(exact) - 1)]]
+        else:
+            chosen_runs = runs
+        key = (part_hint, paragraph_index, target, target_occurrence)
+        if chosen_runs and key not in used:
+            candidates.append((paragraph_index, paragraph, chosen_runs))
+    if not candidates:
+        return None
+    if paragraph_index_hint:
+        candidates.sort(key=lambda item: abs(item[0] - paragraph_index_hint))
+    paragraph_index, _paragraph, runs = candidates[0]
+    if len(runs) == 1:
+        matched = _matched_run_value(runs[0], target)
+        if matched is not None:
+            isolated = _isolate_run_text(runs[0], matched)
+            if isolated is not None:
+                runs = [isolated]
+    used.add((part_hint, paragraph_index, target, target_occurrence))
+    return part_hint, root, runs
+
+
+def _existing_comment_id_for_runs(runs: list[Any]) -> str | None:
+    if not runs:
+        return None
+    paragraph_nodes = runs[0].xpath("ancestor::w:p[1]", namespaces=NS)
+    if not paragraph_nodes:
+        return None
+    paragraph = paragraph_nodes[0]
+    siblings = list(paragraph)
+    try:
+        first = siblings.index(runs[0])
+        last = siblings.index(runs[-1])
+    except ValueError:
+        return None
+    starts: list[str] = []
+    for node in siblings[: first + 1]:
+        if node.tag == f"{{{W}}}commentRangeStart":
+            value = node.get(f"{{{W}}}id")
+            if value is not None:
+                starts.append(str(value))
+    for comment_id in reversed(starts):
+        if any(
+            node.tag == f"{{{W}}}commentRangeEnd"
+            and str(node.get(f"{{{W}}}id")) == comment_id
+            for node in siblings[last + 1 :]
+        ):
+            return comment_id
+    return None
+
+
+def annotate_traceable_content(
+    path: Path,
+    annotations: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Give every generated value a state colour and a titled provenance comment.
+
+    ``verified`` is light green, ``fallback`` is light amber, ``review`` is
+    light red, and ``missing`` keeps the yellow placeholder while turning its
+    text red.  Exact table coordinates are preferred; paragraph values use the
+    configured Word context and original paragraph index only as tie-breakers.
+    """
+    actionable = [item for item in annotations if str(item.get("target", "")).strip()]
+    if not actionable:
+        return []
+    with zipfile.ZipFile(path) as archive:
+        items = archive.infolist()
+        contents = {info.filename: archive.read(info.filename) for info in items}
+    roots = {
+        part: etree.fromstring(contents[part])
+        for part in sorted(name for name in contents if PART_RE.fullmatch(name))
+    }
+    comments = _comment_root(contents)
+    existing_ids = [
+        int(item.get(f"{{{W}}}id"))
+        for item in comments.xpath(".//w:comment", namespaces=NS)
+        if str(item.get(f"{{{W}}}id", "")).isdigit()
+    ]
+    next_id = max(existing_ids, default=-1) + 1
+    applied: list[dict[str, Any]] = []
+    changed_parts: set[str] = set()
+    used: set[tuple[str, int, str, int]] = set()
+    for annotation in actionable:
+        located = _trace_target_runs(roots, annotation, used)
+        if located is None:
+            continue
+        part, root, runs = located
+        # Word comments are valid only in the main document story.  A comment
+        # reference written into a header/footer makes LibreOffice reject the
+        # entire package and Word may repair it on open.  Footer/header values
+        # therefore keep their template formatting and are traced through the
+        # corresponding body field when one exists.
+        if part != "word/document.xml":
+            continue
+        runs = [run for run in runs if run is not None]
+        if not runs:
+            continue
+        status = str(annotation.get("status") or "review")
+        existing_comment_id = _existing_comment_id_for_runs(runs)
+        # A prior source-conflict/LLM-review pass already anchored a warning
+        # on this exact generated value.  Preserve that stronger state instead
+        # of repainting the value green or amber during provenance coverage.
+        if existing_comment_id is not None and status != "missing":
+            status = "review"
+        if status == "missing":
+            for run in runs:
+                _set_yellow_highlight(run)
+                _set_red_font(run)
+        else:
+            fill = TRACE_STATUS_FILLS.get(status, TRACE_STATUS_FILLS["review"])
+            for run in runs:
+                _remove_highlight(run)
+                _set_run_shading(run, fill)
+                if status == "review":
+                    _set_red_font(run)
+        comment_id = existing_comment_id
+        if comment_id is None:
+            paragraph_nodes = runs[0].xpath("ancestor::w:p[1]", namespaces=NS)
+            if not paragraph_nodes:
+                continue
+            paragraph = paragraph_nodes[0]
+            first_parent = runs[0].getparent()
+            last_parent = runs[-1].getparent()
+            if first_parent is not paragraph or last_parent is not paragraph:
+                continue
+            comment_id = str(next_id)
+            next_id += 1
+            start = etree.Element(f"{{{W}}}commentRangeStart")
+            start.set(f"{{{W}}}id", comment_id)
+            end = etree.Element(f"{{{W}}}commentRangeEnd")
+            end.set(f"{{{W}}}id", comment_id)
+            paragraph.insert(paragraph.index(runs[0]), start)
+            paragraph.insert(paragraph.index(runs[-1]) + 1, end)
+            reference_run = etree.Element(f"{{{W}}}r")
+            reference = etree.SubElement(reference_run, f"{{{W}}}commentReference")
+            reference.set(f"{{{W}}}id", comment_id)
+            paragraph.insert(paragraph.index(end) + 1, reference_run)
+            comment = etree.SubElement(comments, f"{{{W}}}comment")
+            comment.set(f"{{{W}}}id", comment_id)
+            author = {
+                "verified": "来源已核验",
+                "fallback": "来源待补充核验",
+                "review": "数据复核",
+                "missing": "缺失数据",
+            }.get(status, "数据复核")
+            comment.set(f"{{{W}}}author", author)
+            comment.set(f"{{{W}}}initials", "溯源")
+            _append_comment_paragraph(comment, str(annotation.get("comment", "")).strip())
+        applied.append({**annotation, "comment_id": comment_id, "part": part})
+        contents[part] = etree.tostring(
+            root, xml_declaration=True, encoding="UTF-8", standalone=True
+        )
+        changed_parts.add(part)
+    if not applied:
+        return []
+    _ensure_comment_parts(contents)
+    contents[COMMENTS_PART] = etree.tostring(
+        comments, xml_declaration=True, encoding="UTF-8", standalone=True
+    )
+    existing_names = {info.filename for info in items}
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as output:
+        for info in items:
+            output.writestr(info, contents[info.filename])
+        for name in (DOCUMENT_RELS_PART, CONTENT_TYPES_PART, COMMENTS_PART):
+            if name not in existing_names:
+                output.writestr(name, contents[name])
+    return applied
+
+
 def _comment_root(contents: dict[str, bytes]):
     if COMMENTS_PART in contents:
         return etree.fromstring(contents[COMMENTS_PART])
@@ -781,10 +1021,16 @@ def _default_review_comment(conflict: dict[str, Any], target: str) -> str:
     is_llm_review = conflict.get("review_kind") == "llm_review"
     if conflict.get("llm_comment"):
         value = str(conflict["llm_comment"]).strip()
-        return value if value.startswith("【") else f"【LLM取数复核提示】{value}"
+        value = re.sub(r"^【[^】]+】", "", value).strip()
+        title = (
+            "【数据冲突，需人工复核】"
+            if conflict.get("review_status") in {"needs_review", "conflict", "missing"}
+            else "【来源已核验】"
+        )
+        return f"{title}{value}"
     if is_llm_review:
         return (
-            "【LLM取数复核提示】"
+            "【数据冲突，需人工复核】"
             f"{conflict.get('field_name') or conflict.get('field_key', '')}当前采用 {target}，"
             f"来源为《{conflict.get('excel_file', '')}》“{conflict.get('excel_locator', '')}”。"
             f"复核结论为 {conflict.get('review_status', '')}："
@@ -797,19 +1043,34 @@ def _default_review_comment(conflict: dict[str, Any], target: str) -> str:
             else "本次未上传审计PDF，尚未完成PDF对照。"
         )
         return (
-            "【数据来源提示】"
+            "【来源待补充核验】"
             f"{conflict.get('field_name') or conflict.get('field_key', '')}暂采用"
-            f"《{conflict.get('excel_file', '')}》“{conflict.get('excel_locator', '')}”中的 {target}。"
+            f"{_source_reference(conflict.get('excel_file'), conflict.get('excel_locator'))}中的 {target}。"
             f"{pdf_status}请核对期间、单体/合并口径、金额单位及科目定义。"
         )
     return (
-        "【数据不一致，需人工复核】"
+        "【数据冲突，需人工复核】"
         f"{conflict.get('field_name') or conflict.get('field_key', '')}在审计PDF"
-        f"《{conflict.get('pdf_file', '')}》“{conflict.get('pdf_locator', '')}”中的识别值为 {target}，"
-        f"与《{conflict.get('excel_file', '')}》“{conflict.get('excel_locator', '')}”中的"
+        f"{_source_reference(conflict.get('pdf_file'), conflict.get('pdf_locator'))}中的识别值为 {target}，"
+        f"与{_source_reference(conflict.get('excel_file'), conflict.get('excel_locator'))}中的"
         f" {conflict.get('excel_value', '')} 不一致。报告按来源规则采用PDF值；"
         "请核对期间、单体/合并口径、金额单位及科目定义后确认。"
     )
+
+
+def _source_reference(source_file: Any, locator: Any) -> str:
+    """Render one reviewer-facing source without repeating the file name."""
+    file_text = str(source_file or "").strip()
+    locator_text = str(locator or "").strip()
+    if locator_text.startswith(("《", "审计 PDF", "PDF")) or (
+        file_text and file_text in locator_text
+    ):
+        return locator_text
+    if file_text and locator_text:
+        return f"《{file_text}》“{locator_text}”"
+    if file_text:
+        return f"《{file_text}》"
+    return f"“{locator_text}”" if locator_text else "本次上传材料"
 
 
 def _append_comment_paragraph(comment, text: str, *, item_number: int = 1) -> None:
