@@ -40,6 +40,11 @@ test('opens node one input sections in compact dialogs and hides file-only sourc
   assert.match(source, /form\.registry_info_strategy/)
 })
 
+test('uses capital decrease as the initial and one-click default transaction type', () => {
+  const defaults = [...source.matchAll(/transaction_type:\s*'减资'/g)]
+  assert.equal(defaults.length, 2)
+})
+
 test('renders compact candidate cards with persisted edit and feedback regeneration actions', () => {
   assert.match(source, /candidate-grid/)
   assert.match(source, /openCandidate\(candidate\)/)

@@ -14,7 +14,7 @@ const { t } = useI18n()
 const form = reactive({
   commissioning_party_name: '',
   commissioning_party_short_name: '',
-  transaction_type: '',
+  transaction_type: '减资',
   target_company_name: '',
   target_company_short_name: '',
   valuation_subject_type: '',
@@ -50,7 +50,7 @@ let pollTimer = null
 const DEFAULT_MANUAL_INPUTS = Object.freeze({
   commissioning_party_name: '上海上大热处理有限公司',
   commissioning_party_short_name: '上海上大热处理',
-  transaction_type: '收购',
+  transaction_type: '减资',
   target_company_name: '通富热处理（昆山）有限公司',
   target_company_short_name: '通富昆山',
   valuation_subject_type: '股东全部权益价值',
