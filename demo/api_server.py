@@ -544,7 +544,11 @@ def _execute_fill(run_id: str, selected_fields: dict[str, Any]) -> None:
             output_dir=run_dir,
             ocr_adapter=None,
             ocr_workbook_path=ocr_workbook if ocr_workbook.is_file() else None,
-            llm_adapter=None,
+            # Reuse the configured LLM during the final fill pass for
+            # evidence review and traceability-comment writing. Candidate
+            # prose is supplied through ``llm_values_override`` below, so
+            # this does not regenerate the six user-selected modules.
+            llm_adapter=llm_adapter,
             word_comment_locator_adapter=llm_adapter,
             qichacha_adapter=qichacha_adapter,
             manual_inputs_override=context.get("inputs", {}),

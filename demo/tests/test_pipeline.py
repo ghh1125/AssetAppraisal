@@ -9,7 +9,7 @@ from docx import Document
 from openpyxl import Workbook, load_workbook
 
 import demo.pipeline as pipeline_module
-from demo.pipeline import _apply_ocr_overrides_to_table, _company_profile_table, _default_ocr_field_resolver, _human_source_locator, _ocr_ownership_matrix, _ownership_matrix_summary, _resolve_unresolved_pdf_page_locators, _trace_comment, _validated_qcc_payload, _valuation_date_ownership_matrix, run_pipeline
+from demo.pipeline import _apply_ocr_overrides_to_table, _company_profile_table, _default_ocr_field_resolver, _human_source_locator, _ocr_ownership_matrix, _ownership_matrix_summary, _resolve_unresolved_pdf_page_locators, _table_trace_annotations, _trace_comment, _validated_qcc_payload, _valuation_date_ownership_matrix, run_pipeline
 
 
 def test_internal_ocr_locator_is_rendered_as_a_business_table_label():
@@ -150,6 +150,57 @@ def test_qichacha_and_llm_trace_comments_name_the_real_provider_and_review_scope
     assert llm_comment.startswith("【来源已核验】")
     assert "deepseek-v4-pro-0813" in llm_comment
     assert "经用户选择" in llm_comment
+
+
+def test_verified_trace_comment_explicitly_names_successful_llm_review():
+    comment = _trace_comment(
+        field_key="historical_balance_sheet_table",
+        field_name="被评估单位历史资产负债表",
+        status="verified",
+        source={
+            "kind": "pdf_ocr_xlsx",
+            "file": "审计报告.pdf",
+            "locator": "审计 PDF 第28页",
+        },
+        llm_review={"status": "accept", "reason": "科目、期间和单位一致"},
+        model_name="deepseek-v4-pro-0813",
+    )
+
+    assert "系统语义规则已完成唯一匹配" in comment
+    assert "经大模型核对" in comment
+    assert "复核结论为通过" in comment
+
+
+def test_table_trace_annotations_keep_cell_colours_but_consolidate_same_status_comment():
+    annotations = _table_trace_annotations(
+        {
+            2: [
+                ["项目", "2024年度", "2025年1-6月"],
+                ["营业收入", "100.00", "120.00"],
+                ["投资收益", "XXX", "XXX"],
+            ]
+        },
+        {2: ("historical_income_statement_table", 1, set())},
+        {
+            "historical_income_statement_table": {
+                "kind": "pdf_ocr_xlsx",
+                "file": "审计报告.pdf",
+                "locator": "审计 PDF 第28页",
+            }
+        },
+        {"historical_income_statement_table": "历史利润表"},
+        {"historical_income_statement_table": "verified"},
+        {"historical_income_statement_table": {"status": "accept"}},
+        "deepseek-v4-pro-0813",
+    )
+
+    assert len(annotations) == 6
+    assert sum(item["add_comment"] for item in annotations if item["status"] == "verified") == 1
+    assert sum(item["add_comment"] for item in annotations if item["status"] == "missing") == 1
+    assert all(item["field_name"] == "历史利润表" for item in annotations)
+    assert "整表综合批注" in annotations[0]["comment"]
+    verified_anchor = next(item for item in annotations if item["status"] == "verified" and item["add_comment"])
+    assert verified_anchor["column_index"] > 0
 
 
 def test_qcc_identity_mismatch_is_rejected_instead_of_filling_wrong_profile():

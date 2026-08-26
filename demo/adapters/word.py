@@ -725,7 +725,8 @@ def annotate_traceable_content(
                 if status == "review":
                     _set_red_font(run)
         comment_id = existing_comment_id
-        if comment_id is None:
+        add_comment = bool(annotation.get("add_comment", True))
+        if comment_id is None and add_comment:
             paragraph_nodes = runs[0].xpath("ancestor::w:p[1]", namespaces=NS)
             if not paragraph_nodes:
                 continue
@@ -1273,7 +1274,7 @@ def annotate_source_conflicts(
 
             comment = etree.SubElement(comments, f"{{{W}}}comment")
             comment.set(f"{{{W}}}id", comment_id)
-            comment.set(f"{{{W}}}author", "数据核对")
+            comment.set(f"{{{W}}}author", "数据需人工核对")
             comment.set(f"{{{W}}}initials", "核对")
             _append_comment_paragraph(comment, review_text)
             group = {"comment_id": comment_id, "comment": comment, "count": 1}

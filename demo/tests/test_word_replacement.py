@@ -829,6 +829,57 @@ def test_every_filled_value_gets_status_shading_and_titled_source_comment(tmp_pa
     assert "LLM取数复核通过" in comments_xml
 
 
+def test_table_cells_can_share_one_comment_while_each_keeps_status_shading(tmp_path: Path):
+    output = tmp_path / "table-summary-comment.docx"
+    document = Document()
+    table = document.add_table(rows=2, cols=3)
+    table.cell(0, 0).text = "项目"
+    table.cell(0, 1).text = "2024年度"
+    table.cell(0, 2).text = "2025年1-6月"
+    table.cell(1, 0).text = "营业收入"
+    table.cell(1, 1).text = "100.00"
+    table.cell(1, 2).text = "120.00"
+    document.save(output)
+
+    applied = annotate_traceable_content(
+        output,
+        [
+            {
+                "field_key": "historical_income_statement_table",
+                "field_name": "历史利润表",
+                "target": "100.00",
+                "table_index": 0,
+                "row_index": 1,
+                "column_index": 1,
+                "status": "verified",
+                "add_comment": True,
+                "comment": "【来源已核验】历史利润表整表来自《审计报告.pdf》第28页。",
+            },
+            {
+                "field_key": "historical_income_statement_table",
+                "field_name": "历史利润表",
+                "target": "120.00",
+                "table_index": 0,
+                "row_index": 1,
+                "column_index": 2,
+                "status": "verified",
+                "add_comment": False,
+                "comment": "【来源已核验】历史利润表整表来自《审计报告.pdf》第28页。",
+            },
+        ],
+    )
+
+    assert len(applied) == 2
+    assert applied[0]["comment_id"] is not None
+    assert applied[1]["comment_id"] is None
+    with zipfile.ZipFile(output) as archive:
+        document_xml = archive.read("word/document.xml").decode("utf-8")
+        comments_xml = archive.read("word/comments.xml").decode("utf-8")
+    assert document_xml.count('w:fill="E2F0D9"') >= 2
+    assert document_xml.count("commentRangeStart") == 1
+    assert comments_xml.count("<w:comment ") == 1
+
+
 def test_missing_xxx_keeps_yellow_highlight_and_gets_red_missing_comment(tmp_path: Path):
     output = tmp_path / "missing-trace.docx"
     document = Document()

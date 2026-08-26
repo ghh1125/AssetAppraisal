@@ -785,7 +785,10 @@ def _trace_comment(
     if status == "verified":
         title = "【来源已核验】"
         if review_status == "accept":
-            review_text = "LLM已核对科目、期间、单位和来源定位，复核结论为通过。"
+            review_text = (
+                "系统语义规则已完成唯一匹配，并经大模型核对科目、期间、单位和来源定位，"
+                "复核结论为通过；未发现需提示的来源冲突。"
+            )
         elif source_kind in {"node_input", "manual", "manual_input"}:
             review_text = "本字段属于人工输入，不对其真实性作自动推断。"
         elif source_kind == "qichacha_api":
@@ -883,6 +886,7 @@ def _table_trace_annotations(
         field_name = field_names.get(field_key, field_key)
         source = evidence.get(field_key, {})
         base_status = status_by_field.get(field_key, "verified")
+        table_annotation_start = len(annotations)
         for row_index, row in enumerate(matrix):
             if row_index < first_data_row:
                 continue
@@ -894,29 +898,50 @@ def _table_trace_annotations(
                 if not target:
                     continue
                 status = "missing" if re.search(r"20XX|X{2,}", target, re.I) else base_status
-                cell_name = field_name
-                if row and column_index > 0 and str(row[0]).strip():
-                    cell_name = f"{field_name} / {str(row[0]).strip()}"
                 comment = _trace_comment(
                     field_key=field_key,
-                    field_name=cell_name,
+                    field_name=field_name,
                     status=status,
                     source=source,
                     llm_review=review_by_field.get(field_key),
                     model_name=model_name,
                 )
+                title = TRACE_TITLES.get(status, "")
+                if title and comment.startswith(title):
+                    comment = (
+                        f"{title}{field_name}（整表综合批注）。"
+                        "本批注适用于表内采用相同来源且处于相同审核状态的数据。"
+                        f"{comment[len(title):]}"
+                    )
                 annotations.append(
                     {
                         "field_key": field_key,
-                        "field_name": cell_name,
+                        "field_name": field_name,
                         "target": target,
                         "table_index": table_index,
                         "row_index": row_index,
                         "column_index": column_index,
                         "status": status,
                         "comment": comment,
+                        # Every populated cell keeps its state colour, while
+                        # one representative cell carries the table-level
+                        # provenance note.  A different status (for example a
+                        # missing cell inside an otherwise verified table)
+                        # receives its own summary comment.
+                        "add_comment": False,
                     }
                 )
+        table_annotations = annotations[table_annotation_start:]
+        for status in {str(item.get("status", "")) for item in table_annotations}:
+            candidates = [item for item in table_annotations if item.get("status") == status]
+            # Prefer a value cell over a row label so the summary remains
+            # attached to report data, not a heading-like first column.
+            anchor = next(
+                (item for item in candidates if int(item.get("column_index", 0)) > 0),
+                candidates[0] if candidates else None,
+            )
+            if anchor is not None:
+                anchor["add_comment"] = True
     return annotations
 
 

@@ -415,6 +415,41 @@ def test_fill_node_keeps_qichacha_client_available_for_missing_snapshot_data(mon
     assert calls == [(False, True)]
 
 
+def test_fill_node_passes_llm_to_evidence_review_without_regenerating_candidates(monkeypatch, tmp_path):
+    monkeypatch.setattr(api_server, "RUNS_ROOT", tmp_path)
+    api_server.JOBS.clear()
+    api_server.JOBS["run-1"] = {
+        "run_id": "run-1",
+        "status": "awaiting_selection",
+        "selection_context": {
+            "pdf_path": "",
+            "source_overrides": {},
+            "inputs": {},
+            "use_glm": True,
+            "use_qichacha": False,
+        },
+    }
+    llm = object()
+    captured = {}
+    monkeypatch.setattr(api_server, "_load_local_env", lambda: None)
+    monkeypatch.setattr(
+        api_server,
+        "_build_external_adapters",
+        lambda use_glm, use_qichacha: (llm, None, None),
+    )
+    monkeypatch.setattr(
+        pipeline_module,
+        "run_pipeline",
+        lambda **kwargs: captured.update(kwargs) or object(),
+    )
+
+    api_server._execute_fill("run-1", {"main_products": "已确认候选"})
+
+    assert captured["llm_adapter"] is llm
+    assert captured["word_comment_locator_adapter"] is llm
+    assert captured["llm_values_override"] == {"main_products": "已确认候选"}
+
+
 def test_public_artifacts_expose_only_the_report_word(tmp_path):
     (tmp_path / "资产评估报告_待复核.docx").write_bytes(b"docx")
     for name in (
