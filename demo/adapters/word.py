@@ -576,6 +576,38 @@ def _trace_target_runs(
     root = roots.get(part_hint)
     if root is None:
         return None
+    whole_table_index = annotation.get("whole_table_index")
+    if whole_table_index not in (None, ""):
+        tables = root.xpath(".//w:tbl", namespaces=NS)
+        try:
+            table = tables[int(whole_table_index)]
+        except (IndexError, TypeError, ValueError):
+            return None
+        first_paragraphs = table.xpath("./w:tr[1]/w:tc[1]//w:p[1]", namespaces=NS)
+        last_paragraphs = table.xpath(
+            "./w:tr[last()]/w:tc[last()]//w:p[last()]", namespaces=NS
+        )
+        if not first_paragraphs or not last_paragraphs:
+            return None
+
+        def boundary_run(paragraph: Any, *, first: bool) -> Any:
+            runs = paragraph.xpath("./w:r", namespaces=NS)
+            if runs:
+                return runs[0] if first else runs[-1]
+            # A physical boundary cell may be empty.  Add a harmless empty run
+            # so the comment range can still select the complete Word table.
+            run = etree.SubElement(paragraph, f"{{{W}}}r")
+            etree.SubElement(run, f"{{{W}}}t")
+            return run
+
+        return (
+            part_hint,
+            root,
+            [
+                boundary_run(first_paragraphs[0], first=True),
+                boundary_run(last_paragraphs[0], first=False),
+            ],
+        )
     before_table_index = annotation.get("before_table_index")
     if before_table_index not in (None, ""):
         tables = root.xpath(".//w:tbl", namespaces=NS)
@@ -739,7 +771,10 @@ def annotate_traceable_content(
             continue
         status = str(annotation.get("status") or "review")
         colorize = bool(annotation.get("colorize", True))
-        existing_comment_id = _existing_comment_id_for_runs(runs)
+        whole_table_range = annotation.get("whole_table_index") not in (None, "")
+        existing_comment_id = (
+            None if whole_table_range else _existing_comment_id_for_runs(runs)
+        )
         # A prior source-conflict/LLM-review pass already anchored a warning
         # on this exact generated value.  Preserve that stronger state instead
         # of repainting the value green or amber during provenance coverage.
@@ -763,13 +798,15 @@ def annotate_traceable_content(
             not comment_group or comment_group not in created_comment_groups
         )
         if comment_id is None and add_comment:
-            paragraph_nodes = runs[0].xpath("ancestor::w:p[1]", namespaces=NS)
-            if not paragraph_nodes:
+            first_paragraph_nodes = runs[0].xpath("ancestor::w:p[1]", namespaces=NS)
+            last_paragraph_nodes = runs[-1].xpath("ancestor::w:p[1]", namespaces=NS)
+            if not first_paragraph_nodes or not last_paragraph_nodes:
                 continue
-            paragraph = paragraph_nodes[0]
+            first_paragraph = first_paragraph_nodes[0]
+            last_paragraph = last_paragraph_nodes[0]
             first_parent = runs[0].getparent()
             last_parent = runs[-1].getparent()
-            if first_parent is not paragraph or last_parent is not paragraph:
+            if first_parent is not first_paragraph or last_parent is not last_paragraph:
                 continue
             comment_id = str(next_id)
             next_id += 1
@@ -777,12 +814,27 @@ def annotate_traceable_content(
             start.set(f"{{{W}}}id", comment_id)
             end = etree.Element(f"{{{W}}}commentRangeEnd")
             end.set(f"{{{W}}}id", comment_id)
-            paragraph.insert(paragraph.index(runs[0]), start)
-            paragraph.insert(paragraph.index(runs[-1]) + 1, end)
+            if whole_table_range:
+                # Wrap every cell, including any existing per-cell comments.
+                # The start is placed immediately after paragraph properties;
+                # the end/reference are appended to the final cell paragraph.
+                start_index = (
+                    1
+                    if len(first_paragraph)
+                    and first_paragraph[0].tag == f"{{{W}}}pPr"
+                    else 0
+                )
+                first_paragraph.insert(start_index, start)
+                last_paragraph.append(end)
+            else:
+                if first_paragraph is not last_paragraph:
+                    continue
+                first_paragraph.insert(first_paragraph.index(runs[0]), start)
+                first_paragraph.insert(first_paragraph.index(runs[-1]) + 1, end)
             reference_run = etree.Element(f"{{{W}}}r")
             reference = etree.SubElement(reference_run, f"{{{W}}}commentReference")
             reference.set(f"{{{W}}}id", comment_id)
-            paragraph.insert(paragraph.index(end) + 1, reference_run)
+            last_paragraph.insert(last_paragraph.index(end) + 1, reference_run)
             comment = etree.SubElement(comments, f"{{{W}}}comment")
             comment.set(f"{{{W}}}id", comment_id)
             author = {

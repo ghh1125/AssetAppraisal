@@ -920,15 +920,25 @@ def _table_trace_annotations(
                 if not target:
                     continue
                 status = "missing" if re.search(r"20XX|X{2,}", target, re.I) else base_status
+                row_label = str(row[0]).strip() if row else ""
+                period_label = (
+                    str(matrix[0][column_index]).strip()
+                    if first_data_row > 0 and matrix and column_index < len(matrix[0])
+                    else ""
+                )
+                cell_field_name = (
+                    " / ".join(part for part in (field_name, row_label, period_label) if part)
+                    if status == "missing"
+                    else field_name
+                )
                 comment = _trace_comment(
                     field_key=field_key,
-                    field_name=field_name,
+                    field_name=cell_field_name,
                     status=status,
                     source=source,
-                    # A table-level LLM caution is placed on the table caption.
-                    # It must not make every otherwise valid data cell look
-                    # conflicted or leak the caution into the verified source
-                    # summary carried by the representative cell.
+                    # A table-level LLM caution is carried by the complete
+                    # table-range overview. It must not make every otherwise
+                    # valid data cell look conflicted.
                     llm_review=(
                         None
                         if field_key in review_fields
@@ -936,94 +946,174 @@ def _table_trace_annotations(
                     ),
                     model_name=model_name,
                 )
-                title = TRACE_TITLES.get(status, "")
-                if title and comment.startswith(title):
-                    comment = (
-                        f"{title}{field_name}（整表综合批注）。"
-                        "本批注适用于表内采用相同来源且处于相同审核状态的数据。"
-                        f"{comment[len(title):]}"
-                    )
                 annotations.append(
                     {
                         "field_key": field_key,
-                        "field_name": field_name,
+                        "field_name": cell_field_name,
                         "target": target,
                         "table_index": table_index,
                         "row_index": row_index,
                         "column_index": column_index,
+                        "row_label": row_label,
+                        "period_label": period_label,
                         "status": status,
                         "comment": comment,
-                        # Every populated cell keeps its state colour, while
-                        # one representative cell carries the table-level
-                        # provenance note.  A different status (for example a
-                        # missing cell inside an otherwise verified table)
-                        # receives its own summary comment.
-                        "add_comment": True,
-                        "comment_group": f"table:{table_index}:{status}",
+                        # Normal and fallback cells are consolidated into the
+                        # whole-table overview comment. Missing placeholders
+                        # still keep a directly anchored cell comment; exact
+                        # source conflicts are added by the comparison pass.
+                        "add_comment": status == "missing",
                     }
                 )
     return annotations
 
 
-def _table_review_caption_annotations(
-    table_specs: list[dict[str, Any]],
+def _table_overview_annotations(
+    table_annotations: list[dict[str, Any]],
     table_fields: dict[int, tuple[str, int, set[int]]],
-    fields: dict[str, Any],
+    evidence: dict[str, dict[str, Any]],
     field_names: dict[str, str],
     review_by_field: dict[str, dict[str, Any]],
-    review_fields: set[str],
+    model_name: str,
+    conflict_items: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Put whole-table LLM cautions on the caption, never on a data cell."""
-    specs_by_field = {
-        str(spec.get("field_key", "")): spec
-        for spec in table_specs
-        if isinstance(spec, dict) and spec.get("field_key")
-    }
-    full_name = str(fields.get("target_company_name", "") or "")
-    short_name = str(fields.get("target_company_short_name", "") or "")
-    template_anchors = {
-        "asset_scope_summary_table": "单体层面各类资产负债的金额为：",
-        "long_term_assets_table": "（一）被评估单位主要长期资产的账面记录情况如下：",
-    }
-    annotations: list[dict[str, Any]] = []
+    """Create one comment whose selected range is the complete Word table."""
+    conflict_items = conflict_items or []
+    conflicts_by_field: dict[str, list[dict[str, Any]]] = {}
+    for item in conflict_items:
+        field_key = str(item.get("field_key", ""))
+        if field_key:
+            conflicts_by_field.setdefault(field_key, []).append(item)
+    annotations_by_table: dict[int, list[dict[str, Any]]] = {}
+    for annotation in table_annotations:
+        table_index = annotation.get("table_index")
+        if table_index not in (None, ""):
+            annotations_by_table.setdefault(int(table_index), []).append(annotation)
+
+    overviews: list[dict[str, Any]] = []
     for table_index, (field_key, _first_row, _columns) in table_fields.items():
-        if field_key not in review_fields:
+        cells = annotations_by_table.get(table_index, [])
+        if not cells:
             continue
+        counts = {
+            status: sum(1 for item in cells if item.get("status") == status)
+            for status in ("verified", "fallback", "review", "missing")
+        }
+        exact_conflict_items = conflicts_by_field.get(field_key, [])
+        exact_conflicts = len(exact_conflict_items)
         review = review_by_field.get(field_key, {})
-        field_value = fields.get(field_key)
-        caption = (
-            str(field_value.get("caption", ""))
-            if isinstance(field_value, dict)
-            else ""
+        review_status = str(review.get("status", ""))
+        if review_status in {"needs_review", "conflict", "missing"} or exact_conflicts:
+            status = "review"
+        elif counts["missing"] and counts["missing"] == len(cells):
+            status = "missing"
+        elif counts["missing"] or counts["review"]:
+            status = "review"
+        elif counts["fallback"]:
+            status = "fallback"
+        else:
+            status = "verified"
+
+        overview = _trace_comment(
+            field_key=field_key,
+            field_name=field_names.get(field_key, field_key),
+            status=status,
+            source=evidence.get(field_key, {}),
+            llm_review=review,
+            model_name=model_name,
         )
-        caption = caption or str(specs_by_field.get(field_key, {}).get("caption", ""))
-        caption = template_anchors.get(field_key, caption)
-        if full_name and short_name:
-            caption = caption.replace(full_name, short_name)
-        if not caption:
-            continue
-        reason = str(review.get("comment") or review.get("reason") or "").strip()
-        annotations.append(
+        review_failed_closed = any(
+            phrase in str(review.get("reason") or review.get("comment") or "")
+            for phrase in ("未返回有效", "调用失败", "超时", "结构无效")
+        )
+        if review_status and not review_failed_closed:
+            review_scope_text = "经大模型对本表的科目、期间、单位和来源进行整组复核，"
+        elif review_failed_closed:
+            review_scope_text = "大模型整组复核未取得有效结论；系统已完成逐项来源比对，"
+        else:
+            review_scope_text = "系统已完成逐项来源比对；本次未取得大模型整组复核结论，"
+        if status == "verified":
+            passed_count = len(cells)
+            issue_count = 0
+            missing_count = 0
+            exception_labels: list[str] = []
+            summary = (
+                f"{review_scope_text}"
+                f"并结合逐项来源比对结果：共{len(cells)}个填充位置，"
+                f"通过{passed_count}项，不通过{issue_count}项，缺失{missing_count}项。"
+            )
+        else:
+            missing_count = counts["missing"]
+            table_review_issue = (
+                1
+                if review_status in {"needs_review", "conflict", "missing"}
+                and not (review_status == "missing" and missing_count)
+                else 0
+            )
+            issue_count = max(
+                exact_conflicts,
+                counts["review"],
+                table_review_issue,
+            )
+            passed_count = max(0, len(cells) - issue_count - missing_count)
+            conflict_labels = [
+                str(item.get("field_name", "")).strip()
+                for item in exact_conflict_items
+                if str(item.get("field_name", "")).strip()
+            ]
+            missing_labels = [
+                " / ".join(
+                    part
+                    for part in (
+                        str(item.get("row_label", "")).strip(),
+                        str(item.get("period_label", "")).strip(),
+                    )
+                    if part
+                )
+                for item in cells
+                if item.get("status") == "missing"
+            ]
+            exception_labels = list(
+                dict.fromkeys(label for label in [*conflict_labels, *missing_labels] if label)
+            )
+            summary = (
+                f"{review_scope_text}"
+                f"并结合逐项来源比对结果：共{len(cells)}个填充位置，"
+                f"通过{passed_count}项，不通过{issue_count}项，缺失{missing_count}项。"
+            )
+            if exception_labels:
+                summary += f"异常项目：{'；'.join(exception_labels[:8])}。"
+            if exact_conflicts or counts["review"] or counts["missing"]:
+                summary += "异常数据已在对应的红色或黄色单元格另附具体批注。"
+            else:
+                reason = str(review.get("reason") or review.get("comment") or "").strip()
+                reason = reason.rstrip("。；;")
+                summary += (
+                    f"整表复核未通过的原因：{reason or '存在口径、期间、单位或来源歧义'}；"
+                    "该疑点属于整表口径，未将任一单元格单独标红。"
+                )
+        overviews.append(
             {
-                "field_key": field_key,
-                "field_name": field_names.get(field_key, field_key),
-                "target": caption,
-                "context_hint": caption,
-                "before_table_index": table_index,
-                "status": "review",
+                "field_key": f"{field_key}__table_overview",
+                "field_name": f"{field_names.get(field_key, field_key)}整表审核概览",
+                "target": field_names.get(field_key, field_key),
+                "whole_table_index": table_index,
+                "status": status,
                 "colorize": False,
-                # This is already the human-facing text produced by the
-                # evidence-review LLM for the whole table.  Rewriting it a
-                # second time would discard the concrete scope/period reason.
-                "skip_llm_rewrite": True,
-                "comment": (
-                    "【数据冲突，需人工复核】"
-                    + (reason or "该表存在口径、期间、单位或来源歧义，请核对原始材料。")
-                ),
-                "comment_group": f"table-review:{table_index}",
+                "comment": f"{overview}{summary}",
+                "comment_group": f"whole-table:{table_index}",
+                # The LLM may improve readability, but it cannot omit the
+                # provenance or the audit counts required by the reviewer.
+                "required_comment_fragments": [
+                    "来源",
+                    f"通过{passed_count}项",
+                    f"不通过{issue_count}项",
+                    f"缺失{missing_count}项",
+                    *exception_labels[:8],
+                ],
             }
         )
-    return annotations
+    return overviews
 
 
 @dataclass(frozen=True)
@@ -3193,7 +3283,7 @@ def run_pipeline(
             # Do not attach a second table-level LLM note to an unrelated
             # correct value when exact conflict/fallback cells are already
             # available. The LLM summary is merged into those exact notes.
-            # Whole-table cautions are handled separately on the caption so
+            # Whole-table cautions are handled by the complete table range so
             # they can never be mistaken for a conflict in the first number.
             *non_table_llm_notes,
         ],
@@ -3245,6 +3335,26 @@ def run_pipeline(
         for item in table_level_llm_notes
         if item.get("field_key")
     }
+    table_trace_annotations = _table_trace_annotations(
+        table_replacements,
+        table_fields,
+        evidence,
+        field_names,
+        status_by_field,
+        review_by_field,
+        model_name,
+        conflict_fields={
+            str(item.get("field_key", ""))
+            for item in reviewable_source_conflicts
+            if item.get("field_key")
+        },
+        fallback_fields={
+            str(item.get("field_key", ""))
+            for item in reviewable_source_fallbacks
+            if item.get("field_key")
+        },
+        review_fields=table_review_fields,
+    )
     trace_annotations = [
         *_paragraph_trace_annotations(
             locations,
@@ -3255,33 +3365,15 @@ def run_pipeline(
             review_by_field,
             model_name,
         ),
-        *_table_trace_annotations(
-            table_replacements,
+        *table_trace_annotations,
+        *_table_overview_annotations(
+            table_trace_annotations,
             table_fields,
             evidence,
             field_names,
-            status_by_field,
             review_by_field,
             model_name,
-            conflict_fields={
-                str(item.get("field_key", ""))
-                for item in reviewable_source_conflicts
-                if item.get("field_key")
-            },
-            fallback_fields={
-                str(item.get("field_key", ""))
-                for item in reviewable_source_fallbacks
-                if item.get("field_key")
-            },
-            review_fields=table_review_fields,
-        ),
-        *_table_review_caption_annotations(
-            table_specs,
-            table_fields,
-            fields,
-            field_names,
-            review_by_field,
-            table_review_fields,
+            reviewable_source_conflicts,
         ),
     ]
     # Cover static/unmapped placeholders as well: every visible yellow XXX gets
@@ -3332,6 +3424,19 @@ def run_pipeline(
                     continue
                 annotation = trace_annotations[annotation_index]
                 if annotation.get("skip_llm_rewrite"):
+                    continue
+                required_fragments = [
+                    str(item)
+                    for item in annotation.get("required_comment_fragments", [])
+                    if str(item)
+                ]
+                if required_fragments and not all(
+                    fragment in str(body) for fragment in required_fragments
+                ):
+                    issues.append(
+                        f"LLM 整表批注遗漏必要来源或审核摘要，已保留规则正文："
+                        f"{annotation.get('field_name', '表格审核概览')}"
+                    )
                     continue
                 title = TRACE_TITLES.get(str(annotation.get("status", "")), "")
                 annotation["comment"] = f"{title}{body}"

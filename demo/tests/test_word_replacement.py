@@ -5,6 +5,7 @@ from pathlib import Path
 from docx import Document
 from docx.enum.text import WD_COLOR_INDEX
 from docx.shared import Pt, RGBColor
+from lxml import etree
 
 from demo.adapters.word import (
     annotate_traceable_content,
@@ -880,6 +881,112 @@ def test_table_cells_can_share_one_comment_while_each_keeps_status_shading(tmp_p
     assert document_xml.count('w:fill="C6E0B4"') >= 2
     assert document_xml.count("commentRangeStart") == 1
     assert comments_xml.count("<w:comment ") == 1
+
+
+def test_whole_table_comment_wraps_all_cells_and_keeps_problem_cell_comment(tmp_path: Path):
+    output = tmp_path / "whole-table-comment.docx"
+    document = Document()
+    table = document.add_table(rows=4, cols=2)
+    table.cell(0, 0).text = "项目"
+    table.cell(0, 1).text = "2024年度"
+    table.cell(1, 0).text = "总资产"
+    table.cell(1, 1).text = "100.00"
+    table.cell(2, 0).text = "负债"
+    table.cell(2, 1).text = "40.00"
+    # Keep the physical last row empty to verify that the overview range still
+    # selects the complete table, not merely the last non-empty value.
+    document.save(output)
+
+    problem = annotate_traceable_content(
+        output,
+        [
+            {
+                "field_key": "historical_balance_sheet_table",
+                "target": "40.00",
+                "table_index": 0,
+                "row_index": 2,
+                "column_index": 1,
+                "status": "review",
+                "comment": "【数据冲突，需人工复核】负债金额存在来源差异。",
+            }
+        ],
+    )
+    overview = annotate_traceable_content(
+        output,
+        [
+            {
+                "field_key": "historical_balance_sheet_table__table_overview",
+                "target": "历史资产负债表",
+                "whole_table_index": 0,
+                "status": "review",
+                "colorize": False,
+                "comment": (
+                    "【数据冲突，需人工复核】本表共4个填充位置，"
+                    "其中3个未发现来源冲突，1项需要人工复核。"
+                ),
+            }
+        ],
+    )
+
+    assert len(problem) == 1 and len(overview) == 1
+    assert problem[0]["comment_id"] != overview[0]["comment_id"]
+    # python-docx can reopen the package, proving the nested cell/table ranges
+    # did not create invalid WordprocessingML.
+    assert Document(output).tables[0].cell(2, 1).text == "40.00"
+    with zipfile.ZipFile(output) as archive:
+        document_root = etree.fromstring(archive.read("word/document.xml"))
+        comments_root = etree.fromstring(archive.read("word/comments.xml"))
+    namespace = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    comments = comments_root.xpath(".//w:comment", namespaces=namespace)
+    assert len(comments) == 2
+    overview_id = next(
+        item.get(f"{{{namespace['w']}}}id")
+        for item in comments
+        if "本表共4个填充位置" in "".join(item.itertext())
+    )
+    table_node = document_root.xpath(".//w:tbl", namespaces=namespace)[0]
+    first_paragraph = table_node.xpath("./w:tr[1]/w:tc[1]//w:p[1]", namespaces=namespace)[0]
+    last_paragraph = table_node.xpath("./w:tr[last()]/w:tc[last()]//w:p[last()]", namespaces=namespace)[0]
+    assert first_paragraph.xpath(
+        f'./w:commentRangeStart[@w:id="{overview_id}"]', namespaces=namespace
+    )
+    assert last_paragraph.xpath(
+        f'./w:commentRangeEnd[@w:id="{overview_id}"]', namespaces=namespace
+    )
+
+
+def test_all_verified_table_uses_one_comment_covering_the_complete_table(tmp_path: Path):
+    output = tmp_path / "verified-whole-table.docx"
+    document = Document()
+    table = document.add_table(rows=2, cols=2)
+    table.cell(0, 0).text = "项目"
+    table.cell(0, 1).text = "金额"
+    table.cell(1, 0).text = "总资产"
+    table.cell(1, 1).text = "100.00"
+    document.save(output)
+
+    applied = annotate_traceable_content(
+        output,
+        [
+            {
+                "field_key": "asset_scope_summary_table__table_overview",
+                "target": "资产负债范围表",
+                "whole_table_index": 0,
+                "status": "verified",
+                "colorize": False,
+                "comment": "【来源已核验】本表全部数据来源核验通过。",
+            }
+        ],
+    )
+
+    assert len(applied) == 1
+    with zipfile.ZipFile(output) as archive:
+        document_xml = archive.read("word/document.xml").decode("utf-8")
+        comments_xml = archive.read("word/comments.xml").decode("utf-8")
+    assert document_xml.count("commentRangeStart") == 1
+    assert document_xml.count("commentRangeEnd") == 1
+    assert comments_xml.count("<w:comment ") == 1
+    assert "本表全部数据来源核验通过" in comments_xml
 
 
 def test_table_summary_comment_moves_to_next_cell_when_first_has_review_comment(tmp_path: Path):

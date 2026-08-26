@@ -9,7 +9,7 @@ from docx import Document
 from openpyxl import Workbook, load_workbook
 
 import demo.pipeline as pipeline_module
-from demo.pipeline import _apply_ocr_overrides_to_table, _company_profile_table, _default_ocr_field_resolver, _human_source_locator, _ocr_ownership_matrix, _ownership_matrix_summary, _resolve_unresolved_pdf_page_locators, _table_review_caption_annotations, _table_trace_annotations, _trace_comment, _validated_qcc_payload, _valuation_date_ownership_matrix, run_pipeline
+from demo.pipeline import _apply_ocr_overrides_to_table, _company_profile_table, _default_ocr_field_resolver, _human_source_locator, _ocr_ownership_matrix, _ownership_matrix_summary, _resolve_unresolved_pdf_page_locators, _table_overview_annotations, _table_trace_annotations, _trace_comment, _validated_qcc_payload, _valuation_date_ownership_matrix, run_pipeline
 
 
 def test_internal_ocr_locator_is_rendered_as_a_business_table_label():
@@ -195,11 +195,15 @@ def test_table_trace_annotations_keep_cell_colours_but_consolidate_same_status_c
     )
 
     assert len(annotations) == 6
-    assert all(item["add_comment"] for item in annotations)
-    assert len({item["comment_group"] for item in annotations if item["status"] == "verified"}) == 1
-    assert len({item["comment_group"] for item in annotations if item["status"] == "missing"}) == 1
-    assert all(item["field_name"] == "历史利润表" for item in annotations)
-    assert "整表综合批注" in annotations[0]["comment"]
+    assert all(not item["add_comment"] for item in annotations if item["status"] == "verified")
+    assert all(item["add_comment"] for item in annotations if item["status"] == "missing")
+    assert all(
+        item["field_name"] == "历史利润表"
+        for item in annotations
+        if item["status"] == "verified"
+    )
+    assert all("投资收益" in item["field_name"] for item in annotations if item["status"] == "missing")
+    assert all("整表综合批注" not in item["comment"] for item in annotations)
 
 
 def test_table_trace_annotations_keep_nonconflicting_cells_verified_in_conflict_table():
@@ -267,22 +271,43 @@ def test_table_level_llm_review_does_not_recolour_pdf_cells_but_excel_fallback_s
     assert by_field["long_term_assets_table"] == {"fallback"}
 
 
-def test_table_level_llm_review_targets_caption_without_colouring_it():
-    annotations = _table_review_caption_annotations(
-        [
-            {
-                "field_key": "historical_balance_sheet_table",
-                "target_table_index": 4,
-                "caption": "甲公司近年资产负债状况见下表：",
-            }
-        ],
+def test_table_level_llm_review_targets_the_complete_table_without_colouring_it():
+    cells = _table_trace_annotations(
+        {
+            4: [
+                ["项目", "2024年度"],
+                ["总资产", "100.00"],
+                ["负债", "40.00"],
+            ]
+        },
         {4: ("historical_balance_sheet_table", 1, set())},
         {
-            "target_company_name": "甲公司",
-            "target_company_short_name": "甲公司",
             "historical_balance_sheet_table": {
-                "caption": "甲公司近年资产负债状况见下表："
-            },
+                "kind": "pdf_ocr_xlsx",
+                "file": "审计报告.pdf",
+                "locator": "审计 PDF 第28页",
+            }
+        },
+        {"historical_balance_sheet_table": "历史资产负债表"},
+        {"historical_balance_sheet_table": "review"},
+        {
+            "historical_balance_sheet_table": {
+                "status": "needs_review",
+                "comment": "请确认单体或合并口径。",
+            }
+        },
+        "deepseek-v4-pro-0813",
+        review_fields={"historical_balance_sheet_table"},
+    )
+    annotations = _table_overview_annotations(
+        cells,
+        {4: ("historical_balance_sheet_table", 1, set())},
+        {
+            "historical_balance_sheet_table": {
+                "kind": "pdf_ocr_xlsx",
+                "file": "审计报告.pdf",
+                "locator": "审计 PDF 第28页",
+            }
         },
         {"historical_balance_sheet_table": "历史资产负债表"},
         {
@@ -291,23 +316,55 @@ def test_table_level_llm_review_targets_caption_without_colouring_it():
                 "comment": "请确认单体或合并口径。",
             }
         },
-        {"historical_balance_sheet_table"},
+        "deepseek-v4-pro-0813",
+        [
+            {
+                "field_key": "historical_balance_sheet_table",
+                "field_name": "历史资产负债表 / 负债 / 2024年度",
+            }
+        ],
     )
 
-    assert annotations == [
-        {
-            "field_key": "historical_balance_sheet_table",
-            "field_name": "历史资产负债表",
-            "target": "甲公司近年资产负债状况见下表：",
-            "context_hint": "甲公司近年资产负债状况见下表：",
-            "before_table_index": 4,
-            "status": "review",
-            "colorize": False,
-            "skip_llm_rewrite": True,
-            "comment": "【数据冲突，需人工复核】请确认单体或合并口径。",
-            "comment_group": "table-review:4",
-        }
+    assert len(annotations) == 1
+    assert annotations[0]["whole_table_index"] == 4
+    assert annotations[0]["field_key"] == "historical_balance_sheet_table__table_overview"
+    assert annotations[0]["status"] == "review"
+    assert annotations[0]["colorize"] is False
+    assert "共4个填充位置" in annotations[0]["comment"]
+    assert "通过3项，不通过1项，缺失0项" in annotations[0]["comment"]
+    assert "历史资产负债表 / 负债 / 2024年度" in annotations[0]["comment"]
+    assert annotations[0]["required_comment_fragments"] == [
+        "来源",
+        "通过3项",
+        "不通过1项",
+        "缺失0项",
+        "历史资产负债表 / 负债 / 2024年度",
     ]
+
+
+def test_all_missing_table_does_not_double_count_missing_as_review_failure():
+    cells = _table_trace_annotations(
+        {6: [["无形资产账面金额：", "XXX"], ["使用权资产账面金额：", "XXX"]]},
+        {6: ("asset_scope_summary_table", 0, {1})},
+        {"asset_scope_summary_table": {"kind": "missing"}},
+        {"asset_scope_summary_table": "资产负债范围表"},
+        {"asset_scope_summary_table": "missing"},
+        {"asset_scope_summary_table": {"status": "missing", "reason": "材料未披露"}},
+        "deepseek-v4-pro-0813",
+        review_fields={"asset_scope_summary_table"},
+    )
+    annotations = _table_overview_annotations(
+        cells,
+        {6: ("asset_scope_summary_table", 0, {1})},
+        {"asset_scope_summary_table": {"kind": "missing"}},
+        {"asset_scope_summary_table": "资产负债范围表"},
+        {"asset_scope_summary_table": {"status": "missing", "reason": "材料未披露"}},
+        "deepseek-v4-pro-0813",
+    )
+
+    assert "通过0项，不通过0项，缺失2项" in annotations[0]["comment"]
+    assert "无形资产账面金额：" in annotations[0]["comment"]
+    assert "使用权资产账面金额：" in annotations[0]["comment"]
 
 
 def test_qcc_identity_mismatch_is_rejected_instead_of_filling_wrong_profile():
