@@ -874,8 +874,14 @@ def _table_trace_annotations(
     status_by_field: dict[str, str],
     review_by_field: dict[str, dict[str, Any]],
     model_name: str,
+    conflict_fields: set[str] | None = None,
+    fallback_fields: set[str] | None = None,
+    review_fields: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     annotations: list[dict[str, Any]] = []
+    conflict_fields = conflict_fields or set()
+    fallback_fields = fallback_fields or set()
+    review_fields = review_fields or set()
     for table_index, matrix in table_replacements.items():
         field_key, first_data_row, data_columns = table_fields.get(
             table_index,
@@ -885,8 +891,24 @@ def _table_trace_annotations(
             continue
         field_name = field_names.get(field_key, field_key)
         source = evidence.get(field_key, {})
-        base_status = status_by_field.get(field_key, "verified")
-        table_annotation_start = len(annotations)
+        # A table-level conflict does not mean every cell is wrong. Exact
+        # discrepant cells already receive review comments in the preceding
+        # source-comparison pass; all remaining cells retain their verified
+        # state. Likewise, an Excel fallback table remains amber except for
+        # exact cells escalated by a review comment.
+        if field_key in conflict_fields:
+            base_status = "verified"
+        elif field_key in fallback_fields:
+            base_status = "fallback"
+        elif field_key in review_fields:
+            source_kind = str(source.get("kind", ""))
+            base_status = (
+                "fallback"
+                if "workbook" in source_kind and not source_kind.startswith("pdf_")
+                else "verified"
+            )
+        else:
+            base_status = status_by_field.get(field_key, "verified")
         for row_index, row in enumerate(matrix):
             if row_index < first_data_row:
                 continue
@@ -903,7 +925,15 @@ def _table_trace_annotations(
                     field_name=field_name,
                     status=status,
                     source=source,
-                    llm_review=review_by_field.get(field_key),
+                    # A table-level LLM caution is placed on the table caption.
+                    # It must not make every otherwise valid data cell look
+                    # conflicted or leak the caution into the verified source
+                    # summary carried by the representative cell.
+                    llm_review=(
+                        None
+                        if field_key in review_fields
+                        else review_by_field.get(field_key)
+                    ),
                     model_name=model_name,
                 )
                 title = TRACE_TITLES.get(status, "")
@@ -928,20 +958,71 @@ def _table_trace_annotations(
                         # provenance note.  A different status (for example a
                         # missing cell inside an otherwise verified table)
                         # receives its own summary comment.
-                        "add_comment": False,
+                        "add_comment": True,
+                        "comment_group": f"table:{table_index}:{status}",
                     }
                 )
-        table_annotations = annotations[table_annotation_start:]
-        for status in {str(item.get("status", "")) for item in table_annotations}:
-            candidates = [item for item in table_annotations if item.get("status") == status]
-            # Prefer a value cell over a row label so the summary remains
-            # attached to report data, not a heading-like first column.
-            anchor = next(
-                (item for item in candidates if int(item.get("column_index", 0)) > 0),
-                candidates[0] if candidates else None,
-            )
-            if anchor is not None:
-                anchor["add_comment"] = True
+    return annotations
+
+
+def _table_review_caption_annotations(
+    table_specs: list[dict[str, Any]],
+    table_fields: dict[int, tuple[str, int, set[int]]],
+    fields: dict[str, Any],
+    field_names: dict[str, str],
+    review_by_field: dict[str, dict[str, Any]],
+    review_fields: set[str],
+) -> list[dict[str, Any]]:
+    """Put whole-table LLM cautions on the caption, never on a data cell."""
+    specs_by_field = {
+        str(spec.get("field_key", "")): spec
+        for spec in table_specs
+        if isinstance(spec, dict) and spec.get("field_key")
+    }
+    full_name = str(fields.get("target_company_name", "") or "")
+    short_name = str(fields.get("target_company_short_name", "") or "")
+    template_anchors = {
+        "asset_scope_summary_table": "单体层面各类资产负债的金额为：",
+        "long_term_assets_table": "（一）被评估单位主要长期资产的账面记录情况如下：",
+    }
+    annotations: list[dict[str, Any]] = []
+    for table_index, (field_key, _first_row, _columns) in table_fields.items():
+        if field_key not in review_fields:
+            continue
+        review = review_by_field.get(field_key, {})
+        field_value = fields.get(field_key)
+        caption = (
+            str(field_value.get("caption", ""))
+            if isinstance(field_value, dict)
+            else ""
+        )
+        caption = caption or str(specs_by_field.get(field_key, {}).get("caption", ""))
+        caption = template_anchors.get(field_key, caption)
+        if full_name and short_name:
+            caption = caption.replace(full_name, short_name)
+        if not caption:
+            continue
+        reason = str(review.get("comment") or review.get("reason") or "").strip()
+        annotations.append(
+            {
+                "field_key": field_key,
+                "field_name": field_names.get(field_key, field_key),
+                "target": caption,
+                "context_hint": caption,
+                "before_table_index": table_index,
+                "status": "review",
+                "colorize": False,
+                # This is already the human-facing text produced by the
+                # evidence-review LLM for the whole table.  Rewriting it a
+                # second time would discard the concrete scope/period reason.
+                "skip_llm_rewrite": True,
+                "comment": (
+                    "【数据冲突，需人工复核】"
+                    + (reason or "该表存在口径、期间、单位或来源歧义，请核对原始材料。")
+                ),
+                "comment_group": f"table-review:{table_index}",
+            }
+        )
     return annotations
 
 
@@ -3075,6 +3156,33 @@ def run_pipeline(
     )
     emit_progress("fill_word", "check_placeholders", "正在检查未找到证据的 XXX 并保留黄色高亮", 91)
     unresolved_findings = highlight_unresolved_placeholders(report)
+    compared_field_keys = {
+        str(item.get("field_key", ""))
+        for item in [*reviewable_source_conflicts, *reviewable_source_fallbacks]
+        if item.get("field_key")
+    }
+    standalone_llm_notes = [
+        item
+        for item in reviewable_llm_notes
+        if str(item.get("field_key", "")) not in compared_field_keys
+    ]
+    configured_table_field_keys = {
+        str(spec.get("field_key", ""))
+        for spec in table_specs
+        if isinstance(spec, dict) and spec.get("field_key")
+    }
+    if isinstance(long_term_table, dict):
+        configured_table_field_keys.add("long_term_assets_table")
+    table_level_llm_notes = [
+        item
+        for item in standalone_llm_notes
+        if str(item.get("field_key", "")) in configured_table_field_keys
+    ]
+    non_table_llm_notes = [
+        item
+        for item in standalone_llm_notes
+        if str(item.get("field_key", "")) not in configured_table_field_keys
+    ]
     source_conflict_annotations = annotate_source_conflicts(
         report,
         [
@@ -3082,7 +3190,12 @@ def run_pipeline(
                 [*reviewable_source_conflicts, *reviewable_source_fallbacks],
                 reviewable_llm_notes,
             ),
-            *reviewable_llm_notes,
+            # Do not attach a second table-level LLM note to an unrelated
+            # correct value when exact conflict/fallback cells are already
+            # available. The LLM summary is merged into those exact notes.
+            # Whole-table cautions are handled separately on the caption so
+            # they can never be mistaken for a conflict in the first number.
+            *non_table_llm_notes,
         ],
         location_selector=word_comment_locator_adapter,
     )
@@ -3127,6 +3240,11 @@ def run_pipeline(
     table_fields[8] = ("trademark_summary", 1, set())
     table_fields[9] = ("software_copyrights", 1, set())
     model_name = str(getattr(llm_adapter, "model", "") or "")
+    table_review_fields = {
+        str(item.get("field_key", ""))
+        for item in table_level_llm_notes
+        if item.get("field_key")
+    }
     trace_annotations = [
         *_paragraph_trace_annotations(
             locations,
@@ -3145,6 +3263,25 @@ def run_pipeline(
             status_by_field,
             review_by_field,
             model_name,
+            conflict_fields={
+                str(item.get("field_key", ""))
+                for item in reviewable_source_conflicts
+                if item.get("field_key")
+            },
+            fallback_fields={
+                str(item.get("field_key", ""))
+                for item in reviewable_source_fallbacks
+                if item.get("field_key")
+            },
+            review_fields=table_review_fields,
+        ),
+        *_table_review_caption_annotations(
+            table_specs,
+            table_fields,
+            fields,
+            field_names,
+            review_by_field,
+            table_review_fields,
         ),
     ]
     # Cover static/unmapped placeholders as well: every visible yellow XXX gets
@@ -3194,6 +3331,8 @@ def run_pipeline(
                 if not 0 <= annotation_index < len(trace_annotations):
                     continue
                 annotation = trace_annotations[annotation_index]
+                if annotation.get("skip_llm_rewrite"):
+                    continue
                 title = TRACE_TITLES.get(str(annotation.get("status", "")), "")
                 annotation["comment"] = f"{title}{body}"
         except Exception as exc:

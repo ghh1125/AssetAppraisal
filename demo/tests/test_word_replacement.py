@@ -822,7 +822,7 @@ def test_every_filled_value_gets_status_shading_and_titled_source_comment(tmp_pa
     with zipfile.ZipFile(output) as archive:
         document_xml = archive.read("word/document.xml").decode("utf-8")
         comments_xml = archive.read("word/comments.xml").decode("utf-8")
-    assert document_xml.count('w:fill="E2F0D9"') >= 2
+    assert document_xml.count('w:fill="C6E0B4"') >= 2
     assert "【来源已核验】" in comments_xml
     assert "人工基础信息" in comments_xml
     assert "审计报告.pdf" in comments_xml
@@ -853,6 +853,7 @@ def test_table_cells_can_share_one_comment_while_each_keeps_status_shading(tmp_p
                 "column_index": 1,
                 "status": "verified",
                 "add_comment": True,
+                "comment_group": "table:0:verified",
                 "comment": "【来源已核验】历史利润表整表来自《审计报告.pdf》第28页。",
             },
             {
@@ -863,7 +864,8 @@ def test_table_cells_can_share_one_comment_while_each_keeps_status_shading(tmp_p
                 "row_index": 1,
                 "column_index": 2,
                 "status": "verified",
-                "add_comment": False,
+                "add_comment": True,
+                "comment_group": "table:0:verified",
                 "comment": "【来源已核验】历史利润表整表来自《审计报告.pdf》第28页。",
             },
         ],
@@ -875,9 +877,72 @@ def test_table_cells_can_share_one_comment_while_each_keeps_status_shading(tmp_p
     with zipfile.ZipFile(output) as archive:
         document_xml = archive.read("word/document.xml").decode("utf-8")
         comments_xml = archive.read("word/comments.xml").decode("utf-8")
-    assert document_xml.count('w:fill="E2F0D9"') >= 2
+    assert document_xml.count('w:fill="C6E0B4"') >= 2
     assert document_xml.count("commentRangeStart") == 1
     assert comments_xml.count("<w:comment ") == 1
+
+
+def test_table_summary_comment_moves_to_next_cell_when_first_has_review_comment(tmp_path: Path):
+    output = tmp_path / "table-summary-after-conflict.docx"
+    document = Document()
+    table = document.add_table(rows=2, cols=3)
+    table.cell(0, 0).text = "项目"
+    table.cell(0, 1).text = "2024年度"
+    table.cell(0, 2).text = "2025年度"
+    table.cell(1, 0).text = "总资产"
+    table.cell(1, 1).text = "100.00"
+    table.cell(1, 2).text = "120.00"
+    document.save(output)
+
+    annotate_traceable_content(
+        output,
+        [
+            {
+                "field_key": "historical_balance_sheet_table",
+                "target": "100.00",
+                "table_index": 0,
+                "row_index": 1,
+                "column_index": 1,
+                "status": "review",
+                "comment": "【数据冲突，需人工复核】该单元格存在来源差异。",
+            }
+        ],
+    )
+    applied = annotate_traceable_content(
+        output,
+        [
+            {
+                "field_key": "historical_balance_sheet_table",
+                "target": "100.00",
+                "table_index": 0,
+                "row_index": 1,
+                "column_index": 1,
+                "status": "verified",
+                "add_comment": True,
+                "comment_group": "table:0:verified",
+                "comment": "【来源已核验】本表正常数据来自审计报告第2页。",
+            },
+            {
+                "field_key": "historical_balance_sheet_table",
+                "target": "120.00",
+                "table_index": 0,
+                "row_index": 1,
+                "column_index": 2,
+                "status": "verified",
+                "add_comment": True,
+                "comment_group": "table:0:verified",
+                "comment": "【来源已核验】本表正常数据来自审计报告第2页。",
+            },
+        ],
+    )
+
+    assert applied[0]["comment_id"] is not None
+    assert applied[1]["comment_id"] is not None
+    assert applied[0]["comment_id"] != applied[1]["comment_id"]
+    with zipfile.ZipFile(output) as archive:
+        comments_xml = archive.read("word/comments.xml").decode("utf-8")
+    assert "该单元格存在来源差异" in comments_xml
+    assert "本表正常数据来自审计报告第2页" in comments_xml
 
 
 def test_missing_xxx_keeps_yellow_highlight_and_gets_red_missing_comment(tmp_path: Path):
@@ -932,6 +997,41 @@ def test_traceability_statuses_use_distinct_background_colours(tmp_path: Path):
     assert len(applied) == 3
     with zipfile.ZipFile(output) as archive:
         xml = archive.read("word/document.xml").decode("utf-8")
-    assert 'w:fill="E2F0D9"' in xml
-    assert 'w:fill="FFF2CC"' in xml
-    assert 'w:fill="F4CCCC"' in xml
+    assert 'w:fill="C6E0B4"' in xml
+    assert 'w:fill="FFE699"' in xml
+    assert 'w:fill="F4B6B6"' in xml
+
+
+def test_table_caption_review_comment_does_not_recolour_caption(tmp_path: Path):
+    output = tmp_path / "caption-review.docx"
+    document = Document()
+    document.add_paragraph("甲公司近年资产负债状况见下表：")
+    table = document.add_table(rows=2, cols=2)
+    table.cell(0, 0).text = "项目"
+    table.cell(0, 1).text = "金额"
+    table.cell(1, 0).text = "总资产"
+    table.cell(1, 1).text = "100.00"
+    document.save(output)
+
+    applied = annotate_traceable_content(
+        output,
+        [
+            {
+                "field_key": "historical_balance_sheet_table",
+                "target": "甲公司近年资产负债状况见下表：",
+                "context_hint": "甲公司近年资产负债状况见下表：",
+                "before_table_index": 0,
+                "status": "review",
+                "colorize": False,
+                "comment": "【数据冲突，需人工复核】请确认报表口径。",
+            }
+        ],
+    )
+
+    assert len(applied) == 1
+    with zipfile.ZipFile(output) as archive:
+        document_xml = archive.read("word/document.xml").decode("utf-8")
+        comments_xml = archive.read("word/comments.xml").decode("utf-8")
+    assert "F4B6B6" not in document_xml
+    assert "请确认报表口径" in comments_xml
+    assert "数据需人工核对" in comments_xml

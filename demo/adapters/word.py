@@ -539,9 +539,9 @@ def _set_red_font(run) -> None:
 
 
 TRACE_STATUS_FILLS = {
-    "verified": "E2F0D9",
-    "fallback": "FFF2CC",
-    "review": "F4CCCC",
+    "verified": "C6E0B4",
+    "fallback": "FFE699",
+    "review": "F4B6B6",
 }
 
 
@@ -575,6 +575,36 @@ def _trace_target_runs(
     part_hint = str(annotation.get("part") or "word/document.xml")
     root = roots.get(part_hint)
     if root is None:
+        return None
+    before_table_index = annotation.get("before_table_index")
+    if before_table_index not in (None, ""):
+        tables = root.xpath(".//w:tbl", namespaces=NS)
+        try:
+            table = tables[int(before_table_index)]
+        except (IndexError, TypeError, ValueError):
+            return None
+        context_hint = _compact_context(annotation.get("context_hint") or target)
+        previous = table.getprevious()
+        inspected = 0
+        while previous is not None and inspected < 12:
+            if previous.tag == f"{{{W}}}p":
+                inspected += 1
+                paragraph_text = _paragraph_text(previous)
+                compact_paragraph = _compact_context(paragraph_text)
+                if context_hint and context_hint not in compact_paragraph:
+                    previous = previous.getprevious()
+                    continue
+                runs = [
+                    run
+                    for run in previous.xpath(".//w:r", namespaces=NS)
+                    if _run_text(run)
+                ]
+                if runs:
+                    exact = [
+                        run for run in runs if _matched_run_value(run, target) is not None
+                    ]
+                    return part_hint, root, exact[:1] or runs
+            previous = previous.getprevious()
         return None
     table_index = annotation.get("table_index")
     row_index = annotation.get("row_index")
@@ -691,6 +721,7 @@ def annotate_traceable_content(
     applied: list[dict[str, Any]] = []
     changed_parts: set[str] = set()
     used: set[tuple[str, int, str, int]] = set()
+    created_comment_groups: set[str] = set()
     for annotation in actionable:
         located = _trace_target_runs(roots, annotation, used)
         if located is None:
@@ -707,25 +738,30 @@ def annotate_traceable_content(
         if not runs:
             continue
         status = str(annotation.get("status") or "review")
+        colorize = bool(annotation.get("colorize", True))
         existing_comment_id = _existing_comment_id_for_runs(runs)
         # A prior source-conflict/LLM-review pass already anchored a warning
         # on this exact generated value.  Preserve that stronger state instead
         # of repainting the value green or amber during provenance coverage.
-        if existing_comment_id is not None and status != "missing":
+        if existing_comment_id is not None and status != "missing" and colorize:
             status = "review"
-        if status == "missing":
-            for run in runs:
-                _set_yellow_highlight(run)
-                _set_red_font(run)
-        else:
-            fill = TRACE_STATUS_FILLS.get(status, TRACE_STATUS_FILLS["review"])
-            for run in runs:
-                _remove_highlight(run)
-                _set_run_shading(run, fill)
-                if status == "review":
+        if colorize:
+            if status == "missing":
+                for run in runs:
+                    _set_yellow_highlight(run)
                     _set_red_font(run)
+            else:
+                fill = TRACE_STATUS_FILLS.get(status, TRACE_STATUS_FILLS["review"])
+                for run in runs:
+                    _remove_highlight(run)
+                    _set_run_shading(run, fill)
+                    if status == "review":
+                        _set_red_font(run)
         comment_id = existing_comment_id
-        add_comment = bool(annotation.get("add_comment", True))
+        comment_group = str(annotation.get("comment_group", "")).strip()
+        add_comment = bool(annotation.get("add_comment", True)) and (
+            not comment_group or comment_group not in created_comment_groups
+        )
         if comment_id is None and add_comment:
             paragraph_nodes = runs[0].xpath("ancestor::w:p[1]", namespaces=NS)
             if not paragraph_nodes:
@@ -752,12 +788,14 @@ def annotate_traceable_content(
             author = {
                 "verified": "来源已核验",
                 "fallback": "来源待补充核验",
-                "review": "数据复核",
+                "review": "数据需人工核对",
                 "missing": "缺失数据",
-            }.get(status, "数据复核")
+            }.get(status, "数据需人工核对")
             comment.set(f"{{{W}}}author", author)
             comment.set(f"{{{W}}}initials", "溯源")
             _append_comment_paragraph(comment, str(annotation.get("comment", "")).strip())
+            if comment_group:
+                created_comment_groups.add(comment_group)
         applied.append({**annotation, "comment_id": comment_id, "part": part})
         contents[part] = etree.tostring(
             root, xml_declaration=True, encoding="UTF-8", standalone=True
