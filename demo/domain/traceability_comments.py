@@ -42,7 +42,7 @@ def build_traceability_comment_request(
             "comment_id": f"trace-{len(grouped) + 1}",
             "field_name": str(item.get("field_name") or "该字段"),
             "status": status,
-            "required_title": TRACE_TITLES[status],
+            "required_title": str(item.get("required_title") or TRACE_TITLES[status]),
             "evidence_summary": _without_title(item.get("comment")),
         }
     groups = list(grouped.values())

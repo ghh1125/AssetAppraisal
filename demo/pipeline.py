@@ -901,12 +901,10 @@ def _table_trace_annotations(
         elif field_key in fallback_fields:
             base_status = "fallback"
         elif field_key in review_fields:
-            source_kind = str(source.get("kind", ""))
-            base_status = (
-                "fallback"
-                if "workbook" in source_kind and not source_kind.startswith("pdf_")
-                else "verified"
-            )
+            # No exact cell can be singled out for a whole-table review. Mark
+            # the complete table as requiring attention instead of leaving
+            # every value green while the overview says the review failed.
+            base_status = "review"
         else:
             base_status = status_by_field.get(field_key, "verified")
         for row_index, row in enumerate(matrix):
@@ -1029,33 +1027,50 @@ def _table_overview_annotations(
         if review_status and not review_failed_closed:
             review_scope_text = "经大模型对本表的科目、期间、单位和来源进行整组复核，"
         elif review_failed_closed:
-            review_scope_text = "大模型整组复核未取得有效结论；系统已完成逐项来源比对，"
+            review_scope_text = (
+                "LLM调用失败，请检查API Key、模型权限/额度、网络或返回结构；"
+                "系统已完成逐项来源比对，"
+            )
         else:
             review_scope_text = "系统已完成逐项来源比对；本次未取得大模型整组复核结论，"
+        required_title = TRACE_TITLES.get(status, "")
+        if review_failed_closed:
+            required_title = "【LLM调用失败，需人工复核】"
+            overview = re.sub(r"^【[^】]+】", required_title, overview)
         if status == "verified":
             passed_count = len(cells)
             issue_count = 0
             missing_count = 0
+            pending_count = 0
             exception_labels: list[str] = []
             summary = (
                 f"{review_scope_text}"
                 f"并结合逐项来源比对结果：共{len(cells)}个填充位置，"
-                f"通过{passed_count}项，不通过{issue_count}项，缺失{missing_count}项。"
+                f"通过{passed_count}项，不通过{issue_count}项，"
+                f"待人工核对{pending_count}项，缺失{missing_count}项。"
             )
         else:
             missing_count = counts["missing"]
-            table_review_issue = (
-                1
-                if review_status in {"needs_review", "conflict", "missing"}
-                and not (review_status == "missing" and missing_count)
-                else 0
+            if review_failed_closed:
+                issue_count = exact_conflicts
+                pending_count = max(0, len(cells) - issue_count - missing_count)
+            else:
+                table_review_issue = (
+                    1
+                    if review_status in {"needs_review", "conflict", "missing"}
+                    and not (review_status == "missing" and missing_count)
+                    else 0
+                )
+                issue_count = max(
+                    exact_conflicts,
+                    counts["review"],
+                    table_review_issue,
+                )
+                pending_count = 0
+            passed_count = max(
+                0,
+                len(cells) - issue_count - pending_count - missing_count,
             )
-            issue_count = max(
-                exact_conflicts,
-                counts["review"],
-                table_review_issue,
-            )
-            passed_count = max(0, len(cells) - issue_count - missing_count)
             conflict_labels = [
                 str(item.get("field_name", "")).strip()
                 for item in exact_conflict_items
@@ -1079,12 +1094,18 @@ def _table_overview_annotations(
             summary = (
                 f"{review_scope_text}"
                 f"并结合逐项来源比对结果：共{len(cells)}个填充位置，"
-                f"通过{passed_count}项，不通过{issue_count}项，缺失{missing_count}项。"
+                f"通过{passed_count}项，不通过{issue_count}项，"
+                f"待人工核对{pending_count}项，缺失{missing_count}项。"
             )
             if exception_labels:
                 summary += f"异常项目：{'；'.join(exception_labels[:8])}。"
-            if exact_conflicts or counts["review"] or counts["missing"]:
+            if exact_conflicts or counts["missing"]:
                 summary += "异常数据已在对应的红色或黄色单元格另附具体批注。"
+            elif pending_count:
+                summary += (
+                    "由于LLM调用失败，无法完成自动复核并定位到单一异常值；"
+                    "整张表已统一标红，请人工对照上述来源核验。"
+                )
             else:
                 reason = str(review.get("reason") or review.get("comment") or "").strip()
                 reason = reason.rstrip("。；;")
@@ -1102,12 +1123,14 @@ def _table_overview_annotations(
                 "colorize": False,
                 "comment": f"{overview}{summary}",
                 "comment_group": f"whole-table:{table_index}",
+                "required_title": required_title,
                 # The LLM may improve readability, but it cannot omit the
                 # provenance or the audit counts required by the reviewer.
                 "required_comment_fragments": [
                     "来源",
                     f"通过{passed_count}项",
                     f"不通过{issue_count}项",
+                    f"待人工核对{pending_count}项",
                     f"缺失{missing_count}项",
                     *exception_labels[:8],
                 ],
@@ -3438,7 +3461,10 @@ def run_pipeline(
                         f"{annotation.get('field_name', '表格审核概览')}"
                     )
                     continue
-                title = TRACE_TITLES.get(str(annotation.get("status", "")), "")
+                title = str(
+                    annotation.get("required_title")
+                    or TRACE_TITLES.get(str(annotation.get("status", "")), "")
+                )
                 annotation["comment"] = f"{title}{body}"
         except Exception as exc:
             issues.append(f"LLM 来源批注撰写失败，已使用规则正文：{exc}")

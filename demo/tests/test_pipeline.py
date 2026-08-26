@@ -227,7 +227,7 @@ def test_table_trace_annotations_keep_nonconflicting_cells_verified_in_conflict_
     assert all(item["status"] == "verified" for item in annotations)
 
 
-def test_table_level_llm_review_does_not_recolour_pdf_cells_but_excel_fallback_stays_amber():
+def test_table_level_llm_review_marks_the_complete_table_for_attention():
     common = {
         4: [
             ["项目", "2024年度"],
@@ -267,8 +267,8 @@ def test_table_level_llm_review_does_not_recolour_pdf_cells_but_excel_fallback_s
     by_field = {}
     for item in annotations:
         by_field.setdefault(item["field_key"], set()).add(item["status"])
-    assert by_field["historical_balance_sheet_table"] == {"verified"}
-    assert by_field["long_term_assets_table"] == {"fallback"}
+    assert by_field["historical_balance_sheet_table"] == {"review"}
+    assert by_field["long_term_assets_table"] == {"review"}
 
 
 def test_table_level_llm_review_targets_the_complete_table_without_colouring_it():
@@ -331,12 +331,13 @@ def test_table_level_llm_review_targets_the_complete_table_without_colouring_it(
     assert annotations[0]["status"] == "review"
     assert annotations[0]["colorize"] is False
     assert "共4个填充位置" in annotations[0]["comment"]
-    assert "通过3项，不通过1项，缺失0项" in annotations[0]["comment"]
+    assert "通过0项，不通过4项，待人工核对0项，缺失0项" in annotations[0]["comment"]
     assert "历史资产负债表 / 负债 / 2024年度" in annotations[0]["comment"]
     assert annotations[0]["required_comment_fragments"] == [
         "来源",
-        "通过3项",
-        "不通过1项",
+        "通过0项",
+        "不通过4项",
+        "待人工核对0项",
         "缺失0项",
         "历史资产负债表 / 负债 / 2024年度",
     ]
@@ -362,9 +363,43 @@ def test_all_missing_table_does_not_double_count_missing_as_review_failure():
         "deepseek-v4-pro-0813",
     )
 
-    assert "通过0项，不通过0项，缺失2项" in annotations[0]["comment"]
+    assert "通过0项，不通过0项，待人工核对0项，缺失2项" in annotations[0]["comment"]
     assert "无形资产账面金额：" in annotations[0]["comment"]
     assert "使用权资产账面金额：" in annotations[0]["comment"]
+
+
+def test_failed_llm_table_review_marks_all_cells_pending_instead_of_inventing_one_failure():
+    review = {
+        "historical_balance_sheet_table": {
+            "status": "needs_review",
+            "reason": "LLM未返回有效复核结论，已转为人工复核。",
+        }
+    }
+    cells = _table_trace_annotations(
+        {4: [["项目", "2024年度"], ["总资产", "100.00"], ["负债", "40.00"]]},
+        {4: ("historical_balance_sheet_table", 1, set())},
+        {"historical_balance_sheet_table": {"kind": "pdf_ocr_xlsx"}},
+        {"historical_balance_sheet_table": "历史资产负债表"},
+        {"historical_balance_sheet_table": "review"},
+        review,
+        "deepseek-v4-pro-0813",
+        review_fields={"historical_balance_sheet_table"},
+    )
+    annotations = _table_overview_annotations(
+        cells,
+        {4: ("historical_balance_sheet_table", 1, set())},
+        {"historical_balance_sheet_table": {"kind": "pdf_ocr_xlsx"}},
+        {"historical_balance_sheet_table": "历史资产负债表"},
+        review,
+        "deepseek-v4-pro-0813",
+    )
+
+    assert {item["status"] for item in cells} == {"review"}
+    assert annotations[0]["required_title"] == "【LLM调用失败，需人工复核】"
+    assert annotations[0]["comment"].startswith("【LLM调用失败，需人工复核】")
+    assert "请检查API Key、模型权限/额度、网络或返回结构" in annotations[0]["comment"]
+    assert "通过0项，不通过0项，待人工核对4项，缺失0项" in annotations[0]["comment"]
+    assert "整张表已统一标红" in annotations[0]["comment"]
 
 
 def test_qcc_identity_mismatch_is_rejected_instead_of_filling_wrong_profile():
