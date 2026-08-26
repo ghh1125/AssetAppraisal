@@ -829,18 +829,34 @@ def _paragraph_trace_annotations(
         source = evidence.get(field_key, {})
         missing = bool(re.search(r"20XX|X{2,}", value, re.I))
         status = "missing" if missing else status_by_field.get(field_key, "verified")
+        profile_section = field_key in {
+            "company_profile_section",
+            "company_profile_text",
+        }
         field_name = (
+            "3、被评估单位概述"
+            if profile_section
+            else
             field_names.get(field_key)
             or str(location.get("field_name") or field_key or "该字段")
         )
-        comment = _trace_comment(
-            field_key=field_key,
-            field_name=field_name,
-            status=status,
-            source=source,
-            llm_review=review_by_field.get(field_key),
-            model_name=model_name,
-        )
+        if profile_section and status != "missing":
+            model = model_name or "百炼大模型"
+            comment = (
+                f"【来源已核验】3、被评估单位概述。来源：百炼模型 {model}；"
+                "模型仅依据本次已解析的PDF、Excel、补充材料及已启用的企查查接口证据，"
+                "分别生成企业介绍候选内容，并仅将用户在节点2选择确认的模块合并写入本节。"
+                "该叙述用于报告内容组织，不作为审计数值依据。"
+            )
+        else:
+            comment = _trace_comment(
+                field_key=field_key,
+                field_name=field_name,
+                status=status,
+                source=source,
+                llm_review=review_by_field.get(field_key),
+                model_name=model_name,
+            )
         marker = str(location.get("marker") or "")
         context = str(location.get("context") or "")
         context_hint = (
@@ -852,7 +868,9 @@ def _paragraph_trace_annotations(
         for line in lines:
             annotations.append(
                 {
-                    "field_key": field_key,
+                    "field_key": (
+                        "company_profile_overview" if profile_section else field_key
+                    ),
                     "field_name": field_name,
                     "target": line,
                     "part": str(location.get("part") or "word/document.xml"),
@@ -861,6 +879,11 @@ def _paragraph_trace_annotations(
                     "context_hint": context_hint if len(lines) == 1 else "",
                     "status": status,
                     "comment": comment,
+                    **(
+                        {"comment_group": "company_profile_overview"}
+                        if profile_section and status != "missing"
+                        else {}
+                    ),
                 }
             )
     return annotations
