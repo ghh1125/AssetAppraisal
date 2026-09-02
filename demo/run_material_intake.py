@@ -22,7 +22,7 @@ import pdfplumber
 from docx import Document
 from openpyxl import load_workbook
 
-from demo.adapters.audit_intake import build_role_workbooks, needs_ocr
+from demo.adapters.audit_intake import build_role_workbooks, needs_ocr, tables_from_pages
 from demo.adapters.template_workbook_mapper import build_template_workbooks
 from demo.adapters.ocr_factory import create_ocr_adapter
 from demo.domain.company_matching import matching_company_records, normalize_company_name
@@ -88,7 +88,7 @@ def _write_generic_rule_graph(workbook_root: Path) -> None:
 """
     (workbook_root / "通用映射规则图.mmd").write_text(mermaid, encoding="utf-8")
     graph = {
-        "version": "generic_appraisal_mapping.v1",
+        "version": "generic_appraisal_mapping.v2",
         "fact_key": ["subject", "statement_type", "scope", "period", "unit", "canonical_account", "value"],
         "evidence_key": ["source_file", "page", "table_id", "row", "column", "raw_text"],
         "gates": [
@@ -96,6 +96,9 @@ def _write_generic_rule_graph(workbook_root: Path) -> None:
             {"id": "known_period", "rule": "来源金额列必须有明确日期、年度或本年/上年相对期间"},
             {"id": "known_unit", "rule": "来源页必须明示人民币元或万元；不得默认猜测"},
             {"id": "unique_scope", "rule": "母公司与合并口径同时存在且金额不一致时不得自动选择"},
+            {"id": "target_role", "rule": "账面净额不得写入原值、余额、减值准备等目标字段；目标字段角色必须与证据金额语义一致"},
+            {"id": "single_effective_mapping", "rule": "每个目标单元格只允许一条生效映射；其他来源仅作为校验、冲突或被替代证据"},
+            {"id": "case_independence", "rule": "公司名、文件名、页码和案例金额不得作为通用匹配条件"},
         ],
         "transforms": [
             {"id": "direct_unit_conversion", "expression": "target_value = source_value * source_unit_to_yuan / target_unit_to_yuan"},
@@ -405,7 +408,23 @@ def _cached_pages(cache_dir: Path, path: Path) -> list[dict[str, Any]] | None:
         payload = json.loads(cache_file.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return None
-    return payload if isinstance(payload, list) else None
+    # A scanned PDF can produce one placeholder entry per page even though
+    # local text extraction found neither text nor tables.  Older versions
+    # cached that placeholder list and then treated the page count as an OCR
+    # success forever.  A cache hit must contain actual evidence, not merely
+    # page shells.
+    return payload if isinstance(payload, list) and _has_usable_extraction(payload) else None
+
+
+def _has_usable_extraction(pages: list[dict[str, Any]]) -> bool:
+    """Return whether OCR/native extraction contains any reviewable content."""
+    for page in pages:
+        if any(str(block.get("text") or "").strip() for block in page.get("blocks", [])):
+            return True
+        for table in page.get("tables", []):
+            if any(str(cell.get("text") or "").strip() for cell in table.get("cells", [])):
+                return True
+    return False
 
 
 def _save_cache(cache_dir: Path, path: Path, pages: list[dict[str, Any]]) -> Path:
@@ -477,8 +496,9 @@ def generate_material_workbooks(
         # Word/Excel/PPT are first parsed as native structures.  PDF and image
         # files still use layout OCR so table/page coordinates remain auditable.
         local_pages = _structured_pages(source)
-        pages = local_pages
-        source_kind = "native_structure" if local_pages else "ocr_document"
+        local_is_usable = _has_usable_extraction(local_pages)
+        pages = local_pages if local_is_usable else []
+        source_kind = "native_structure" if local_is_usable else "ocr_document"
         issues: list[str] = []
         if cached is not None:
             pages, source_kind = cached, "ocr_cache"
@@ -490,14 +510,24 @@ def generate_material_workbooks(
             issues.append("该材料需要版式 OCR，但当前 OCR 未配置")
             pages = local_pages
         else:
-            pages, ocr_issues = ocr_adapter.extract(source)
+            ocr_pages, ocr_issues = ocr_adapter.extract(source)
             issues.extend(ocr_issues)
-            source_kind = "aliyun_ocr"
-            # A failed remote OCR must not discard locally extracted PDF text.
-            if not pages:
-                pages = local_pages
-            if pages:
+            # Only a non-empty remote result is reusable as OCR evidence.  A
+            # failed remote OCR may fall back to useful native PDF text, but
+            # that fallback is deliberately not saved in the OCR cache so a
+            # later run can retry the configured OCR provider.
+            if _has_usable_extraction(ocr_pages):
+                pages = ocr_pages
+                source_kind = f"{ocr_provider}_ocr"
                 _save_cache(cache_dir, source, pages)
+            elif local_is_usable:
+                pages = local_pages
+                source_kind = "native_text_fallback"
+            else:
+                pages = []
+                source_kind = "ocr_failed"
+                if not issues:
+                    issues.append("OCR 未返回任何可用文字或表格")
         if cached is None and source.suffix.lower() == ".docx":
             image_pages, image_issues = _docx_embedded_image_pages(source, ocr_adapter)
             issues.extend(image_issues)
@@ -510,9 +540,13 @@ def generate_material_workbooks(
             progress_callback(
                 "ocr_materials",
                 "running" if source_index < len(sources) else "completed",
-                f"已用{parsing_method}完成 {source_index}/{len(sources)}：{source.name}",
-                percent,
-            )
+            (
+                f"已用{parsing_method}完成 {source_index}/{len(sources)}：{source.name}"
+                if _has_usable_extraction(pages)
+                else f"{parsing_method}未识别到有效文字或表格 {source_index}/{len(sources)}：{source.name}"
+            ),
+            percent,
+        )
         material_records.append({
             "source": source,
             "source_file": str(source.relative_to(root)),
@@ -563,6 +597,21 @@ def generate_material_workbooks(
         source = record["source"]
         pages = record["pages"]
         issues = record["issues"]
+        if not _has_usable_extraction(pages):
+            detail = "；".join(str(issue) for issue in issues if issue)[:500]
+            raise RuntimeError(
+                f"目标公司的审计报告未识别到可用文字或表格：{source.name}"
+                + (f"；{detail}" if detail else "")
+            )
+        statement_tables = [
+            table
+            for table in tables_from_pages(source.name, pages)
+            if table.category in {"资产负债表", "利润表", "现金流量表"}
+        ]
+        if not statement_tables:
+            raise RuntimeError(
+                f"目标公司的审计报告已有 OCR 内容，但未识别到资产负债表、利润表或现金流量表：{source.name}"
+            )
         target_dir = workbook_root / _safe_name(source)
         if template_dir is not None and skip_ready and _is_template_output_ready(target_dir / "资产基础法_资产清查.xlsx"):
             continue

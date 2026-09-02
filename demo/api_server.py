@@ -497,7 +497,11 @@ def _execute_workbook_intake(
             generated_dir,
             ROOT / "资产评估工作流",
             progress_callback=report_progress,
-            cache_dir=_workbook_intakes_root() / "ocr_cache",
+            # Share the validated SHA cache with the batch material-intake
+            # workflow.  Keeping a second Web-only cache previously allowed a
+            # blank local-PDF placeholder to hide an already valid DocMind
+            # result for the same document.
+            cache_dir=ROOT / "outputs" / "audit-material-intake" / "ocr_cache",
             target_company_name=target_company_name,
         )
         selected = _select_intake_document(manifest, target_company_name)

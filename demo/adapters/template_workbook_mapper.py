@@ -299,18 +299,22 @@ def _find_source(label: Any, source_rows: dict[str, list[SourceRow]], preferred_
     exact = source_rows.get(target)
     if not exact:
         return None
+    if preferred_scope:
+        preferred = [item for item in exact if item.scope == preferred_scope]
+        if preferred:
+            exact = preferred
+        else:
+            # 常见情况：表头 OCR 识别不到“母公司/合并”时，scope
+            # 被记为“未识别”。仅当该科目不存在任何明确口径时，才把
+            # 未识别列作为所选口径的安全兜底；绝不跨用另一明确口径。
+            has_recognized_scope = any(item.scope in {"母公司", "合并"} for item in exact)
+            exact = [] if has_recognized_scope else [item for item in exact if item.scope == "未识别"]
+            if not exact:
+                return None
+
     # Parent and consolidated statements can contain the same account name.
     # Without a project-level scope instruction, differing scopes are
     # ambiguous and must remain blank.  Identical repetitions are safe.
-    if preferred_scope:
-        preferred = [item for item in exact if item.scope == preferred_scope]
-        # Once the case has selected a reporting scope, never fall back to a
-        # different company's/consolidated column merely because the chosen
-        # scope is blank for that account.  A blank parent-company amount is
-        # evidence of absence, not permission to import the group figure.
-        if not preferred:
-            return None
-        exact = preferred
     parent = [item for item in exact if item.scope == "母公司"]
     consolidated = [item for item in exact if item.scope == "合并"]
     unknown = [item for item in exact if item.scope == "未识别"]
@@ -345,6 +349,30 @@ def _row_label(sheet, row: int) -> str | None:
     ]
     candidates = [item for item in candidates if not re.fullmatch(r"\d+(?:-\d+)+", item)]
     return max(candidates, key=len) if candidates else None
+
+
+def _semantic_text(value: Any) -> str:
+    """Normalize spacing/punctuation while preserving accounting roles."""
+    return re.sub(r"[\s：:（）()—\-]", "", str(value or ""))
+
+
+def _asset_target_accepts_statement_value(sheet, row: int, book_column: int) -> bool:
+    """Whether a statutory carrying amount matches this target field role."""
+    header_text = _semantic_text(sheet.cell(7, book_column).value)
+    label_text = _semantic_text(_row_label(sheet, row))
+    following_labels = "".join(
+        _semantic_text(_row_label(sheet, candidate))
+        for candidate in range(row + 1, min(sheet.max_row, row + 3) + 1)
+    )
+    return not (
+        any(token in header_text for token in ("原值", "余额"))
+        or any(token in label_text for token in ("减值准备", "坏账准备", "跌价准备", "累计折旧"))
+        or (
+            "合计" in label_text
+            and any(token in following_labels for token in ("减值准备", "坏账准备", "跌价准备"))
+            and any(token in following_labels for token in ("净额", "净值", "账面价值"))
+        )
+    )
 
 
 def _unit_of_sheet(sheet) -> float:
@@ -434,7 +462,14 @@ def _history_periods(source_rows: dict[str, list[SourceRow]], category: str, pre
     counts: dict[str, int] = {}
     items = [item for candidates in source_rows.values() for item in candidates if item.table.category == category]
     preferred = [item for item in items if item.scope == preferred_scope]
-    items = preferred or items
+    if preferred:
+        items = preferred
+    elif any(item.scope in {"母公司", "合并"} for item in items):
+        # The report explicitly exposes only a different scope.  Do not use
+        # its periods to make the selected scope look available.
+        items = []
+    else:
+        items = [item for item in items if item.scope == "未识别"]
     for item in items:
         value_columns = {column for column, _value in item.values}
         for column, period in item.periods:
@@ -1079,6 +1114,20 @@ def _fill_asset_template(workbook, source_rows: dict[str, list[SourceRow]], mapp
             # they were sample constants, while retained formulas stay intact.
             if appraisal_column is not None and not (isinstance(sheet.cell(row, appraisal_column).value, str) and sheet.cell(row, appraisal_column).value.startswith("=")):
                 sheet.cell(row, appraisal_column).value = None
+            # A balance-sheet line is normally a carrying/net amount.  It
+            # must not be written into a template field whose semantic role
+            # is gross/original cost or an impairment/depreciation allowance.
+            # Where a detail table explicitly presents gross -> allowance ->
+            # net, the statement amount belongs only to the net row; the
+            # gross and allowance rows require note/detail evidence.
+            if not _asset_target_accepts_statement_value(sheet, row, book_column):
+                mappings.append([
+                    sheet.title, sheet.cell(row, book_column).coordinate, label,
+                    "", "", "", "", "待补充",
+                    "目标字段为原值/余额/减值准备等明细角色；资产负债表仅披露账面净额，必须由附注或明细清单取数",
+                    "未填",
+                ])
+                continue
             source = _find_source(label, source_rows, preferred_scope)
             if source is None:
                 mappings.append([sheet.title, sheet.cell(row, book_column).coordinate, label, "", "", "", "", "待补充", "未找到唯一同名标准科目，或母公司/合并口径冲突", "未填"])
@@ -1136,7 +1185,14 @@ def build_template_workbooks(
         progress_callback("map_asset", "running", "正在按资产法模板逐单元格匹配审定账面值", 64)
     _fill_asset_template(asset, source_rows, asset_rows, preferred_scope=preferred_scope)
     if progress_callback:
-        progress_callback("map_asset", "completed", f"资产法映射完成，共记录 {len(asset_rows)} 条单元格规则", 72)
+        asset_filled = sum(row[-1] == "已填" for row in asset_rows)
+        asset_pending = sum(row[-1] != "已填" for row in asset_rows)
+        progress_callback(
+            "map_asset",
+            "completed",
+            f"资产法映射完成：已填 {asset_filled} 个单元格，待补/待复核 {asset_pending} 个",
+            72,
+        )
 
     income_rows: list[list[Any]] = []
     history = {"历资表", "历利表", "历现表"}
@@ -1174,7 +1230,14 @@ def build_template_workbooks(
         statement_source_rows=source_rows,
     )
     if progress_callback:
-        progress_callback("map_income", "completed", f"收益法映射完成，共记录 {len(income_rows)} 条单元格规则", 82)
+        income_filled = sum(row[-1] == "已填" for row in income_rows)
+        income_pending = sum(row[-1] != "已填" for row in income_rows)
+        progress_callback(
+            "map_income",
+            "completed",
+            f"收益法历史三表映射完成：已填 {income_filled} 个单元格，待补/待复核 {income_pending} 个；预测及估值参数无材料依据时继续留空",
+            82,
+        )
     _set_recalculation(asset)
     _set_recalculation(income)
     asset.save(outputs["reporting_workbook"])

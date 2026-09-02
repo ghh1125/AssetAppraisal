@@ -189,7 +189,13 @@ def build_rule_graph_bundle(
                             "page": mapping.get("来源页"), "table": mapping.get("来源表"), "row": mapping.get("来源行"),
                             "generic_rule": "OCR原文定位；复核时可回到文件/页/表/行",
                         })
-                        edges.append({"from": evidence_id, "to": node_id, "type": "evidence_mapping", "method": mapping.get("取数方式"), "transform": mapping.get("计算/处理")})
+                        mapping_status = str(mapping.get("状态") or "")
+                        edge_type = "evidence_mapping" if mapping_status == "已填" else "validation_evidence"
+                        edges.append({
+                            "from": evidence_id, "to": node_id, "type": edge_type,
+                            "method": mapping.get("取数方式"), "transform": mapping.get("计算/处理"),
+                            "status": mapping_status,
+                        })
             sheet_stats.append({"workbook": workbook_name, "sheet": sheet.title, "max_row": sheet.max_row, "max_column": sheet.max_column, **counts})
         workbook.close()
 
@@ -202,6 +208,9 @@ def build_rule_graph_bundle(
             "RAR材料先做主体匹配，再按母公司/合并口径、期间和单位匹配",
             "审计主表优先；附注用于分类拆分、明细和交叉复核",
             "直接取数必须保留文件、页、表、行列；换算必须记录公式",
+            "同一目标单元格只允许一条生效映射；其他来源只作为校验、冲突或被替代证据保留",
+            "资产负债表账面净额不得写入原值、余额、减值准备等字段；这些字段优先使用同期间同口径附注明细",
+            "规则按字段角色、标准科目、主体、口径、期间、单位和证据层级执行，不使用公司名、固定页码或案例数值作为条件",
             "评估值、设备参数、预测、WACC等无证据字段必须留空并列补件要求",
         ],
         "workbooks": {name: str(path) for name, path in workbook_paths.items()},
@@ -225,7 +234,7 @@ def build_rule_graph_bundle(
     # workbook and Sheet, search by cell/field/source, and inspect each edge.
     browser_payload = json.dumps(graph, ensure_ascii=False, separators=(",", ":"), default=str).replace("</", "<\\/")
     browser = r'''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>资产评估逐单元格规则图</title>
-<style>body{font-family:"Microsoft YaHei",sans-serif;margin:0;background:#f4f7fb;color:#182230}header{padding:18px 24px;background:linear-gradient(135deg,#15395f,#255a93);color:white}header h1{margin:0 0 6px;font-size:22px}.bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:14px 24px;background:white;position:sticky;top:0;z-index:2;box-shadow:0 2px 12px #19365d14}select,input{padding:8px 10px;border:1px solid #cbd6e3;border-radius:8px;min-width:210px;background:#fbfdff}.stats{margin-left:auto;color:#56677b;font-size:12px}.legend{display:flex;gap:8px;flex-wrap:wrap;padding:10px 24px 0;color:#52667b;font-size:12px}.legend span{display:inline-flex;align-items:center;gap:5px;padding:4px 7px;border-radius:999px;background:#fff;box-shadow:0 1px 4px #19365d12}.legend i{width:10px;height:10px;border-radius:50%;display:inline-block}.main{display:grid;grid-template-columns:minmax(620px,2fr) minmax(390px,1fr);gap:14px;padding:14px 24px}.panel{background:white;border-radius:12px;box-shadow:0 4px 14px #19365d12;padding:12px;overflow:auto}svg{width:100%;min-height:680px;background:linear-gradient(180deg,#fcfdff,#f7faff);border-radius:9px}.node{cursor:pointer}.node rect{stroke-width:1.4;filter:drop-shadow(0 2px 2px #19365d20)}.node text{font-size:11px;fill:#182230}.node .node-role{font-size:10px;fill:#52667b}.node:hover rect{stroke-width:2.6}.edge{stroke:#9cadc0;stroke-width:1.15;stroke-opacity:.76;fill:none;marker-end:url(#arrow)}.edge.evidence_mapping{stroke:#6bae7a;stroke-dasharray:4 3}.formula rect{fill:#e6f0ff;stroke:#4e83d8}.evidence_input rect{fill:#e0f5e6;stroke:#4a9c68}.required_missing rect{fill:#fff0df;stroke:#e1842d}.source_evidence rect{fill:#fff8cf;stroke:#c99e22}.formula_precedent rect{fill:#eee9ff;stroke:#8169c7}.template_constant rect{fill:#e9f0f5;stroke:#7890a5}table{border-collapse:collapse;width:100%;font-size:12px}th,td{border-bottom:1px solid #e4e9ef;padding:7px;text-align:left;vertical-align:top}tr{cursor:pointer}tr:hover{background:#f4f8ff}th{background:#eef3f8;position:sticky;top:0}.detail pre{white-space:pre-wrap;word-break:break-word;font-size:12px}.role-badge{display:inline-block;padding:2px 6px;border-radius:99px;font-size:11px}.role-formula{background:#e6f0ff;color:#245da8}.role-evidence_input{background:#e0f5e6;color:#287145}.role-required_missing{background:#fff0df;color:#a9550c}.role-source_evidence{background:#fff8cf;color:#80610a}.role-formula_precedent{background:#eee9ff;color:#5e4ba4}@media(max-width:1000px){.main{grid-template-columns:1fr}.stats{margin-left:0}.legend{padding-left:14px}.main{padding:14px}}</style></head>
+<style>body{font-family:"Microsoft YaHei",sans-serif;margin:0;background:#f4f7fb;color:#182230}header{padding:18px 24px;background:linear-gradient(135deg,#15395f,#255a93);color:white}header h1{margin:0 0 6px;font-size:22px}.bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:14px 24px;background:white;position:sticky;top:0;z-index:2;box-shadow:0 2px 12px #19365d14}select,input{padding:8px 10px;border:1px solid #cbd6e3;border-radius:8px;min-width:210px;background:#fbfdff}.stats{margin-left:auto;color:#56677b;font-size:12px}.legend{display:flex;gap:8px;flex-wrap:wrap;padding:10px 24px 0;color:#52667b;font-size:12px}.legend span{display:inline-flex;align-items:center;gap:5px;padding:4px 7px;border-radius:999px;background:#fff;box-shadow:0 1px 4px #19365d12}.legend i{width:10px;height:10px;border-radius:50%;display:inline-block}.main{display:grid;grid-template-columns:minmax(620px,2fr) minmax(390px,1fr);gap:14px;padding:14px 24px}.panel{background:white;border-radius:12px;box-shadow:0 4px 14px #19365d12;padding:12px;overflow:auto}svg{width:100%;min-height:680px;background:linear-gradient(180deg,#fcfdff,#f7faff);border-radius:9px}.node{cursor:pointer}.node rect{fill:#f5f7fa;stroke:#8fa1b3;stroke-width:1.4;filter:drop-shadow(0 2px 2px #19365d20)}.node text{font-size:11px;fill:#182230}.node .node-role{font-size:10px;fill:#52667b}.node:hover rect{stroke-width:2.6}.edge{stroke:#9cadc0;stroke-width:1.15;stroke-opacity:.76;fill:none;marker-end:url(#arrow)}.edge.evidence_mapping{stroke:#6bae7a;stroke-dasharray:4 3}.edge.validation_evidence{stroke:#d08a37;stroke-dasharray:2 4}.formula rect{fill:#e6f0ff;stroke:#4e83d8}.evidence_input rect{fill:#e0f5e6;stroke:#4a9c68}.required_missing rect{fill:#fff0df;stroke:#e1842d}.source_evidence rect{fill:#fff8cf;stroke:#c99e22}.formula_precedent rect{fill:#eee9ff;stroke:#8169c7}.template_constant rect{fill:#e9f0f5;stroke:#7890a5}.structural_label rect{fill:#f6f8fb;stroke:#9aabbc}table{border-collapse:collapse;width:100%;font-size:12px}th,td{border-bottom:1px solid #e4e9ef;padding:7px;text-align:left;vertical-align:top}tr{cursor:pointer}tr:hover{background:#f4f8ff}th{background:#eef3f8;position:sticky;top:0}.detail pre{white-space:pre-wrap;word-break:break-word;font-size:12px}.role-badge{display:inline-block;padding:2px 6px;border-radius:99px;font-size:11px}.role-formula{background:#e6f0ff;color:#245da8}.role-evidence_input{background:#e0f5e6;color:#287145}.role-required_missing{background:#fff0df;color:#a9550c}.role-source_evidence{background:#fff8cf;color:#80610a}.role-formula_precedent{background:#eee9ff;color:#5e4ba4}@media(max-width:1000px){.main{grid-template-columns:1fr}.stats{margin-left:0}.legend{padding-left:14px}.main{padding:14px}}</style></head>
 <body><header><h1>资产评估逐单元格规则图</h1><div>模板公式链 + 当前案例证据定位 + 缺失资料要求；模板数值不作为案例事实。</div></header>
 <div class="bar"><select id="book"></select><select id="sheet"></select><select id="mode"><option value="rules">重点规则节点</option><option value="all">全部有值单元格</option></select><input id="q" placeholder="搜索单元格、字段、来源或公式"><span class="stats" id="stats"></span></div><div class="legend"><span><i style="background:#4e83d8"></i>模板公式</span><span><i style="background:#4a9c68"></i>已取证填入</span><span><i style="background:#e1842d"></i>待补资料</span><span><i style="background:#c99e22"></i>来源证据</span><span><i style="background:#8169c7"></i>公式前置</span></div>
 <div class="main"><div class="panel"><svg id="graph"><defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#93a1b2"/></marker></defs></svg></div><div class="panel detail"><h3>单元格规则明细</h3><div id="detail">点击图中节点或右侧表格行。</div><table><thead><tr><th>单元格</th><th>角色</th><th>字段/规则</th></tr></thead><tbody id="rows"></tbody></table></div></div>
@@ -246,7 +255,10 @@ book.onchange=sheets;sheet.onchange=render;mode.onchange=render;q.oninput=render
     browser_name = "本次案例映射溯源浏览器.html" if is_case_trace else "逐单元格规则图浏览器.html"
     (output_dir / browser_name).write_text(browser, encoding="utf-8")
 
-    missing = [item for item in flat_trace if item.get("状态") != "已填"]
+    missing = [
+        item for item in flat_trace
+        if str(item.get("状态") or "") in {"未填", "待补充", "待复核", "冲突待复核"}
+    ]
     grouped_missing: dict[str, dict[str, list[dict[str, Any]]]] = defaultdict(lambda: defaultdict(list))
     for item in missing:
         grouped_missing[str(item.get("目标文件") or "")][str(item.get("目标工作表") or "")].append({

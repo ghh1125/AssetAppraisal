@@ -166,6 +166,25 @@ def _append_mapping(
     mappings: list[list[Any]], sheet, cell, field: str, values: Iterable[NoteValue],
     method: str, transform: str, status: str = "已填",
 ) -> None:
+    # A target cell may first be populated from a statutory statement and
+    # later be refined by a more specific note (for example inventory gross
+    # balance/provision/net value).  Keep the earlier row as audit evidence,
+    # but never leave two simultaneously effective mappings for one cell.
+    # This rule is deliberately based on evidence specificity, not on a
+    # company name, page number, or case value.
+    if status == "已填":
+        for previous in mappings:
+            if (
+                len(previous) >= 10
+                and previous[0] == sheet.title
+                and previous[1] == cell.coordinate
+                and previous[-1] == "已填"
+            ):
+                previous[-1] = "已被更精确证据替代"
+                previous[-2] = (
+                    f"{previous[-2]}；该映射保留作交叉核对，"
+                    "最终取数改用与目标字段角色更一致的审计附注证据"
+                )
     source_file, pages, tables, rows = _source_fields(values)
     mappings.append([
         sheet.title, cell.coordinate, field, source_file, pages, tables, rows,
