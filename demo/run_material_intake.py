@@ -25,6 +25,7 @@ from openpyxl import load_workbook
 from demo.adapters.audit_intake import build_role_workbooks, needs_ocr
 from demo.adapters.template_workbook_mapper import build_template_workbooks
 from demo.adapters.ocr_factory import create_ocr_adapter
+from demo.domain.company_matching import matching_company_records, normalize_company_name
 from demo.run import _load_local_env
 
 
@@ -124,7 +125,7 @@ def _safe_name(path: Path) -> str:
 
 
 def _subject_key(value: Any) -> str:
-    return re.sub(r"[\s（）()，,。·\-]", "", str(value or "")).replace("有限责任公司", "有限公司")
+    return normalize_company_name(value)
 
 
 def _local_pages(path: Path) -> list[dict[str, Any]]:
@@ -540,15 +541,20 @@ def generate_material_workbooks(
         })
         target_key = _subject_key(target_company_name)
         if target_key:
-            matches = [
-                record for record in audit_records
-                if _subject_key(record["metadata"].get("company_name")) == target_key
-            ]
+            matches = matching_company_records(
+                audit_records,
+                target_company_name,
+                name_getter=lambda record: record["metadata"].get("company_name"),
+                source_getter=lambda record: record.get("source_file", ""),
+            )
             if not matches:
                 raise RuntimeError(
-                    f"材料包中未找到与‘{target_company_name}’完全匹配的审计主体；已识别：{'、'.join(detected[:12])}"
+                    f"材料包中未找到与‘{target_company_name}’可唯一匹配的审计主体；已识别：{'、'.join(detected[:12])}"
                 )
-            records_to_build = [min(matches, key=lambda item: (len(item.get("issues", [])), item["source_file"]))]
+            selected_record = min(matches, key=lambda item: (len(item.get("issues", [])), item["source_file"]))
+            if not selected_record["metadata"].get("company_name"):
+                selected_record["metadata"]["company_name"] = str(target_company_name).strip()
+            records_to_build = [selected_record]
         elif len(audit_records) == 1:
             records_to_build = audit_records
         else:

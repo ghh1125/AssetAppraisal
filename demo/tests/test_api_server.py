@@ -397,6 +397,26 @@ def test_workbook_intake_upload_creates_optional_preprocessing_job(monkeypatch, 
     assert captured["archive_path"].read_bytes() == b"zip-content"
 
 
+def test_intake_document_selection_accepts_unique_filename_abbreviation():
+    shanghai = {
+        "source_file": "2年一期/赋码-上自贸-2026-0214-上海明悦.pdf",
+        "metadata": {"company_name": ""},
+        "issues": [],
+    }
+    beijing = {
+        "source_file": "2年一期/赋码-上自贸-2026-0297北京嘉云升.pdf",
+        "metadata": {"company_name": ""},
+        "issues": [],
+    }
+
+    selected = api_server._select_intake_document(
+        {"documents": [shanghai, beijing]},
+        "上海明悦医疗科技有限公司",
+    )
+
+    assert selected is shanghai
+
+
 def test_api_accepts_xlsm_income_workbook(monkeypatch, tmp_path):
     monkeypatch.setattr(api_server, "RUNS_ROOT", tmp_path)
     monkeypatch.setattr(

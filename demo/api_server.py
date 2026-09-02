@@ -34,6 +34,7 @@ from .domain.field_validation import (
     validate_valuation_base_date,
     validate_valuation_subject_type,
 )
+from .domain.company_matching import matching_company_records, normalize_company_name
 
 ROOT = Path(__file__).resolve().parents[1]
 PROJECT_CONFIG = ROOT / "demo/projects/tongfu.yaml"
@@ -409,7 +410,7 @@ def _get_workbook_intake(intake_id: str) -> dict[str, Any] | None:
 
 
 def _normalize_company_name(value: str) -> str:
-    return re.sub(r"[\s（）()，,。·\-]", "", str(value or "")).replace("有限责任公司", "有限公司")
+    return normalize_company_name(value)
 
 
 def _owned_intake_file(intake_id: str, value: Any) -> Path | None:
@@ -430,21 +431,23 @@ def _select_intake_document(manifest: Mapping[str, Any], target_company_name: st
         raise RuntimeError("材料包中未识别到可生成工作簿的审计财务报告")
     target_key = _normalize_company_name(target_company_name)
     if target_key:
-        exact = [
-            item for item in documents
-            if _normalize_company_name(item.get("metadata", {}).get("company_name", "")) == target_key
-        ]
-        if len(exact) == 1:
-            return exact[0]
-        if len(exact) > 1:
-            exact.sort(key=lambda item: (len(item.get("issues", [])), item.get("source_file", "")))
-            return exact[0]
+        matches = matching_company_records(
+            documents,
+            target_company_name,
+            name_getter=lambda item: item.get("metadata", {}).get("company_name", ""),
+            source_getter=lambda item: item.get("source_file", ""),
+        )
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            matches.sort(key=lambda item: (len(item.get("issues", [])), item.get("source_file", "")))
+            return matches[0]
         detected = sorted({
             str(item.get("metadata", {}).get("company_name", "") or item.get("source_file", ""))
             for item in documents
         })
         raise RuntimeError(
-            f"材料包中未找到与“{target_company_name}”完全匹配的审计主体；已识别：{'、'.join(detected[:12])}"
+            f"材料包中未找到与“{target_company_name}”可唯一匹配的审计主体；已识别：{'、'.join(detected[:12])}"
         )
     if len(documents) == 1:
         return documents[0]
@@ -584,13 +587,20 @@ def _execute_workbook_intake(
         public_error = _public_error(exc)
         state = _get_workbook_intake(intake_id) or {}
         steps = [dict(item) for item in state.get("steps", [])]
+        failed_step_found = False
         for step in steps:
             if step.get("status") == "running":
                 step.update(status="failed", message=public_error)
+                failed_step_found = True
+        if not failed_step_found:
+            for step in steps:
+                if step.get("status") == "pending":
+                    step.update(status="failed", message=public_error)
+                    break
         _set_workbook_intake(
             intake_id,
             status="failed",
-            progress=100,
+            progress=max(0, min(int(state.get("progress", 0) or 0), 99)),
             message="材料包解析失败",
             error=public_error,
             technical_error=str(exc),
