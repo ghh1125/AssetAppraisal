@@ -306,3 +306,22 @@ sudo systemctl reload nginx
 ```
 
 示例配置监听公网 `8003`、将 `/api/` 反向代理至本机后端 `127.0.0.1:8000`，并为带内容哈希的 `/assets/` 开启长期缓存和 gzip。阿里云安全组只需向可信来源开放 `8003`；后端 `8000` 建议仅监听本机，不直接暴露公网。以后每次更新前端，只需重新执行 `npm ci && npm run build`，无需运行 Vite 开发服务器。
+
+## Pipeline 建议（可复用）
+
+仓库目前的标准交付链路建议固定为三段：解析脚本验证、前端构建验证、运行与联调。按这个顺序执行可以稳定复现结果。
+
+1. `backend pipeline`（后端流水线）
+   - `uv sync --extra dev --extra services --extra web --python 3.11`
+   - `uv run --python 3.11 pytest`
+2. `frontend pipeline`（前端流水线）
+   - `cd frontend`
+   - `npm install`
+   - `npm run build`
+3. `e2e 本地联调`（与生产口径一致）
+   - `uv run --python 3.11 uvicorn demo.api_server:app --host 127.0.0.1 --port 8000`
+   - `cd frontend && npm run dev -- --host 127.0.0.1 --port 5173`
+   - 打开 `<http://127.0.0.1:5173/>`，按“RAR 预处理 + 节点2 手工提交”闭环跑一次
+
+如果你的团队后续接 CI，可把上述 1 和 2 固定为构建阶段，启动命令保留为部署环境的运行阶段。  
+当前仓库未内置固定 CI 流水线文件，以上命令是对现有目录结构的推荐 pipeline 模板。
