@@ -27,6 +27,8 @@ test('shows one current progress summary instead of duplicating the active step 
 
 test('keeps node one archive preprocessing separate from node two original inputs', () => {
   assert.match(source, /archive-stage-card/)
+  assert.match(source, /archiveTargetLabel/)
+  assert.match(source, /v-model:value="form\.target_company_name"/)
   assert.match(source, /node2-card/)
   assert.match(source, /v-model:open="manualModalOpen"/)
   assert.match(source, /v-model:open="materialsModalOpen"/)

@@ -413,6 +413,10 @@ onBeforeUnmount(() => {
         <a-alert :message="t('asset.archiveNodeInfo')" type="info" show-icon />
         <section class="archive-input-card">
           <div class="archive-input-heading"><span>1</span><div><strong>{{ t('asset.archiveGenerateTitle') }}</strong><small>{{ t('asset.archiveGenerateHint') }}</small></div></div>
+          <div class="archive-target-row">
+            <div><strong>{{ t('asset.archiveTargetLabel') }}</strong><small>{{ t('asset.archiveTargetHint') }}</small></div>
+            <a-input v-model:value="form.target_company_name" :maxlength="50" :placeholder="t('asset.targetNamePlaceholder')" />
+          </div>
           <a-upload-dragger
             :multiple="false"
             :max-count="1"
@@ -683,6 +687,9 @@ h1 { margin:8px 0 8px; font-size:34px; color:var(--c2m-text-primary); }
 .upload-grid { display:grid; grid-template-columns:1fr; gap:14px; margin-top:18px; }
 .archive-input-card, .direct-input-card { margin-top:16px; padding:15px; border:1px solid #dbe7f4; border-radius:14px; background:#fbfdff; }
 .archive-stage-card .archive-input-card { background:linear-gradient(135deg, #f8fbff 0%, #f5f9ff 100%); }
+.archive-target-row { display:grid; grid-template-columns:minmax(260px, .8fr) minmax(320px, 1.2fr); gap:16px; align-items:center; margin-bottom:14px; padding:12px 14px; border:1px solid #dbe7f4; border-radius:12px; background:#fff; }
+.archive-target-row strong, .archive-target-row small { display:block; }
+.archive-target-row small { margin-top:4px; color:var(--c2m-text-secondary); font-size:12px; }
 .archive-input-heading { display:flex; align-items:flex-start; gap:10px; margin-bottom:12px; }
 .archive-input-heading > span { width:24px; height:24px; flex:none; display:grid; place-items:center; border-radius:8px; background:#1677ff; color:#fff; font-size:12px; font-weight:800; }
 .archive-input-heading strong, .archive-input-heading small { display:block; }
@@ -775,5 +782,5 @@ h1 { margin:8px 0 8px; font-size:34px; color:var(--c2m-text-primary); }
 .substep-failed .substep-icon { background:#fff1f0; color:#cf1322; }
 .substep-failed .substep-status { color:#cf1322; }
 @keyframes substep-pulse { 50% { opacity:.45; transform:scale(.85); } }
-@media (max-width: 900px) { .workspace-grid, .workflow-stage-grid { grid-template-columns:1fr; } .topbar, .run-bar, .intake-actions { flex-direction:column; align-items:stretch; } .form-row, .form-row.three, .source-strategy-grid, .upload-grid, .node2-entry-grid, .workbook-routing-grid, .candidate-grid { grid-template-columns:1fr; } }
+@media (max-width: 900px) { .workspace-grid, .workflow-stage-grid { grid-template-columns:1fr; } .topbar, .run-bar, .intake-actions { flex-direction:column; align-items:stretch; } .form-row, .form-row.three, .source-strategy-grid, .upload-grid, .archive-target-row, .node2-entry-grid, .workbook-routing-grid, .candidate-grid { grid-template-columns:1fr; } }
 </style>
