@@ -10,7 +10,7 @@ test('shows the active substep and its live message above the progress bar', () 
       message: 'LLM 正在复核 12 个字段',
       nodes: [
         {
-          name: '节点 2：材料解析 / LLM 候选',
+          name: '节点 3：材料解析 / LLM 候选',
           status: 'running',
           steps: [
             { name: '整合并比对来源', status: 'completed', description: '已完成' },
@@ -20,7 +20,7 @@ test('shows the active substep and its live message above the progress bar', () 
       ],
     }),
     {
-      label: '节点 2：材料解析 / LLM 候选 · 正在让 LLM 复核证据并生成审核批注',
+      label: '节点 3：材料解析 / LLM 候选 · 正在让 LLM 复核证据并生成审核批注',
       detail: '正在复核第 3/12 个字段',
     },
   )
@@ -31,11 +31,11 @@ test('uses readable action wording for API and source reconciliation steps', () 
     currentRunProgress({
       status: 'running',
       nodes: [{
-        name: '节点 2：材料解析 / LLM 候选',
+        name: '节点 3：材料解析 / LLM 候选',
         steps: [{ key: 'query_qichacha', name: '企查查 API 搜索', status: 'running', message: '正在整理返回证据' }],
       }],
     }).label,
-    '节点 2：材料解析 / LLM 候选 · 正在调用企查查 API 查询企业信息',
+    '节点 3：材料解析 / LLM 候选 · 正在调用企查查 API 查询企业信息',
   )
 })
 

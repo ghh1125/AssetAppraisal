@@ -60,10 +60,10 @@ WORKBOOK_INTAKE_STEPS = (
 )
 
 PUBLIC_NODES = (
-    ("start_input", "节点 1：开始 / 输入", "接收人工字段和上传材料"),
-    ("ocr_llm_candidates", "节点 2：材料解析 / LLM 候选", "OCR、Excel、企查查解析并生成候选"),
-    ("fill_word", "节点 3：填充 Word", "写入确定性字段和用户选中的候选"),
-    ("output", "节点 4：结果输出", "生成评估报告 Word"),
+    ("start_input", "节点 2：开始 / 输入", "接收节点 1 的工作簿、人工字段和其他上传材料"),
+    ("ocr_llm_candidates", "节点 3：材料解析 / LLM 候选", "OCR、Excel、企查查解析并生成候选"),
+    ("fill_word", "节点 4：填充 Word", "写入确定性字段和用户选中的候选"),
+    ("output", "节点 5：结果输出", "生成评估报告 Word"),
 )
 
 NODE_STEPS = {
@@ -697,7 +697,7 @@ def _execute_run(
     run_dir = RUNS_ROOT / run_id
     current_node = "start_input"
     try:
-        _set_job(run_id, status="running", progress=5, message="节点 1：接收输入材料")
+        _set_job(run_id, status="running", progress=5, message="节点 2：接收输入材料")
         _set_node(run_id, "start_input", "running", "校验人工字段和上传文件")
         # Keep the first node just as visible as the later parsing node.  The
         # frontend can now show exactly what is happening before any external
@@ -831,7 +831,7 @@ def _execute_fill(run_id: str, selected_fields: dict[str, Any]) -> None:
     run_dir = RUNS_ROOT / run_id
     current_node = "fill_word"
     try:
-        _set_job(run_id, status="running", progress=72, message="节点 3：按选择填充 Word")
+        _set_job(run_id, status="running", progress=72, message="节点 4：按选择填充 Word")
         _set_node(run_id, "ocr_llm_candidates", "completed", "用户已确认候选内容")
         _set_node(run_id, "fill_word", "running", "正在复制模板并填充 Word")
         with JOBS_LOCK:

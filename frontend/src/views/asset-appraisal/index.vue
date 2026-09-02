@@ -100,9 +100,10 @@ const manualFieldCount = computed(() => [
   form.final_valuation_method,
   form.valuation_base_date,
 ].filter(Boolean).length)
-const uploadedFileCount = computed(() => Object.values(files).reduce((count, value) => (
-  count + (Array.isArray(value) ? value.length : value ? 1 : 0)
-), 0))
+const downstreamUploadedFileCount = computed(() => regularUploadFields.reduce((count, field) => {
+  const value = files[field.key]
+  return count + (Array.isArray(value) ? value.length : value ? 1 : 0)
+}, 0))
 const isOcrSource = file => /\.(pdf|png|jpe?g)$/i.test(file?.name || '')
 
 function setFile(type, event) {
@@ -125,7 +126,7 @@ function showUploadField(field) {
   return !field.sourceStrategy || form[field.sourceStrategy] === 'file'
 }
 
-function openNode1Section(section) {
+function openNode2Section(section) {
   if (section === 'manual') {
     manualDraft.value = snapshotManualInputs()
     manualModalOpen.value = true
@@ -392,19 +393,66 @@ onBeforeUnmount(() => {
     </header>
 
     <section class="workspace-grid">
-      <a-card class="panel node1-card" :title="t('asset.node1Title')" :bordered="false">
-        <div class="node1-section-switch">
-          <span class="node1-section-switch-label">{{ t('asset.node1SwitchHint') }}</span>
-          <div class="node1-entry-grid">
-            <button type="button" class="node1-entry" @click="openNode1Section('manual')">
-              <span class="node1-entry-icon">✓</span>
-              <span class="node1-entry-copy"><strong>{{ t('asset.manualSection') }}</strong><small>{{ manualFieldCount }}/9 项已填写</small></span>
-              <span class="node1-entry-arrow">›</span>
+      <a-card class="panel archive-stage-card" :title="t('asset.archiveNodeTitle')" :bordered="false">
+        <a-alert :message="t('asset.archiveNodeInfo')" type="info" show-icon />
+        <section class="archive-input-card">
+          <div class="archive-input-heading"><span>1</span><div><strong>{{ t('asset.archiveGenerateTitle') }}</strong><small>{{ t('asset.archiveGenerateHint') }}</small></div></div>
+          <a-upload-dragger
+            :multiple="false"
+            :max-count="1"
+            :accept="archiveUploadField.accept"
+            :before-upload="() => false"
+            @change="setFile(archiveUploadField.key, $event)"
+          >
+            <p class="upload-icon rar">{{ archiveUploadField.icon }}</p>
+            <p class="upload-title">{{ t(`asset.${archiveUploadField.titleKey}`) }}</p>
+            <p class="upload-hint">{{ t(`asset.${archiveUploadField.hintKey}`) }}</p>
+          </a-upload-dragger>
+          <div class="intake-actions">
+            <span>{{ files.materialArchive?.name || t('asset.noArchiveSelected') }}</span>
+            <a-button :loading="intakeSubmitting" :disabled="!files.materialArchive" @click="generateWorkbooksFromArchive">
+              {{ t('asset.archiveGenerateButton') }}
+            </a-button>
+          </div>
+        </section>
+        <div v-if="workbookIntake" class="intake-status">
+          <div class="intake-status-head">
+            <span>{{ workbookIntake.message }}</span>
+            <strong>{{ workbookIntake.progress || 0 }}%</strong>
+          </div>
+          <a-progress v-if="['queued', 'running'].includes(workbookIntake.status)" :percent="workbookIntake.progress || 0" status="active" />
+          <a-alert v-if="workbookIntake.status === 'failed'" :message="workbookIntake.error || '材料包解析失败'" type="error" show-icon />
+          <div v-if="workbookIntake.steps?.length" class="intake-substeps">
+            <div v-for="step in workbookIntake.steps" :key="step.key" :class="['intake-substep', `intake-substep-${step.status}`]">
+              <span class="intake-substep-icon">{{ step.status === 'completed' ? '✓' : step.status === 'running' ? '·' : step.status === 'failed' ? '!' : '○' }}</span>
+              <span class="intake-substep-copy"><strong>{{ step.name }}</strong><small>{{ step.message || step.description }}</small></span>
+              <span class="intake-substep-status">{{ stepStatusText(step.status) }}</span>
+            </div>
+          </div>
+          <div v-if="workbookIntake.status === 'completed'" class="artifact-list intake-artifacts">
+            <a
+              v-for="artifact in generatedWorkbookArtifacts"
+              :key="artifact.name"
+              :href="workbookIntakeArtifactUrl(workbookIntake.intake_id, artifact.name)"
+              target="_blank"
+            >{{ artifact.label || artifact.name }}</a>
+          </div>
+        </div>
+      </a-card>
+
+      <a-card class="panel node2-card" :title="t('asset.node2Title')" :bordered="false">
+        <div class="node2-section-switch">
+          <span class="node2-section-switch-label">{{ t('asset.node2SwitchHint') }}</span>
+          <div class="node2-entry-grid">
+            <button type="button" class="node2-entry" @click="openNode2Section('manual')">
+              <span class="node2-entry-icon">✓</span>
+              <span class="node2-entry-copy"><strong>{{ t('asset.manualSection') }}</strong><small>{{ manualFieldCount }}/9 项已填写</small></span>
+              <span class="node2-entry-arrow">›</span>
             </button>
-            <button type="button" class="node1-entry" @click="openNode1Section('materials')">
-              <span class="node1-entry-icon">✓</span>
-              <span class="node1-entry-copy"><strong>{{ t('asset.materialSection') }}</strong><small>{{ uploadedFileCount }} 个文件已选择</small></span>
-              <span class="node1-entry-arrow">›</span>
+            <button type="button" class="node2-entry" @click="openNode2Section('materials')">
+              <span class="node2-entry-icon">✓</span>
+              <span class="node2-entry-copy"><strong>{{ t('asset.materialSection') }}</strong><small>{{ downstreamUploadedFileCount }} 个文件已选择</small></span>
+              <span class="node2-entry-arrow">›</span>
             </button>
           </div>
         </div>
@@ -434,50 +482,20 @@ onBeforeUnmount(() => {
         <a-modal v-model:open="materialsModalOpen" :title="t('asset.materialSection')" :ok-text="t('asset.saveSection')" :cancel-text="t('asset.closeSection')" :width="980" @ok="saveMaterialsSection">
           <a-form layout="vertical">
             <a-alert :message="t('asset.uploadInfo')" type="info" show-icon />
-            <section class="archive-input-card">
-              <div class="archive-input-heading"><span>1</span><div><strong>{{ t('asset.archiveGenerateTitle') }}</strong><small>{{ t('asset.archiveGenerateHint') }}</small></div></div>
-              <a-upload-dragger
-                :multiple="false"
-                :max-count="1"
-                :accept="archiveUploadField.accept"
-                :before-upload="() => false"
-                @change="setFile(archiveUploadField.key, $event)"
-              >
-                <p class="upload-icon rar">{{ archiveUploadField.icon }}</p>
-                <p class="upload-title">{{ t(`asset.${archiveUploadField.titleKey}`) }}</p>
-                <p class="upload-hint">{{ t(`asset.${archiveUploadField.hintKey}`) }}</p>
-              </a-upload-dragger>
-              <div class="intake-actions">
-                <span>{{ files.materialArchive?.name || t('asset.noArchiveSelected') }}</span>
-                <a-button :loading="intakeSubmitting" :disabled="!files.materialArchive" @click="generateWorkbooksFromArchive">
-                  {{ t('asset.archiveGenerateButton') }}
-                </a-button>
-              </div>
-            </section>
-            <div v-if="workbookIntake" class="intake-status">
-              <div class="intake-status-head">
-                <span>{{ workbookIntake.message }}</span>
-                <strong>{{ workbookIntake.progress || 0 }}%</strong>
-              </div>
-              <a-progress v-if="['queued', 'running'].includes(workbookIntake.status)" :percent="workbookIntake.progress || 0" status="active" />
-              <a-alert v-if="workbookIntake.status === 'failed'" :message="workbookIntake.error || '材料包解析失败'" type="error" show-icon />
-              <div v-if="workbookIntake.steps?.length" class="intake-substeps">
-                <div v-for="step in workbookIntake.steps" :key="step.key" :class="['intake-substep', `intake-substep-${step.status}`]">
-                  <span class="intake-substep-icon">{{ step.status === 'completed' ? '✓' : step.status === 'running' ? '·' : step.status === 'failed' ? '!' : '○' }}</span>
-                  <span class="intake-substep-copy"><strong>{{ step.name }}</strong><small>{{ step.message || step.description }}</small></span>
-                  <span class="intake-substep-status">{{ stepStatusText(step.status) }}</span>
-                </div>
-              </div>
-              <div v-if="workbookIntake.status === 'completed'" class="artifact-list intake-artifacts">
-                <a
-                  v-for="artifact in generatedWorkbookArtifacts"
-                  :key="artifact.name"
-                  :href="workbookIntakeArtifactUrl(workbookIntake.intake_id, artifact.name)"
-                  target="_blank"
-                >{{ artifact.label || artifact.name }}</a>
-              </div>
+            <div class="workbook-routing-grid" aria-label="node one workbook routing">
+              <article class="workbook-route-card">
+                <div><strong>{{ t('asset.assetWorkbookRoute') }}</strong><small>{{ workbookSourceSummary.reporting }}</small></div>
+                <a-tag :color="files.reportingWorkbook ? 'orange' : workbookIntake?.status === 'completed' ? 'green' : 'default'">
+                  {{ files.reportingWorkbook ? t('asset.manualOverride') : workbookIntake?.status === 'completed' ? t('asset.nodeOneDefault') : t('asset.waitingNodeOne') }}
+                </a-tag>
+              </article>
+              <article class="workbook-route-card">
+                <div><strong>{{ t('asset.incomeWorkbookRoute') }}</strong><small>{{ workbookSourceSummary.income }}</small></div>
+                <a-tag :color="files.incomeWorkbook ? 'orange' : workbookIntake?.status === 'completed' ? 'green' : 'default'">
+                  {{ files.incomeWorkbook ? t('asset.manualOverride') : workbookIntake?.status === 'completed' ? t('asset.nodeOneDefault') : t('asset.waitingNodeOne') }}
+                </a-tag>
+              </article>
             </div>
-            <a-divider>{{ t('asset.directUploadDivider') }}</a-divider>
             <section class="direct-input-card">
               <div class="archive-input-heading secondary"><span>2</span><div><strong>{{ t('asset.directUploadTitle') }}</strong><small>{{ t('asset.directUploadHint') }}</small></div></div>
               <div class="source-strategy-grid">
@@ -558,7 +576,7 @@ onBeforeUnmount(() => {
       </a-alert>
       <div v-if="run.nodes?.length" class="node-progress" aria-label="workflow nodes">
         <div v-for="(node, index) in run.nodes" :key="node.key" :class="['node-step', `node-${node.status}`]">
-          <div class="node-marker">{{ index + 1 }}</div>
+          <div class="node-marker">{{ index + 2 }}</div>
           <div class="node-copy">
             <div class="node-title"><strong>{{ node.name }}</strong><a-tag :color="node.status === 'failed' ? 'red' : node.status === 'completed' ? 'green' : node.status === 'awaiting_selection' ? 'orange' : node.status === 'running' ? 'blue' : 'default'">{{ nodeStatusText(node.status) }}</a-tag></div>
             <div class="node-description">{{ node.description }}</div>
@@ -633,30 +651,34 @@ onBeforeUnmount(() => {
 h1 { margin:8px 0 8px; font-size:34px; color:var(--c2m-text-primary); }
 .topbar p { margin:0; color:var(--c2m-text-secondary); }
 .workspace-grid { display:grid; grid-template-columns: .92fr 1.4fr; gap:20px; }
-.node1-card { grid-column:1 / -1; }
+.archive-stage-card, .node2-card { grid-column:1 / -1; }
 .panel { border-radius:18px; box-shadow:0 8px 30px rgba(31,53,81,.07); }
-.node1-section-switch { display:grid; gap:12px; margin-bottom:4px; padding:12px 14px; border:1px solid #e5edf7; border-radius:12px; background:#f8fbff; }
-.node1-section-switch-label { color:var(--c2m-text-secondary); font-size:13px; }
-.node1-entry-grid { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:12px; }
-.node1-entry { display:flex; align-items:center; gap:10px; width:100%; padding:14px 16px; border:1px solid #dbe7f4; border-radius:12px; background:#fff; color:var(--c2m-text-primary); text-align:left; cursor:pointer; transition:border-color .2s, box-shadow .2s, transform .2s; }
-.node1-entry:hover { border-color:#91caff; box-shadow:0 5px 16px rgba(22,119,255,.12); transform:translateY(-1px); }
-.node1-entry-icon { width:22px; height:22px; border-radius:6px; display:grid; place-items:center; flex:none; background:#e6f4ff; color:#1677ff; font-size:13px; font-weight:800; }
-.node1-entry-copy { min-width:0; flex:1; }
-.node1-entry-copy strong, .node1-entry-copy small { display:block; }
-.node1-entry-copy small { margin-top:4px; color:var(--c2m-text-secondary); font-size:12px; }
-.node1-entry-arrow { color:#8b98a8; font-size:24px; line-height:1; }
-.node1-section { min-width:0; }
+.node2-section-switch { display:grid; gap:12px; margin-bottom:4px; padding:12px 14px; border:1px solid #e5edf7; border-radius:12px; background:#f8fbff; }
+.node2-section-switch-label { color:var(--c2m-text-secondary); font-size:13px; }
+.node2-entry-grid { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:12px; }
+.node2-entry { display:flex; align-items:center; gap:10px; width:100%; padding:14px 16px; border:1px solid #dbe7f4; border-radius:12px; background:#fff; color:var(--c2m-text-primary); text-align:left; cursor:pointer; transition:border-color .2s, box-shadow .2s, transform .2s; }
+.node2-entry:hover { border-color:#91caff; box-shadow:0 5px 16px rgba(22,119,255,.12); transform:translateY(-1px); }
+.node2-entry-icon { width:22px; height:22px; border-radius:6px; display:grid; place-items:center; flex:none; background:#e6f4ff; color:#1677ff; font-size:13px; font-weight:800; }
+.node2-entry-copy { min-width:0; flex:1; }
+.node2-entry-copy strong, .node2-entry-copy small { display:block; }
+.node2-entry-copy small { margin-top:4px; color:var(--c2m-text-secondary); font-size:12px; }
+.node2-entry-arrow { color:#8b98a8; font-size:24px; line-height:1; }
 .section-heading { margin-bottom:14px; color:var(--c2m-text-primary); font-size:16px; font-weight:700; }
 .manual-default-bar { display:flex; align-items:center; justify-content:space-between; gap:14px; margin-bottom:18px; padding:10px 12px; border-radius:10px; background:#f8fbff; color:var(--c2m-text-secondary); font-size:12px; }
 .source-strategy-grid { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); column-gap:18px; }
 .upload-grid { display:grid; grid-template-columns:1fr; gap:14px; margin-top:18px; }
 .archive-input-card, .direct-input-card { margin-top:16px; padding:15px; border:1px solid #dbe7f4; border-radius:14px; background:#fbfdff; }
+.archive-stage-card .archive-input-card { background:linear-gradient(135deg, #f8fbff 0%, #f5f9ff 100%); }
 .archive-input-heading { display:flex; align-items:flex-start; gap:10px; margin-bottom:12px; }
 .archive-input-heading > span { width:24px; height:24px; flex:none; display:grid; place-items:center; border-radius:8px; background:#1677ff; color:#fff; font-size:12px; font-weight:800; }
 .archive-input-heading strong, .archive-input-heading small { display:block; }
 .archive-input-heading small { margin-top:3px; color:var(--c2m-text-secondary); font-size:12px; }
 .archive-input-heading.secondary > span { background:#5b6b7f; }
 .direct-input-card .source-strategy-grid { margin-top:4px; }
+.workbook-routing-grid { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:12px; margin-top:16px; }
+.workbook-route-card { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; padding:13px 14px; border:1px solid #dbe7f4; border-radius:12px; background:#f8fbff; }
+.workbook-route-card strong, .workbook-route-card small { display:block; }
+.workbook-route-card small { margin-top:4px; color:var(--c2m-text-secondary); font-size:12px; word-break:break-all; }
 .intake-actions { display:flex; align-items:center; justify-content:space-between; gap:16px; margin-top:14px; padding:13px 14px; border:1px solid #dbe7f4; border-radius:12px; background:#f8fbff; }
 .intake-actions strong, .intake-actions span { display:block; }
 .intake-actions span { margin-top:4px; color:var(--c2m-text-secondary); font-size:12px; }
@@ -740,5 +762,5 @@ h1 { margin:8px 0 8px; font-size:34px; color:var(--c2m-text-primary); }
 .substep-failed .substep-icon { background:#fff1f0; color:#cf1322; }
 .substep-failed .substep-status { color:#cf1322; }
 @keyframes substep-pulse { 50% { opacity:.45; transform:scale(.85); } }
-@media (max-width: 900px) { .workspace-grid, .workflow-stage-grid { grid-template-columns:1fr; } .topbar, .run-bar, .intake-actions { flex-direction:column; align-items:stretch; } .form-row, .form-row.three, .source-strategy-grid, .upload-grid, .node1-entry-grid, .candidate-grid { grid-template-columns:1fr; } }
+@media (max-width: 900px) { .workspace-grid, .workflow-stage-grid { grid-template-columns:1fr; } .topbar, .run-bar, .intake-actions { flex-direction:column; align-items:stretch; } .form-row, .form-row.three, .source-strategy-grid, .upload-grid, .node2-entry-grid, .workbook-routing-grid, .candidate-grid { grid-template-columns:1fr; } }
 </style>

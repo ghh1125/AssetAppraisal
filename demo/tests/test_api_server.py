@@ -6,6 +6,16 @@ import demo.api_server as api_server
 import demo.pipeline as pipeline_module
 
 
+def test_downstream_public_nodes_are_numbered_after_archive_preprocessing():
+    states = api_server._initial_node_states()
+    assert [node["name"].split("：", 1)[0] for node in states] == [
+        "节点 2",
+        "节点 3",
+        "节点 4",
+        "节点 5",
+    ]
+
+
 def test_node_progress_has_user_readable_substeps_and_updates_active_step():
     states = api_server._initial_node_states()
     assert all(node["steps"] for node in states)
