@@ -63,11 +63,16 @@ test('renders compact candidate cards with persisted edit and feedback regenerat
   assert.match(source, /candidate-card-title/)
 })
 
-test('shows two major progress bars and detailed archive preprocessing steps', () => {
+test('shows two major progress bars and only the current archive preprocessing step', () => {
   assert.match(source, /workflow-stage-grid/)
   assert.match(source, /stageOneTitle/)
   assert.match(source, /stageTwoTitle/)
-  assert.match(source, /workbookIntake\.steps/)
+  assert.match(source, /workbookIntake\.value\?\.steps/)
+  assert.match(source, /currentIntakeStep/)
+  assert.match(source, /current-intake-step/)
+  assert.doesNotMatch(source, /v-for="step in workbookIntake\.steps"/)
+  assert.match(source, /intakeProgressFloor/)
+  assert.match(source, /Math\.max\(intakeProgressFloor\.value/)
   assert.match(source, /generateWorkbooksFromArchive/)
   assert.match(source, /workbookIntakeArtifactUrl/)
 })

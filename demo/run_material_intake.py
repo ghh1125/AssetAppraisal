@@ -440,19 +440,41 @@ def generate_material_workbooks(
     documents: list[dict[str, Any]] = []
     _load_local_env()
     ocr_adapter = create_ocr_adapter(os.environ)
+    ocr_provider = str(os.environ.get("APPRAISAL_OCR_PROVIDER") or "aliyun").strip().lower()
     sources = sorted(path for path in root.rglob("*") if path.is_file() and path.suffix.lower() in MATERIAL_SUFFIXES)
     if progress_callback:
         progress_callback("inventory", "completed", f"材料清点完成，共发现 {len(sources)} 份可解析材料（PDF、图片、Word、Excel、PPT）", 30)
         progress_callback("ocr_materials", "running", "正在读取原生表格/文本，并对 PDF 和图片执行版式 OCR、记录页码和表格坐标", 31)
     material_records: list[dict[str, Any]] = []
     for source_index, source in enumerate(sources, start=1):
+        cached = _cached_pages(cache_dir, source)
+        suffix = source.suffix.lower()
+        if cached is not None:
+            parsing_method = "OCR 缓存"
+        elif suffix not in OCR_SUFFIXES:
+            parsing_method = "原生 Office 结构读取"
+        elif ocr_provider == "paddle":
+            parsing_method = "PaddleOCR 版式识别"
+        elif ocr_provider == "aliyun":
+            parsing_method = "阿里云文档智能版式 OCR"
+        elif ocr_adapter is None:
+            parsing_method = "本地文本提取（未启用 OCR）"
+        else:
+            parsing_method = f"{ocr_provider} OCR"
+        if progress_callback:
+            percent = 31 + int(24 * (source_index - 1) / max(1, len(sources)))
+            progress_callback(
+                "ocr_materials",
+                "running",
+                f"正在使用{parsing_method}解析 {source_index}/{len(sources)}：{source.name}",
+                percent,
+            )
         # Word/Excel/PPT are first parsed as native structures.  PDF and image
         # files still use layout OCR so table/page coordinates remain auditable.
         local_pages = _structured_pages(source)
         pages = local_pages
         source_kind = "native_structure" if local_pages else "ocr_document"
         issues: list[str] = []
-        cached = _cached_pages(cache_dir, source)
         if cached is not None:
             pages, source_kind = cached, "ocr_cache"
         elif source.suffix.lower() not in OCR_SUFFIXES:
@@ -483,7 +505,7 @@ def generate_material_workbooks(
             progress_callback(
                 "ocr_materials",
                 "running" if source_index < len(sources) else "completed",
-                f"解析 {source_index}/{len(sources)}：{source.name}",
+                f"已用{parsing_method}完成 {source_index}/{len(sources)}：{source.name}",
                 percent,
             )
         material_records.append({

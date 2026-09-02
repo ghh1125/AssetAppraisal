@@ -16,6 +16,25 @@ def test_downstream_public_nodes_are_numbered_after_archive_preprocessing():
     ]
 
 
+def test_workbook_intake_progress_never_moves_backwards(monkeypatch, tmp_path):
+    monkeypatch.setattr(api_server, "RUNS_ROOT", tmp_path)
+    api_server.WORKBOOK_INTAKES.clear()
+    intake_id = "monotonic-progress"
+    api_server._set_workbook_intake(
+        intake_id,
+        progress=55,
+        steps=api_server._initial_workbook_intake_steps(),
+    )
+    api_server._set_workbook_intake_step(
+        intake_id,
+        "classify_materials",
+        "running",
+        "正在分类",
+        40,
+    )
+    assert api_server._get_workbook_intake(intake_id)["progress"] == 55
+
+
 def test_node_progress_has_user_readable_substeps_and_updates_active_step():
     states = api_server._initial_node_states()
     assert all(node["steps"] for node in states)

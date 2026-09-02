@@ -47,6 +47,7 @@ const manualModalOpen = ref(false)
 const materialsModalOpen = ref(false)
 const workbookIntake = ref(null)
 const intakeSubmitting = ref(false)
+const intakeProgressFloor = ref(0)
 const manualDraft = ref(null)
 const RUN_STATUS_REFRESH_MS = 800
 let pollTimer = null
@@ -73,8 +74,16 @@ const workbookSourceSummary = computed(() => ({
   reporting: files.reportingWorkbook?.name || (workbookIntake.value?.status === 'completed' ? '资产法.xlsx（自动生成）' : '未提供'),
   income: files.incomeWorkbook?.name || (workbookIntake.value?.status === 'completed' ? '收益法.xlsx（自动生成）' : '未提供'),
 }))
-const intakeProgress = computed(() => workbookIntake.value?.progress || 0)
+const intakeProgress = computed(() => Math.max(intakeProgressFloor.value, workbookIntake.value?.progress || 0))
 const downstreamProgress = computed(() => run.value?.progress || 0)
+const currentIntakeStep = computed(() => {
+  const steps = workbookIntake.value?.steps || []
+  return steps.find(step => step.status === 'running')
+    || steps.find(step => step.status === 'failed')
+    || steps.find(step => step.status === 'pending')
+    || steps.at(-1)
+    || null
+})
 const intakeStageMessage = computed(() => (
   workbookIntake.value?.message || (files.materialArchive ? '材料包已选择，点击“解析并生成两份 Excel”开始' : '可选：也可以直接上传已有 Excel，跳过本阶段')
 ))
@@ -119,6 +128,7 @@ function setFile(type, event) {
   if (type === 'materialArchive') {
     clearIntakePoll()
     workbookIntake.value = null
+    intakeProgressFloor.value = 0
   }
 }
 
@@ -259,7 +269,12 @@ function clearIntakePoll() {
 
 async function refreshWorkbookIntake(intakeId) {
   try {
-    workbookIntake.value = await getWorkbookIntake(intakeId)
+    const refreshed = await getWorkbookIntake(intakeId)
+    if (workbookIntake.value?.intake_id && workbookIntake.value.intake_id !== refreshed.intake_id) {
+      intakeProgressFloor.value = 0
+    }
+    intakeProgressFloor.value = Math.max(intakeProgressFloor.value, refreshed.progress || 0)
+    workbookIntake.value = { ...refreshed, progress: intakeProgressFloor.value }
     if (['queued', 'running'].includes(workbookIntake.value.status)) {
       intakePollTimer = window.setTimeout(() => refreshWorkbookIntake(intakeId), RUN_STATUS_REFRESH_MS)
     } else if (workbookIntake.value.status === 'completed') {
@@ -279,6 +294,7 @@ async function generateWorkbooksFromArchive() {
   clearIntakePoll()
   intakeSubmitting.value = true
   workbookIntake.value = null
+  intakeProgressFloor.value = 0
   try {
     const result = await createWorkbookIntake(files.materialArchive, form.target_company_name)
     workbookIntake.value = result
@@ -417,17 +433,15 @@ onBeforeUnmount(() => {
         </section>
         <div v-if="workbookIntake" class="intake-status">
           <div class="intake-status-head">
-            <span>{{ workbookIntake.message }}</span>
-            <strong>{{ workbookIntake.progress || 0 }}%</strong>
+            <span>{{ t('asset.archiveProgressLabel') }}</span>
+            <strong>{{ intakeProgress }}%</strong>
           </div>
-          <a-progress v-if="['queued', 'running'].includes(workbookIntake.status)" :percent="workbookIntake.progress || 0" status="active" />
+          <a-progress :percent="intakeProgress" :status="progressStatus(workbookIntake.status)" />
           <a-alert v-if="workbookIntake.status === 'failed'" :message="workbookIntake.error || '材料包解析失败'" type="error" show-icon />
-          <div v-if="workbookIntake.steps?.length" class="intake-substeps">
-            <div v-for="step in workbookIntake.steps" :key="step.key" :class="['intake-substep', `intake-substep-${step.status}`]">
-              <span class="intake-substep-icon">{{ step.status === 'completed' ? '✓' : step.status === 'running' ? '·' : step.status === 'failed' ? '!' : '○' }}</span>
-              <span class="intake-substep-copy"><strong>{{ step.name }}</strong><small>{{ step.message || step.description }}</small></span>
-              <span class="intake-substep-status">{{ stepStatusText(step.status) }}</span>
-            </div>
+          <div v-if="currentIntakeStep" :class="['current-intake-step', `current-intake-step-${currentIntakeStep.status}`]">
+            <span class="intake-substep-icon">{{ currentIntakeStep.status === 'completed' ? '✓' : currentIntakeStep.status === 'running' ? '·' : currentIntakeStep.status === 'failed' ? '!' : '○' }}</span>
+            <span class="intake-substep-copy"><strong>{{ currentIntakeStep.name }}</strong><small>{{ currentIntakeStep.message || currentIntakeStep.description }}</small></span>
+            <span class="intake-substep-status">{{ stepStatusText(currentIntakeStep.status) }}</span>
           </div>
           <div v-if="workbookIntake.status === 'completed'" class="artifact-list intake-artifacts">
             <a
@@ -687,17 +701,16 @@ h1 { margin:8px 0 8px; font-size:34px; color:var(--c2m-text-primary); }
 .intake-status-head strong { color:var(--c2m-color-primary); }
 .intake-artifacts { margin-top:2px; }
 .workbook-source-summary { margin-top:14px; }
-.intake-substeps { display:grid; gap:7px; margin-top:2px; }
-.intake-substep { display:grid; grid-template-columns:20px minmax(0, 1fr) auto; gap:9px; align-items:start; padding:8px 9px; border-radius:9px; background:#f8fafc; color:#8b98a8; }
+.current-intake-step { display:grid; grid-template-columns:20px minmax(0, 1fr) auto; gap:9px; align-items:start; margin-top:2px; padding:10px 11px; border-radius:9px; background:#f8fafc; color:#8b98a8; transition:background .2s, color .2s; }
 .intake-substep-icon { width:18px; height:18px; border-radius:50%; display:grid; place-items:center; background:#edf1f6; font-size:11px; font-weight:800; }
 .intake-substep-copy strong, .intake-substep-copy small { display:block; }
 .intake-substep-copy strong { color:var(--c2m-text-primary); font-size:12px; }
 .intake-substep-copy small { margin-top:2px; color:var(--c2m-text-secondary); font-size:11px; }
 .intake-substep-status { font-size:11px; }
-.intake-substep-completed .intake-substep-icon { background:#e6f7ee; color:#16834b; }
-.intake-substep-running { background:#f0f7ff; }
-.intake-substep-running .intake-substep-icon { background:#e6f4ff; color:#1677ff; animation:substep-pulse 1.2s infinite; }
-.intake-substep-failed .intake-substep-icon { background:#fff1f0; color:#cf1322; }
+.current-intake-step-completed .intake-substep-icon { background:#e6f7ee; color:#16834b; }
+.current-intake-step-running { background:#f0f7ff; }
+.current-intake-step-running .intake-substep-icon { background:#e6f4ff; color:#1677ff; animation:substep-pulse 1.2s infinite; }
+.current-intake-step-failed .intake-substep-icon { background:#fff1f0; color:#cf1322; }
 .workflow-stage-grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-top:20px; }
 .workflow-stage-card { padding:17px 18px 14px; border:1px solid #e5edf7; border-radius:16px; background:var(--c2m-bg-card); box-shadow:0 8px 30px rgba(31,53,81,.05); }
 .workflow-stage-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:11px; }

@@ -302,6 +302,8 @@ def _set_workbook_intake_step(
     progress: int,
 ) -> None:
     state = _get_workbook_intake(intake_id) or {"intake_id": intake_id}
+    previous_progress = max(0, min(int(state.get("progress", 0) or 0), 100))
+    next_progress = max(previous_progress, max(0, min(int(progress), 100)))
     steps = [dict(item) for item in state.get("steps", _initial_workbook_intake_steps())]
     found = False
     for step in steps:
@@ -315,7 +317,7 @@ def _set_workbook_intake_step(
     _set_workbook_intake(
         intake_id,
         status="running" if status != "failed" else "failed",
-        progress=max(0, min(int(progress), 100)),
+        progress=next_progress,
         message=message,
         steps=steps,
     )
