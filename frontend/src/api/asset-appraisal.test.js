@@ -33,3 +33,14 @@ test('run request uploads confirmed audit, workbook, and source material slots',
     'reuse_ocr',
   ])
 })
+
+test('run request carries the completed workbook intake id for generated workbook fallback', () => {
+  const form = buildAssetAppraisalForm({
+    inputs: {},
+    useGlm: false,
+    useQichacha: false,
+    reuseOcr: true,
+    workbookIntakeId: 'intake-123',
+  })
+  assert.equal(form.get('workbook_intake_id'), 'intake-123')
+})

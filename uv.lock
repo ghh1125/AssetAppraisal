@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 2
 requires-python = ">=3.11"
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'darwin'",
@@ -324,6 +324,7 @@ dependencies = [
     { name = "openpyxl" },
     { name = "pydantic" },
     { name = "python-docx" },
+    { name = "rarfile" },
 ]
 
 [package.optional-dependencies]
@@ -340,6 +341,7 @@ services = [
     { name = "alibabacloud-tea-openapi" },
     { name = "alibabacloud-tea-util" },
     { name = "httpx" },
+    { name = "pdfplumber" },
     { name = "pymupdf" },
 ]
 web = [
@@ -360,11 +362,13 @@ requires-dist = [
     { name = "paddleocr", marker = "python_full_version < '3.13' and extra == 'ocr'", specifier = ">=3,<4" },
     { name = "paddlepaddle", marker = "python_full_version < '3.13' and extra == 'ocr'", specifier = ">=3,<4" },
     { name = "paddlex", extras = ["ocr"], marker = "python_full_version < '3.13' and extra == 'ocr'", specifier = ">=3.7,<4" },
+    { name = "pdfplumber", marker = "extra == 'services'", specifier = ">=0.11,<1" },
     { name = "pydantic", specifier = ">=2.8,<3" },
     { name = "pymupdf", marker = "extra == 'services'", specifier = ">=1.24,<2" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8,<10" },
     { name = "python-docx", specifier = ">=1.1,<2" },
     { name = "python-multipart", marker = "extra == 'web'", specifier = ">=0.0.20,<1" },
+    { name = "rarfile", specifier = ">=4.2,<5" },
     { name = "uvicorn", marker = "extra == 'web'", specifier = ">=0.34,<1" },
 ]
 provides-extras = ["services", "web", "ocr", "dev"]
@@ -1808,6 +1812,33 @@ wheels = [
 ]
 
 [[package]]
+name = "pdfminer-six"
+version = "20260107"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "charset-normalizer" },
+    { name = "cryptography" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/34/a4/5cec1112009f0439a5ca6afa8ace321f0ab2f48da3255b7a1c8953014670/pdfminer_six-20260107.tar.gz", hash = "sha256:96bfd431e3577a55a0efd25676968ca4ce8fd5b53f14565f85716ff363889602", size = 8512094, upload-time = "2026-01-07T13:29:12.937Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/20/8b/28c4eaec9d6b036a52cb44720408f26b1a143ca9bce76cc19e8f5de00ab4/pdfminer_six-20260107-py3-none-any.whl", hash = "sha256:366585ba97e80dffa8f00cebe303d2f381884d8637af4ce422f1df3ef38111a9", size = 6592252, upload-time = "2026-01-07T13:29:10.742Z" },
+]
+
+[[package]]
+name = "pdfplumber"
+version = "0.11.10"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pdfminer-six" },
+    { name = "pillow" },
+    { name = "pypdfium2" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/05/56/6f450312ba05a27d7713b73857c1a25100dbda04fbc1331b13fb227a607d/pdfplumber-0.11.10.tar.gz", hash = "sha256:b95b2d28c66efb0a794a83b88c6c6aea5987532a445d20a1cbcfa657022e6e57", size = 102892, upload-time = "2026-06-15T03:31:31.035Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a2/9a/07d658e1e7fad860f1c541ab941348125dbdab773be3a0afaf32361866c7/pdfplumber-0.11.10-py3-none-any.whl", hash = "sha256:7741ea81bf165b474b153e6789d10d18e06b6ddcf3ec84289c3ef2fed6802580", size = 60047, upload-time = "2026-06-15T03:31:29.702Z" },
+]
+
+[[package]]
 name = "pillow"
 version = "12.3.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2513,6 +2544,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/fe/0f/25911a9f080464c59fab9027482f822b86bf0608957a5fcc6eaac85aa515/PyYAML-6.0.2-cp313-cp313-musllinux_1_1_x86_64.whl", hash = "sha256:68ccc6023a3400877818152ad9a1033e3db8625d899c72eacb5a668902e4d652", size = 751597, upload-time = "2024-08-06T20:32:56.985Z" },
     { url = "https://files.pythonhosted.org/packages/14/0d/e2c3b43bbce3cf6bd97c840b46088a3031085179e596d4929729d8d68270/PyYAML-6.0.2-cp313-cp313-win32.whl", hash = "sha256:bc2fa7c6b47d6bc618dd7fb02ef6fdedb1090ec036abab80d4681424b84c1183", size = 140527, upload-time = "2024-08-06T20:33:03.001Z" },
     { url = "https://files.pythonhosted.org/packages/fa/de/02b54f42487e3d3c6efb3f89428677074ca7bf43aae402517bc7cca949f3/PyYAML-6.0.2-cp313-cp313-win_amd64.whl", hash = "sha256:8388ee1976c416731879ac16da0aff3f63b286ffdd57cdeb95f3f2e085687563", size = 156446, upload-time = "2024-08-06T20:33:04.33Z" },
+]
+
+[[package]]
+name = "rarfile"
+version = "4.5"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/b2/eb/33ea5625de4e84144069ea021a282ea3c44ff7bd341b740bcadff028bea7/rarfile-4.5.tar.gz", hash = "sha256:7425d0afa180f0092db903abb1526a130b36858980aad90b3694f48e41420155", size = 155541, upload-time = "2026-08-02T20:45:53.221Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f5/36/ffd87452bf72310dfd1185ade33e5b8be374ab370d19573a8197ca25c95b/rarfile-4.5-py3-none-any.whl", hash = "sha256:c74341f4b9a3a3ebb35ef396d59daf059eb028f34995a7162950a41d97b84de9", size = 30035, upload-time = "2026-08-02T20:45:52.212Z" },
 ]
 
 [[package]]

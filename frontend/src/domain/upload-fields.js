@@ -1,7 +1,15 @@
 export const uploadFields = Object.freeze([
   {
+    key: 'materialArchive',
+    accept: '.rar,.zip',
+    icon: 'RAR',
+    titleKey: 'materialArchiveTitle',
+    hintKey: 'materialArchiveHint',
+    multiple: false,
+  },
+  {
     key: 'auditMaterials',
-    accept: '.pdf,.doc,.docx,.xls,.xlsx,.xlsm',
+    accept: '.pdf,.doc,.docx,.xls,.xlsx,.xlsm,.png,.jpg,.jpeg',
     icon: '审计',
     titleKey: 'auditMaterialsTitle',
     hintKey: 'auditMaterialsHint',
@@ -25,7 +33,7 @@ export const uploadFields = Object.freeze([
   },
   {
     key: 'registryMaterials',
-    accept: '.pdf,.doc,.docx,.ppt,.pptx',
+    accept: '.pdf,.doc,.docx,.ppt,.pptx,.png,.jpg,.jpeg',
     icon: '工商',
     titleKey: 'registryMaterialsTitle',
     hintKey: 'registryMaterialsHint',
@@ -34,7 +42,7 @@ export const uploadFields = Object.freeze([
   },
   {
     key: 'ownershipHistoryMaterials',
-    accept: '.pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.xlsm',
+    accept: '.pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.xlsm,.png,.jpg,.jpeg',
     icon: '股权',
     titleKey: 'ownershipHistoryMaterialsTitle',
     hintKey: 'ownershipHistoryMaterialsHint',
@@ -43,7 +51,7 @@ export const uploadFields = Object.freeze([
   },
   {
     key: 'unrecordedIntangiblesMaterials',
-    accept: '.pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.xlsm',
+    accept: '.pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.xlsm,.png,.jpg,.jpeg',
     icon: '无形',
     titleKey: 'unrecordedIntangiblesMaterialsTitle',
     hintKey: 'unrecordedIntangiblesMaterialsHint',
@@ -52,7 +60,7 @@ export const uploadFields = Object.freeze([
   },
   {
     key: 'companyProfileMaterials',
-    accept: '.pdf,.doc,.docx,.ppt,.pptx',
+    accept: '.pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.xlsm,.png,.jpg,.jpeg',
     icon: '介绍',
     titleKey: 'companyProfileMaterialsTitle',
     hintKey: 'companyProfileMaterialsHint',

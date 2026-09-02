@@ -44,6 +44,23 @@ test('audit materials and manual inputs are both required', () => {
   )
 })
 
+test('completed archive intake or a direct workbook can enter the original workflow', () => {
+  const inputs = {
+    commissioning_party_name: '委托方有限公司',
+    commissioning_party_short_name: '委托方',
+    transaction_type: '收购',
+    target_company_name: '被评估有限公司',
+    target_company_short_name: '被评估',
+    valuation_subject_type: '股东全部权益价值',
+    selected_valuation_method: ['收益法'],
+    final_valuation_method: '收益法',
+    valuation_base_date: '2025-06-30',
+  }
+  assert.equal(canSubmitPartial({ auditMaterials: [] }, inputs, { status: 'completed' }), true)
+  assert.equal(canSubmitPartial({ auditMaterials: [], incomeWorkbook: {} }, inputs), true)
+  assert.equal(canSubmitPartial({ auditMaterials: [] }, inputs, { status: 'running' }), false)
+})
+
 test('completely empty input cannot submit', () => {
   assert.equal(
     canSubmitPartial(

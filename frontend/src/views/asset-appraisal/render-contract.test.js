@@ -7,7 +7,7 @@ import test from 'node:test'
 const source = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), 'index.vue'), 'utf8')
 
 test('upload controls keep v-for scope available to the conditional renderer', () => {
-  assert.match(source, /<template v-for="field in uploadFields"[^>]*>/)
+  assert.match(source, /<template v-for="field in regularUploadFields"[^>]*>/)
   assert.match(source, /<a-upload-dragger\s+v-if="showUploadField\(field\)"/)
   assert.doesNotMatch(source, /<a-upload-dragger[\s\S]*v-for="field in uploadFields"[\s\S]*v-if="showUploadField\(field\)"/)
 })
@@ -53,4 +53,13 @@ test('renders compact candidate cards with persisted edit and feedback regenerat
   assert.match(source, /regenerateCandidate/)
   assert.match(source, /candidateFeedback/)
   assert.match(source, /candidate-card-title/)
+})
+
+test('shows two major progress bars and detailed archive preprocessing steps', () => {
+  assert.match(source, /workflow-stage-grid/)
+  assert.match(source, /stageOneTitle/)
+  assert.match(source, /stageTwoTitle/)
+  assert.match(source, /workbookIntake\.steps/)
+  assert.match(source, /generateWorkbooksFromArchive/)
+  assert.match(source, /workbookIntakeArtifactUrl/)
 })

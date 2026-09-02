@@ -25,3 +25,5 @@ docs/superpowers/
 docs/plans/
 tmp/
 .worktrees/
+.artifact_runtime/
+.pnpm-store/

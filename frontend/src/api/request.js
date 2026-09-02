@@ -28,3 +28,7 @@ export async function getJson(path) {
 export function artifactUrl(runId, name) {
   return apiUrl(`/asset-appraisal/runs/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(name)}`)
 }
+
+export function workbookIntakeArtifactUrl(intakeId, name) {
+  return apiUrl(`/asset-appraisal/workbook-intakes/${encodeURIComponent(intakeId)}/artifacts/${encodeURIComponent(name)}`)
+}

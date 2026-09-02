@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import json
 import hashlib
+import logging
 import os
 import re
 import shutil
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
@@ -38,7 +40,24 @@ PROJECT_CONFIG = ROOT / "demo/projects/tongfu.yaml"
 RUNS_ROOT = ROOT / "runs/web"
 OCR_CACHE_ROOT = ROOT / "runs"
 JOBS: dict[str, dict[str, Any]] = {}
+WORKBOOK_INTAKES: dict[str, dict[str, Any]] = {}
 JOBS_LOCK = Lock()
+LOGGER = logging.getLogger(__name__)
+
+WORKBOOK_INTAKE_STEPS = (
+    ("validate_archive", "上传与安全校验", "检查格式、空文件和任务隔离目录"),
+    ("unpack_archive", "解压材料包", "安全解压并阻止越界路径和符号链接"),
+    ("inventory", "材料清点", "清点可解析的 PDF、图片、Word、Excel 和 PPT"),
+    ("ocr_materials", "逐文件解析", "读取原生表格/文本，并为扫描材料记录 OCR 坐标"),
+    ("classify_materials", "材料分类", "识别审计报告、附注、营业执照和企业信息"),
+    ("match_subject", "主体匹配", "隔离不同公司的材料，避免跨案例混入"),
+    ("load_mapping_rules", "读取模板与映射规则", "加载 Sheet 结构、科目别名、期间口径和公式依赖规则"),
+    ("map_asset", "生成资产法 Excel", "按资产法模板逐单元格映射审定数据"),
+    ("map_income", "生成收益法 Excel", "填入历史三表并保留收益法公式链"),
+    ("build_rule_graph", "构建通用规则图", "保存来源、换算、公式依赖和待补资料"),
+    ("formula_qa", "公式重算与错误检查", "重算公式、保护空输入错误并拒绝结构性公式错误"),
+    ("verify_output", "结果校验", "确认两份工作簿存在、命名正确且可下载"),
+)
 
 PUBLIC_NODES = (
     ("start_input", "节点 1：开始 / 输入", "接收人工字段和上传材料"),
@@ -54,8 +73,8 @@ NODE_STEPS = {
         ("load_template", "加载 Word 模板", "确认后台只读模板和批注映射已就绪"),
     ),
     "ocr_llm_candidates": (
-        ("detect_materials", "识别材料类型", "确认是否有审计 PDF、资产基础法表和收益法表"),
-        ("ocr_pdf", "解析审计 PDF", "有 PDF 时执行 OCR；命中缓存时直接复用"),
+        ("detect_materials", "识别材料类型", "确认审计材料、资产法表和收益法表"),
+        ("ocr_pdf", "解析扫描材料", "有 PDF 或图片时执行 OCR；命中缓存时直接复用"),
         ("parse_excel", "解析 Excel 表格", "按工作表标题、科目、期间和单位识别数据"),
         ("reconcile_sources", "整合并比对来源", "按科目、期间、口径和单位归并 PDF/OCR 与 Excel，并记录一致或冲突"),
         ("review_evidence", "LLM 证据复核批注", "读取已整理的 PDF/OCR 与 Excel 证据，逐字段生成不改数值的人工审核批注"),
@@ -198,6 +217,20 @@ def _fill_progress_percent(percent: int | None) -> int | None:
     return 72 + int(round(bounded * 0.24))
 
 
+def _public_error(exc: Exception) -> str:
+    """Keep UI failures actionable without exposing stack traces or API details."""
+    detail = str(exc)
+    if "DASHSCOPE_API_KEY" in detail or "百炼" in detail:
+        return "候选内容服务尚未就绪，请联系管理员检查百炼配置后重试。"
+    if "OCR" in detail or "DocMind" in detail or "docmind" in detail:
+        return "材料识别未完成，请检查扫描件清晰度或稍后重试；也可以直接上传已有 Excel 继续后续流程。"
+    if "Excel" in detail or "工作簿" in detail:
+        return "Excel 处理未完成，请确认文件未被占用、格式可打开后重试。"
+    if "主体" in detail or "公司" in detail:
+        return "材料主体或填写的评估主体不一致，请核对后重试。"
+    return "任务未完成，请检查材料格式和必填信息后重试；详细诊断已保留给管理员。"
+
+
 def _run_id_for_pdf(filename: str) -> str:
     """Create a readable, collision-safe output folder name."""
     stem = Path(filename or "source.pdf").stem
@@ -211,6 +244,292 @@ def _run_id_for_pdf(filename: str) -> str:
         suffix += 1
         candidate = f"{base}-{suffix:02d}"
     return candidate
+
+
+def _workbook_intakes_root() -> Path:
+    return RUNS_ROOT / "_workbook_intakes"
+
+
+def _workbook_intake_id(filename: str) -> str:
+    stem = Path(filename or "materials.rar").stem
+    stem = re.sub(r'[\\/:*?"<>|]+', "_", stem).strip(" .") or "materials"
+    prefix = datetime.now().astimezone().strftime("%Y%m%d%H%M%S")
+    base = f"{prefix}-{stem[:80]}"
+    candidate = base
+    suffix = 1
+    root = _workbook_intakes_root()
+    while candidate in WORKBOOK_INTAKES or (root / candidate).exists():
+        suffix += 1
+        candidate = f"{base}-{suffix:02d}"
+    return candidate
+
+
+def _intake_state_path(intake_id: str) -> Path:
+    return _workbook_intakes_root() / intake_id / "state.json"
+
+
+def _set_workbook_intake(intake_id: str, **values: Any) -> dict[str, Any]:
+    with JOBS_LOCK:
+        state = WORKBOOK_INTAKES.setdefault(intake_id, {"intake_id": intake_id})
+        state.update(values)
+        snapshot = dict(state)
+    path = _intake_state_path(intake_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary.replace(path)
+    return snapshot
+
+
+def _initial_workbook_intake_steps() -> list[dict[str, Any]]:
+    return [
+        {
+            "key": key,
+            "name": name,
+            "description": description,
+            "status": "pending",
+            "message": "等待执行",
+        }
+        for key, name, description in WORKBOOK_INTAKE_STEPS
+    ]
+
+
+def _set_workbook_intake_step(
+    intake_id: str,
+    step_key: str,
+    status: str,
+    message: str,
+    progress: int,
+) -> None:
+    state = _get_workbook_intake(intake_id) or {"intake_id": intake_id}
+    steps = [dict(item) for item in state.get("steps", _initial_workbook_intake_steps())]
+    found = False
+    for step in steps:
+        if step.get("key") == step_key:
+            step.update(status=status, message=message)
+            found = True
+        elif status == "running" and step.get("status") == "running":
+            step["status"] = "completed"
+    if not found:
+        steps.append({"key": step_key, "name": step_key, "description": "", "status": status, "message": message})
+    _set_workbook_intake(
+        intake_id,
+        status="running" if status != "failed" else "failed",
+        progress=max(0, min(int(progress), 100)),
+        message=message,
+        steps=steps,
+    )
+
+
+def _get_workbook_intake(intake_id: str) -> dict[str, Any] | None:
+    safe_id = Path(str(intake_id or "")).name
+    if not safe_id or safe_id != intake_id:
+        return None
+    with JOBS_LOCK:
+        state = WORKBOOK_INTAKES.get(safe_id)
+        if state:
+            return dict(state)
+    path = _intake_state_path(safe_id)
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict) or payload.get("intake_id") != safe_id:
+        return None
+    with JOBS_LOCK:
+        WORKBOOK_INTAKES[safe_id] = dict(payload)
+    return payload
+
+
+def _normalize_company_name(value: str) -> str:
+    return re.sub(r"[\s（）()，,。·\-]", "", str(value or "")).replace("有限责任公司", "有限公司")
+
+
+def _owned_intake_file(intake_id: str, value: Any) -> Path | None:
+    if not value:
+        return None
+    root = (_workbook_intakes_root() / intake_id).resolve()
+    candidate = Path(str(value)).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        return None
+    return candidate if candidate.is_file() else None
+
+
+def _select_intake_document(manifest: Mapping[str, Any], target_company_name: str) -> dict[str, Any]:
+    documents = [item for item in manifest.get("documents", []) if isinstance(item, dict)]
+    if not documents:
+        raise RuntimeError("材料包中未识别到可生成工作簿的审计财务报告")
+    target_key = _normalize_company_name(target_company_name)
+    if target_key:
+        exact = [
+            item for item in documents
+            if _normalize_company_name(item.get("metadata", {}).get("company_name", "")) == target_key
+        ]
+        if len(exact) == 1:
+            return exact[0]
+        if len(exact) > 1:
+            exact.sort(key=lambda item: (len(item.get("issues", [])), item.get("source_file", "")))
+            return exact[0]
+        detected = sorted({
+            str(item.get("metadata", {}).get("company_name", "") or item.get("source_file", ""))
+            for item in documents
+        })
+        raise RuntimeError(
+            f"材料包中未找到与“{target_company_name}”完全匹配的审计主体；已识别：{'、'.join(detected[:12])}"
+        )
+    if len(documents) == 1:
+        return documents[0]
+    detected = sorted({
+        str(item.get("metadata", {}).get("company_name", "") or item.get("source_file", ""))
+        for item in documents
+    })
+    raise RuntimeError(f"材料包包含多个审计主体，请先填写评估主体全称：{'、'.join(detected[:12])}")
+
+
+def _recalculate_generated_workbooks(output_dir: Path) -> dict[str, Any]:
+    """Recalculate the two templates on Windows and reject formula errors.
+
+    Linux deployments cannot automate desktop Excel, so the workbooks retain
+    their full-calc-on-open flag and the UI records that recalculation was
+    deferred to the reviewer.  On Windows, an installed Excel is part of the
+    validation contract because it catches #NAME?/#REF! before download.
+    """
+    if os.name != "nt":
+        return {"status": "deferred_to_excel_on_open", "workbook_count": 2}
+    script = ROOT / "demo/recalc_generated_workbooks.ps1"
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if not script.is_file() or not powershell:
+        raise RuntimeError("无法执行 Excel 公式重算：缺少 PowerShell 校验脚本或运行环境")
+    completed = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(script),
+            "-OutputDirectory",
+            str(output_dir),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "未知错误").strip()
+        raise RuntimeError(f"Excel 公式重算失败：{detail[:1000]}")
+    return {"status": "completed", "detail": completed.stdout.strip()[-4000:]}
+
+
+def _execute_workbook_intake(
+    intake_id: str,
+    archive_path: Path,
+    target_company_name: str,
+) -> None:
+    intake_dir = _workbook_intakes_root() / intake_id
+    extracted_dir = intake_dir / "extracted"
+    generated_dir = intake_dir / "generated"
+    try:
+        _set_workbook_intake_step(intake_id, "unpack_archive", "running", "正在安全解压材料包", 10)
+        from .adapters.archive_intake import safe_extract_archive
+        from .run_material_intake import generate_material_workbooks
+
+        extracted = safe_extract_archive(archive_path, extracted_dir)
+        if not extracted:
+            raise RuntimeError("材料包为空")
+        _set_workbook_intake_step(intake_id, "unpack_archive", "completed", f"安全解压完成，共 {len(extracted)} 个文件", 24)
+        def report_progress(step: str, status: str, message: str, percent: int) -> None:
+            _set_workbook_intake_step(intake_id, step, status, message, percent)
+        manifest = generate_material_workbooks(
+            extracted_dir,
+            generated_dir,
+            ROOT / "资产评估工作流",
+            progress_callback=report_progress,
+            cache_dir=_workbook_intakes_root() / "ocr_cache",
+        )
+        selected = _select_intake_document(manifest, target_company_name)
+        workbooks = selected.get("workbooks", {})
+        reporting_source = generated_dir / str(workbooks.get("reporting_workbook", ""))
+        income_source = generated_dir / str(workbooks.get("income_workbook", ""))
+        if not reporting_source.is_file() or not income_source.is_file():
+            raise RuntimeError("材料解析已完成，但两份模板工作簿未完整生成")
+        _set_workbook_intake_step(intake_id, "formula_qa", "running", "正在用 Excel 重算两份工作簿并检查 #NAME?、#REF! 等公式错误", 95)
+        formula_qa = _recalculate_generated_workbooks(reporting_source.parent)
+        _set_workbook_intake_step(
+            intake_id,
+            "formula_qa",
+            "completed",
+            "公式重算与错误检查完成" if formula_qa.get("status") == "completed" else "当前平台将在 Excel 首次打开时执行完整重算",
+            96,
+        )
+        reporting_target = intake_dir / "资产法.xlsx"
+        income_target = intake_dir / "收益法.xlsx"
+        shutil.copy2(reporting_source, reporting_target)
+        shutil.copy2(income_source, income_target)
+        _set_workbook_intake_step(intake_id, "verify_output", "running", "正在核对两份工作簿名称、文件完整性和下载入口", 96)
+        source_file = extracted_dir / str(selected.get("source_file", ""))
+        target_key = _normalize_company_name(
+            selected.get("metadata", {}).get("company_name", "") or target_company_name
+        )
+        supporting_sources: dict[str, str] = {}
+        for item in manifest.get("all_materials", []):
+            if not isinstance(item, dict) or item.get("source_file") == selected.get("source_file"):
+                continue
+            company_key = _normalize_company_name(item.get("metadata", {}).get("company_name", ""))
+            if target_key and company_key != target_key:
+                continue
+            kind = item.get("material_type")
+            if kind in {"营业执照", "企业信息报告"} and "registry_material" not in supporting_sources:
+                supporting_sources["registry_material"] = str(extracted_dir / str(item.get("source_file", "")))
+            elif kind == "其他企业资料" and "company_profile_material" not in supporting_sources:
+                supporting_sources["company_profile_material"] = str(extracted_dir / str(item.get("source_file", "")))
+        artifacts = [
+            {"name": "资产法.xlsx", "label": "资产法 Excel"},
+            {"name": "收益法.xlsx", "label": "收益法 Excel"},
+        ]
+        state = _get_workbook_intake(intake_id) or {}
+        steps = [dict(item) for item in state.get("steps", [])]
+        for step in steps:
+            if step.get("key") == "verify_output":
+                step.update(status="completed", message="资产法.xlsx、收益法.xlsx 已通过输出检查")
+        _set_workbook_intake(
+            intake_id,
+            status="completed",
+            progress=100,
+            message="两份工作簿已生成；可下载检查，也可直接进入原工作流",
+            target_company_name=(selected.get("metadata", {}).get("company_name", "") or target_company_name),
+            selected_source_file=str(source_file) if source_file.is_file() else "",
+            reporting_workbook=str(reporting_target),
+            income_workbook=str(income_target),
+            supporting_sources=supporting_sources,
+            formula_qa=formula_qa,
+            artifacts=artifacts,
+            steps=steps,
+            completed_at=datetime.now(timezone.utc).isoformat(),
+        )
+    except Exception as exc:
+        LOGGER.exception("Workbook intake %s failed", intake_id)
+        public_error = _public_error(exc)
+        state = _get_workbook_intake(intake_id) or {}
+        steps = [dict(item) for item in state.get("steps", [])]
+        for step in steps:
+            if step.get("status") == "running":
+                step.update(status="failed", message=public_error)
+        _set_workbook_intake(
+            intake_id,
+            status="failed",
+            progress=100,
+            message="材料包解析失败",
+            error=public_error,
+            technical_error=str(exc),
+            artifacts=[],
+            steps=steps,
+        )
 
 
 def _artifact_list(run_dir: Path) -> list[dict[str, str]]:
@@ -260,9 +579,9 @@ def _replace_job_candidate(run_id: str, field_key: str, value: str) -> None:
                 break
 
 
-def _find_ocr_cache(pdf_path: Path) -> Path | None:
-    """Find a prior OCR workbook whose manifest matches this PDF hash."""
-    pdf_hash = hashlib.sha256(pdf_path.read_bytes()).hexdigest()
+def _find_ocr_cache(source_path: Path) -> Path | None:
+    """Find a prior OCR workbook whose manifest matches the uploaded source."""
+    pdf_hash = hashlib.sha256(source_path.read_bytes()).hexdigest()
     configured = __import__("os").environ.get("APPRAISAL_OCR_CACHE_DIR", "")
     manifest_paths = []
     if configured:
@@ -501,8 +820,10 @@ def _execute_run(
             completed_at=datetime.now(timezone.utc).isoformat(),
         )
     except Exception as exc:
-        _set_node(run_id, current_node, "failed", str(exc))
-        _set_job(run_id, status="failed", progress=100, error=str(exc), artifacts=[])
+        LOGGER.exception("Run %s failed", run_id)
+        public_error = _public_error(exc)
+        _set_node(run_id, current_node, "failed", public_error)
+        _set_job(run_id, status="failed", progress=100, error=public_error, technical_error=str(exc), artifacts=[])
 
 
 def _execute_fill(run_id: str, selected_fields: dict[str, Any]) -> None:
@@ -581,8 +902,10 @@ def _execute_fill(run_id: str, selected_fields: dict[str, Any]) -> None:
             completed_at=datetime.now(timezone.utc).isoformat(),
         )
     except Exception as exc:
-        _set_node(run_id, current_node, "failed", str(exc))
-        _set_job(run_id, status="failed", progress=100, error=str(exc), artifacts=[])
+        LOGGER.exception("Word fill %s failed", run_id)
+        public_error = _public_error(exc)
+        _set_node(run_id, current_node, "failed", public_error)
+        _set_job(run_id, status="failed", progress=100, error=public_error, technical_error=str(exc), artifacts=[])
 
 
 def _execute_regenerate_candidate(run_id: str, field_key: str, feedback: str) -> None:
@@ -645,8 +968,10 @@ def _execute_regenerate_candidate(run_id: str, field_key: str, feedback: str) ->
             message="候选内容已更新，请确认要写入 Word 的模块",
         )
     except Exception as exc:
-        _set_node(run_id, "ocr_llm_candidates", "awaiting_selection", f"重新生成失败：{exc}")
-        _set_step(run_id, "ocr_llm_candidates", "generate_candidates", "failed", str(exc))
+        LOGGER.exception("Candidate regeneration %s/%s failed", run_id, field_key)
+        public_error = _public_error(exc)
+        _set_node(run_id, "ocr_llm_candidates", "awaiting_selection", f"重新生成失败：{public_error}")
+        _set_step(run_id, "ocr_llm_candidates", "generate_candidates", "failed", public_error)
         _set_step(
             run_id,
             "ocr_llm_candidates",
@@ -658,9 +983,74 @@ def _execute_regenerate_candidate(run_id: str, field_key: str, feedback: str) ->
             run_id,
             status="awaiting_selection",
             progress=70,
-            message=f"候选重新生成失败：{exc}",
-            error=str(exc),
+            message=f"候选重新生成失败：{public_error}",
+            error=public_error,
+            technical_error=str(exc),
         )
+
+
+@app.post("/api/v1/asset-appraisal/workbook-intakes", status_code=202)
+async def create_workbook_intake(
+    background_tasks: BackgroundTasks,
+    archive: UploadFile = File(...),
+    target_company_name: str = Form(""),
+):
+    suffix = Path(archive.filename or "").suffix.lower()
+    if suffix not in {".rar", ".zip"}:
+        raise HTTPException(status_code=422, detail="材料包仅支持 .rar 或 .zip 格式")
+    intake_id = _workbook_intake_id(archive.filename or "materials.rar")
+    intake_dir = _workbook_intakes_root() / intake_id
+    intake_dir.mkdir(parents=True, exist_ok=True)
+    archive_path = intake_dir / f"source{suffix}"
+    with archive_path.open("wb") as destination:
+        shutil.copyfileobj(archive.file, destination)
+    if archive_path.stat().st_size == 0:
+        archive_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=422, detail="上传的材料包为空")
+    state = _set_workbook_intake(
+        intake_id,
+        status="queued",
+        progress=0,
+        message="材料包已上传，等待解析",
+        archive_name=Path(archive.filename or "materials.rar").name,
+        target_company_name=str(target_company_name or "").strip(),
+        artifacts=[],
+        steps=[
+            {
+                **step,
+                "status": "completed" if step["key"] == "validate_archive" else step["status"],
+                "message": "材料包格式和文件大小校验通过" if step["key"] == "validate_archive" else step["message"],
+            }
+            for step in _initial_workbook_intake_steps()
+        ],
+    )
+    background_tasks.add_task(
+        _execute_workbook_intake,
+        intake_id,
+        archive_path,
+        str(target_company_name or "").strip(),
+    )
+    return state
+
+
+@app.get("/api/v1/asset-appraisal/workbook-intakes/{intake_id}")
+async def get_workbook_intake(intake_id: str):
+    state = _get_workbook_intake(intake_id)
+    if not state:
+        raise HTTPException(status_code=404, detail="工作簿预处理任务不存在")
+    return state
+
+
+@app.get("/api/v1/asset-appraisal/workbook-intakes/{intake_id}/artifacts/{name}")
+async def download_workbook_intake_artifact(intake_id: str, name: str):
+    state = _get_workbook_intake(intake_id)
+    allowed = {item["name"] for item in (state or {}).get("artifacts", [])}
+    if not state or name not in allowed:
+        raise HTTPException(status_code=404, detail="工作簿产物不存在")
+    path = _workbook_intakes_root() / intake_id / name
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="工作簿文件不存在")
+    return FileResponse(path, filename=name)
 
 
 @app.post("/api/v1/asset-appraisal/runs", status_code=202)
@@ -679,11 +1069,20 @@ async def create_run(
     use_glm: bool = Form(True),
     use_qichacha: bool = Form(True),
     reuse_ocr: bool = Form(True),
+    workbook_intake_id: str = Form(""),
 ):
     # Named slots from the current UI are authoritative even when the user
     # gives the workbook an arbitrary filename.  The legacy ``materials``
     # multi-file field is only used to fill roles that were not supplied by a
     # typed slot.
+    intake_state: dict[str, Any] | None = None
+    workbook_intake_id = str(workbook_intake_id or "").strip()
+    if workbook_intake_id:
+        intake_state = _get_workbook_intake(workbook_intake_id)
+        if not intake_state:
+            raise HTTPException(status_code=422, detail="工作簿预处理任务不存在或已失效")
+        if intake_state.get("status") != "completed":
+            raise HTTPException(status_code=422, detail="工作簿预处理尚未完成，不能进入后续工作流")
     audit_uploads = list(audit_materials or [])
     if pdf is not None:
         audit_uploads.insert(0, pdf)
@@ -787,21 +1186,29 @@ async def create_run(
     ]
     if missing_choices:
         raise HTTPException(status_code=422, detail=f"缺少必填选择项：{'、'.join(missing_choices)}")
-    if not audit_uploads:
-        raise HTTPException(status_code=422, detail="请至少上传一份审计报告材料")
-    audit_suffixes = {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".xlsm"}
+    has_direct_workbook = any(
+        upload is not None
+        for upload in (role_uploads["reporting_workbook"], role_uploads["income_workbook"])
+    )
+    if not audit_uploads and not intake_state and not has_direct_workbook:
+        raise HTTPException(
+            status_code=422,
+            detail="请上传材料包、至少一份 Excel 工作簿或审计报告材料",
+        )
+    image_suffixes = {".png", ".jpg", ".jpeg"}
+    audit_suffixes = {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".xlsm", *image_suffixes}
     for upload in audit_uploads:
         suffix = Path(upload.filename or "").suffix.lower()
         if not upload.filename or suffix not in audit_suffixes:
             raise HTTPException(
                 status_code=422,
-                detail="审计报告材料仅支持 Word、Excel、PDF 格式",
+                detail="审计报告材料仅支持 PDF、图片、Word、Excel 格式",
             )
     optional_upload_groups = {
-        "registry_materials": (list(registry_materials or []), {".doc", ".docx", ".ppt", ".pptx", ".pdf"}, "工商文件"),
-        "ownership_history_materials": (list(ownership_history_materials or []), {".doc", ".docx", ".ppt", ".pptx", ".pdf", ".xls", ".xlsx", ".xlsm"}, "股权结构及历史沿革文件"),
-        "unrecorded_intangibles_materials": (list(unrecorded_intangibles_materials or []), {".doc", ".docx", ".ppt", ".pptx", ".pdf", ".xls", ".xlsx", ".xlsm"}, "账外无形资产文件"),
-        "company_profile_materials": (list(company_profile_materials or []), {".doc", ".docx", ".ppt", ".pptx", ".pdf"}, "企业介绍文件"),
+        "registry_materials": (list(registry_materials or []), {".doc", ".docx", ".ppt", ".pptx", ".pdf", *image_suffixes}, "工商文件"),
+        "ownership_history_materials": (list(ownership_history_materials or []), {".doc", ".docx", ".ppt", ".pptx", ".pdf", ".xls", ".xlsx", ".xlsm", *image_suffixes}, "股权结构及历史沿革文件"),
+        "unrecorded_intangibles_materials": (list(unrecorded_intangibles_materials or []), {".doc", ".docx", ".ppt", ".pptx", ".pdf", ".xls", ".xlsx", ".xlsm", *image_suffixes}, "账外无形资产文件"),
+        "company_profile_materials": (list(company_profile_materials or []), {".doc", ".docx", ".ppt", ".pptx", ".pdf", ".xls", ".xlsx", ".xlsm", *image_suffixes}, "企业介绍文件"),
     }
     for _role, group, suffixes, label in (
         (role, items, suffixes, label)
@@ -814,7 +1221,7 @@ async def create_run(
                     status_code=422,
                     detail=f"{label}格式不支持",
                 )
-    has_upload = bool(audit_uploads) or any(upload is not None for upload, _, _ in uploads.values())
+    has_upload = bool(intake_state) or bool(audit_uploads) or any(upload is not None for upload, _, _ in uploads.values())
     has_manual = any(
         value not in (None, "", [], {})
         for value in parsed_inputs.values()
@@ -844,6 +1251,14 @@ async def create_run(
             parsed_inputs["transaction_type"] = validate_transaction_type(parsed_inputs["transaction_type"])
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if intake_state:
+        intake_company = _normalize_company_name(intake_state.get("target_company_name", ""))
+        form_company = _normalize_company_name(parsed_inputs.get("target_company_name", ""))
+        if intake_company and form_company and intake_company != form_company:
+            raise HTTPException(
+                status_code=422,
+                detail="材料包生成的工作簿主体与当前评估主体不一致，请重新生成或上传正确的 Excel",
+            )
     first_filename = next(
         (
             upload.filename
@@ -877,6 +1292,12 @@ async def create_run(
         with target.open("wb") as destination:
             shutil.copyfileobj(upload.file, destination)
         audit_paths.append(target)
+    if intake_state and not audit_paths:
+        source = _owned_intake_file(workbook_intake_id, intake_state.get("selected_source_file"))
+        if source and source.suffix.lower() in audit_suffixes:
+            target = audit_dir / re.sub(r"[\\/:*?\"<>|]+", "_", source.name)
+            shutil.copy2(source, target)
+            audit_paths.append(target)
     for field_name, (upload, _, _) in uploads.items():
         if upload is None:
             continue
@@ -887,6 +1308,22 @@ async def create_run(
         stored_files[field_name] = input_dir / stored_name
         with stored_files[field_name].open("wb") as target:
             shutil.copyfileobj(upload.file, target)
+    if intake_state:
+        generated_workbooks = {
+            "reporting_workbook": _owned_intake_file(workbook_intake_id, intake_state.get("reporting_workbook")),
+            "income_workbook": _owned_intake_file(workbook_intake_id, intake_state.get("income_workbook")),
+        }
+        for field_name, source in generated_workbooks.items():
+            # A user-uploaded workbook is authoritative and replaces only the
+            # corresponding generated workbook.  The other generated role is
+            # retained, which supports partial reviewer corrections.
+            if field_name in stored_files:
+                continue
+            if source is None:
+                raise HTTPException(status_code=422, detail=f"预处理结果缺少 {field_name}")
+            target = input_dir / source.name
+            shutil.copy2(source, target)
+            stored_files[field_name] = target
     optional_paths: dict[str, list[Path]] = {}
     for role, (group, _suffixes, _label) in optional_upload_groups.items():
         if not group:
@@ -908,7 +1345,29 @@ async def create_run(
             with target.open("wb") as destination:
                 shutil.copyfileobj(upload.file, destination)
             optional_paths[role].append(target)
+    if intake_state:
+        intake_supporting = intake_state.get("supporting_sources", {}) or {}
+        intake_role_map = {
+            "registry_material": "registry_materials",
+            "company_profile_material": "company_profile_materials",
+        }
+        for source_role, upload_role in intake_role_map.items():
+            if optional_paths.get(upload_role):
+                continue
+            source = _owned_intake_file(workbook_intake_id, intake_supporting.get(source_role))
+            if source is None:
+                continue
+            group_dir = input_dir / upload_role
+            group_dir.mkdir(parents=True, exist_ok=True)
+            target = group_dir / re.sub(r"[\\/:*?\"<>|]+", "_", source.name)
+            shutil.copy2(source, target)
+            optional_paths[upload_role] = [target]
+    # The legacy workflow still names this argument ``pdf_path``, but the OCR
+    # adapters accept an image as well.  Prefer PDF where available and use a
+    # scanned image only when it is the sole audit evidence.
     pdf_path = next((path for path in audit_paths if path.suffix.lower() == ".pdf"), None)
+    if pdf_path is None:
+        pdf_path = next((path for path in audit_paths if path.suffix.lower() in image_suffixes), None)
     audited_workbook = next(
         (path for path in audit_paths if path.suffix.lower() in {".xls", ".xlsx", ".xlsm"}),
         None,
@@ -932,6 +1391,15 @@ async def create_run(
         message="任务已创建",
         artifacts=[],
         nodes=_initial_node_states(),
+        workbook_intake_id=workbook_intake_id,
+        workbook_sources={
+            "reporting_workbook": (
+                "user_upload" if role_uploads["reporting_workbook"] is not None else "generated_intake" if intake_state else "missing"
+            ),
+            "income_workbook": (
+                "user_upload" if role_uploads["income_workbook"] is not None else "generated_intake" if intake_state else "missing"
+            ),
+        },
     )
     background_tasks.add_task(
         _execute_run,
@@ -1064,19 +1532,21 @@ async def select_run_candidates(
 
 @app.post("/api/v1/asset-appraisal/ocr-cache/check")
 async def check_ocr_cache(pdf: UploadFile = File(...)):
-    if not pdf.filename or not pdf.filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=422, detail="请上传 PDF 审计报告")
+    allowed_suffixes = {".pdf", ".png", ".jpg", ".jpeg"}
+    suffix = Path(pdf.filename or "").suffix.lower()
+    if not pdf.filename or suffix not in allowed_suffixes:
+        raise HTTPException(status_code=422, detail="请上传 PDF 或图片格式的审计材料")
     import tempfile
 
     content = await pdf.read()
-    with tempfile.NamedTemporaryFile(suffix=".pdf") as temporary:
+    with tempfile.NamedTemporaryFile(suffix=suffix) as temporary:
         temporary.write(content)
         temporary.flush()
         cache = _find_ocr_cache(Path(temporary.name))
     return {
         "hit": cache is not None,
         "source": cache.parent.name if cache else "",
-        "message": "命中已有 OCR 结果" if cache else "未命中 OCR 缓存，将执行 OCR",
+        "message": "命中已有 OCR 结果" if cache else "未命中 OCR 缓存；生成时会自动执行 OCR",
     }
 
 

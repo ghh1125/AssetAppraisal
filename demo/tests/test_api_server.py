@@ -42,6 +42,12 @@ def test_progress_completion_messages_close_the_active_step():
     assert api_server._fill_progress_percent(100) == 96
 
 
+def test_public_error_hides_provider_details_but_keeps_next_action():
+    message = api_server._public_error(RuntimeError("阿里云 OCR 任务失败（id-123，403）：secret detail"))
+    assert "secret" not in message
+    assert "扫描件" in message
+
+
 def test_finishing_candidate_node_closes_steps_replayed_during_fill():
     api_server.JOBS.clear()
     api_server._set_job("fill-progress-test", nodes=api_server._initial_node_states())
@@ -216,6 +222,126 @@ def test_api_accepts_confirmed_inputs_without_report_serial(monkeypatch, tmp_pat
     run_id = response.json()["run_id"]
     assert (tmp_path / run_id / "input" / "audit" / "审计报告.pdf").is_file()
     assert (tmp_path / run_id / "input" / "audit" / "审计附表.xlsx").is_file()
+
+
+def test_api_accepts_scanned_image_as_audit_material(monkeypatch, tmp_path):
+    monkeypatch.setattr(api_server, "RUNS_ROOT", tmp_path)
+    captured = {}
+    monkeypatch.setattr(
+        api_server,
+        "_execute_run",
+        lambda _run_id, source_path, *_args: captured.update(source_path=source_path),
+    )
+
+    response = TestClient(api_server.app).post(
+        "/api/v1/asset-appraisal/runs",
+        data={"inputs": json.dumps(confirmed_inputs())},
+        files=[("audit_materials", ("营业执照扫描件.png", b"png", "image/png"))],
+    )
+
+    assert response.status_code == 202
+    assert captured["source_path"].suffix.lower() == ".png"
+
+
+def test_api_accepts_direct_workbook_without_archive_or_audit_material(monkeypatch, tmp_path):
+    monkeypatch.setattr(api_server, "RUNS_ROOT", tmp_path)
+    captured = {}
+    monkeypatch.setattr(
+        api_server,
+        "_execute_run",
+        lambda _run_id, pdf_path, source_overrides, *_args: captured.update(
+            pdf_path=pdf_path,
+            source_overrides=source_overrides,
+        ),
+    )
+
+    response = TestClient(api_server.app).post(
+        "/api/v1/asset-appraisal/runs",
+        data={"inputs": json.dumps(confirmed_inputs())},
+        files=[("income_workbook", ("收益法.xlsx", b"reviewed", "application/octet-stream"))],
+    )
+
+    assert response.status_code == 202
+    assert captured["pdf_path"] is None
+    assert captured["source_overrides"]["income_workbook"].read_bytes() == b"reviewed"
+
+
+def test_completed_intake_supplies_both_workbooks_and_user_upload_overrides_one(monkeypatch, tmp_path):
+    monkeypatch.setattr(api_server, "RUNS_ROOT", tmp_path)
+    api_server.WORKBOOK_INTAKES.clear()
+    intake_id = "intake-001"
+    intake_dir = tmp_path / "_workbook_intakes" / intake_id
+    intake_dir.mkdir(parents=True)
+    asset = intake_dir / "资产法.xlsx"
+    income = intake_dir / "收益法.xlsx"
+    audit = intake_dir / "审计报告.pdf"
+    asset.write_bytes(b"generated-asset")
+    income.write_bytes(b"generated-income")
+    audit.write_bytes(b"%PDF")
+    api_server._set_workbook_intake(
+        intake_id,
+        status="completed",
+        target_company_name="示例有限公司",
+        reporting_workbook=str(asset),
+        income_workbook=str(income),
+        selected_source_file=str(audit),
+        supporting_sources={},
+        artifacts=[],
+    )
+    captured = {}
+    monkeypatch.setattr(
+        api_server,
+        "_execute_run",
+        lambda _run_id, pdf_path, source_overrides, *_args: captured.update(
+            pdf_path=pdf_path,
+            source_overrides=source_overrides,
+        ),
+    )
+
+    response = TestClient(api_server.app).post(
+        "/api/v1/asset-appraisal/runs",
+        data={
+            "inputs": json.dumps(confirmed_inputs()),
+            "workbook_intake_id": intake_id,
+        },
+        files=[("income_workbook", ("人工修改收益法.xlsx", b"reviewed-income", "application/octet-stream"))],
+    )
+
+    assert response.status_code == 202
+    assert captured["source_overrides"]["reporting_workbook"].read_bytes() == b"generated-asset"
+    assert captured["source_overrides"]["income_workbook"].read_bytes() == b"reviewed-income"
+    job = response.json()
+    assert job["workbook_sources"] == {
+        "reporting_workbook": "generated_intake",
+        "income_workbook": "user_upload",
+    }
+
+
+def test_workbook_intake_upload_creates_optional_preprocessing_job(monkeypatch, tmp_path):
+    monkeypatch.setattr(api_server, "RUNS_ROOT", tmp_path)
+    api_server.WORKBOOK_INTAKES.clear()
+    captured = {}
+    monkeypatch.setattr(
+        api_server,
+        "_execute_workbook_intake",
+        lambda intake_id, archive_path, target: captured.update(
+            intake_id=intake_id,
+            archive_path=archive_path,
+            target=target,
+        ),
+    )
+
+    response = TestClient(api_server.app).post(
+        "/api/v1/asset-appraisal/workbook-intakes",
+        data={"target_company_name": "示例有限公司"},
+        files=[("archive", ("材料包.zip", b"zip-content", "application/zip"))],
+    )
+
+    assert response.status_code == 202
+    assert response.json()["status"] == "queued"
+    assert len(response.json()["steps"]) >= 10
+    assert captured["target"] == "示例有限公司"
+    assert captured["archive_path"].read_bytes() == b"zip-content"
 
 
 def test_api_accepts_xlsm_income_workbook(monkeypatch, tmp_path):

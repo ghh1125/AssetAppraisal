@@ -2,14 +2,16 @@
 import { computed, onBeforeUnmount, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import { useI18n } from 'vue-i18n'
-import { artifactUrl } from '../../api/request'
-import { checkAssetAppraisalOcrCache, createAssetAppraisalRun, getAssetAppraisalRun, regenerateAssetAppraisalCandidate, selectAssetAppraisalCandidates, updateAssetAppraisalCandidate } from '../../api/asset-appraisal'
+import { artifactUrl, workbookIntakeArtifactUrl } from '../../api/request'
+import { checkAssetAppraisalOcrCache, createAssetAppraisalRun, createWorkbookIntake, getAssetAppraisalRun, getWorkbookIntake, regenerateAssetAppraisalCandidate, selectAssetAppraisalCandidates, updateAssetAppraisalCandidate } from '../../api/asset-appraisal'
 import { canSubmitPartial } from '../../domain/submission'
 import { summarizeRunIssues } from '../../domain/run-issues'
 import { currentRunProgress } from '../../domain/run-progress'
 import { createUploadState, uploadFields } from '../../domain/upload-fields'
 
 const { t } = useI18n()
+const archiveUploadField = uploadFields.find(field => field.key === 'materialArchive')
+const regularUploadFields = uploadFields.filter(field => field.key !== 'materialArchive')
 
 const form = reactive({
   commissioning_party_name: '',
@@ -43,9 +45,12 @@ const candidateSaving = ref(false)
 const candidateRegenerating = ref(false)
 const manualModalOpen = ref(false)
 const materialsModalOpen = ref(false)
+const workbookIntake = ref(null)
+const intakeSubmitting = ref(false)
 const manualDraft = ref(null)
 const RUN_STATUS_REFRESH_MS = 800
 let pollTimer = null
+let intakePollTimer = null
 
 const DEFAULT_MANUAL_INPUTS = Object.freeze({
   commissioning_party_name: '上海上大热处理有限公司',
@@ -59,10 +64,26 @@ const DEFAULT_MANUAL_INPUTS = Object.freeze({
   valuation_base_date: '2025-06-30',
 })
 
-const canSubmit = computed(() => canSubmitPartial(files, form))
+const canSubmit = computed(() => canSubmitPartial(files, form, workbookIntake.value))
 const publicArtifacts = computed(() => (
   (run.value?.artifacts || []).filter(item => item.name === '资产评估报告_待复核.docx')
 ))
+const generatedWorkbookArtifacts = computed(() => workbookIntake.value?.artifacts || [])
+const workbookSourceSummary = computed(() => ({
+  reporting: files.reportingWorkbook?.name || (workbookIntake.value?.status === 'completed' ? '资产法.xlsx（自动生成）' : '未提供'),
+  income: files.incomeWorkbook?.name || (workbookIntake.value?.status === 'completed' ? '收益法.xlsx（自动生成）' : '未提供'),
+}))
+const intakeProgress = computed(() => workbookIntake.value?.progress || 0)
+const downstreamProgress = computed(() => run.value?.progress || 0)
+const intakeStageMessage = computed(() => (
+  workbookIntake.value?.message || (files.materialArchive ? '材料包已选择，点击“解析并生成两份 Excel”开始' : '可选：也可以直接上传已有 Excel，跳过本阶段')
+))
+const downstreamStageMessage = computed(() => (
+  run.value?.message || (canSubmit.value ? '输入已就绪，可以进入原工作流' : '等待材料或工作簿及必填人工信息')
+))
+const progressStatus = status => (
+  status === 'failed' ? 'exception' : status === 'completed' ? 'success' : status === 'running' ? 'active' : 'normal'
+)
 const readableIssues = computed(() => summarizeRunIssues(run.value?.issues || []))
 const progressSummary = computed(() => currentRunProgress(run.value))
 const statusText = computed(() => t(`asset.${run.value?.status || 'queued'}`))
@@ -82,16 +103,21 @@ const manualFieldCount = computed(() => [
 const uploadedFileCount = computed(() => Object.values(files).reduce((count, value) => (
   count + (Array.isArray(value) ? value.length : value ? 1 : 0)
 ), 0))
+const isOcrSource = file => /\.(pdf|png|jpe?g)$/i.test(file?.name || '')
 
 function setFile(type, event) {
   const field = uploadFields.find(item => item.key === type)
   files[type] = field?.multiple
     ? (event.fileList || []).map(item => item.originFileObj).filter(Boolean)
-    : event.fileList?.[0]?.originFileObj || null
+    : event.fileList?.at(-1)?.originFileObj || null
   if (type === 'auditMaterials') {
-    const pdf = files.auditMaterials.find(file => file?.name?.toLowerCase().endsWith('.pdf'))
-    if (pdf) checkOcrCache(pdf)
+    const ocrSource = files.auditMaterials.find(isOcrSource)
+    if (ocrSource) checkOcrCache(ocrSource)
     else ocrCache.value = { checking: false, hit: false, source: '' }
+  }
+  if (type === 'materialArchive') {
+    clearIntakePoll()
+    workbookIntake.value = null
   }
 }
 
@@ -225,6 +251,44 @@ function clearPoll() {
   pollTimer = null
 }
 
+function clearIntakePoll() {
+  if (intakePollTimer) window.clearTimeout(intakePollTimer)
+  intakePollTimer = null
+}
+
+async function refreshWorkbookIntake(intakeId) {
+  try {
+    workbookIntake.value = await getWorkbookIntake(intakeId)
+    if (['queued', 'running'].includes(workbookIntake.value.status)) {
+      intakePollTimer = window.setTimeout(() => refreshWorkbookIntake(intakeId), RUN_STATUS_REFRESH_MS)
+    } else if (workbookIntake.value.status === 'completed') {
+      message.success('资产法.xlsx 和收益法.xlsx 已生成，可下载检查或直接继续')
+    }
+  } catch (error) {
+    clearIntakePoll()
+    message.error(error.message || '无法获取材料包解析状态')
+  }
+}
+
+async function generateWorkbooksFromArchive() {
+  if (!files.materialArchive) {
+    message.warning('请先选择 RAR 或 ZIP 材料包')
+    return
+  }
+  clearIntakePoll()
+  intakeSubmitting.value = true
+  workbookIntake.value = null
+  try {
+    const result = await createWorkbookIntake(files.materialArchive, form.target_company_name)
+    workbookIntake.value = result
+    await refreshWorkbookIntake(result.intake_id)
+  } catch (error) {
+    message.error(error.message || '材料包解析任务创建失败')
+  } finally {
+    intakeSubmitting.value = false
+  }
+}
+
 async function refreshRun(runId) {
   try {
     run.value = await getAssetAppraisalRun(runId)
@@ -281,6 +345,7 @@ async function submit() {
       useGlm: useGlm.value,
       useQichacha: useQichacha.value,
       reuseOcr: reuseOcr.value,
+      workbookIntakeId: workbookIntake.value?.status === 'completed' ? workbookIntake.value.intake_id : '',
     })
     run.value = result
     await refreshRun(result.run_id)
@@ -309,7 +374,10 @@ async function confirmCandidates() {
   }
 }
 
-onBeforeUnmount(clearPoll)
+onBeforeUnmount(() => {
+  clearPoll()
+  clearIntakePoll()
+})
 </script>
 
 <template>
@@ -366,14 +434,60 @@ onBeforeUnmount(clearPoll)
         <a-modal v-model:open="materialsModalOpen" :title="t('asset.materialSection')" :ok-text="t('asset.saveSection')" :cancel-text="t('asset.closeSection')" :width="980" @ok="saveMaterialsSection">
           <a-form layout="vertical">
             <a-alert :message="t('asset.uploadInfo')" type="info" show-icon />
-            <div class="source-strategy-grid">
-              <a-form-item :label="t('asset.registryStrategy')"><a-radio-group v-model:value="form.registry_info_strategy"><a-radio value="file">{{ t('asset.sourceFile') }}</a-radio><a-radio value="qichacha">{{ t('asset.sourceQichacha') }}</a-radio></a-radio-group></a-form-item>
-              <a-form-item :label="t('asset.ownershipStrategy')"><a-radio-group v-model:value="form.ownership_history_strategy"><a-radio value="file">{{ t('asset.sourceFile') }}</a-radio><a-radio value="qichacha">{{ t('asset.sourceQichacha') }}</a-radio></a-radio-group></a-form-item>
-              <a-form-item :label="t('asset.intangiblesStrategy')"><a-radio-group v-model:value="form.unrecorded_intangibles_strategy"><a-radio value="file">{{ t('asset.sourceFile') }}</a-radio><a-radio value="qichacha">{{ t('asset.sourceQichacha') }}</a-radio></a-radio-group></a-form-item>
-              <a-form-item :label="t('asset.profileStrategy')"><a-radio-group v-model:value="form.company_profile_strategy"><a-radio value="file">{{ t('asset.sourceFile') }}</a-radio><a-radio value="qichacha">{{ t('asset.sourceQichacha') }}</a-radio></a-radio-group></a-form-item>
+            <section class="archive-input-card">
+              <div class="archive-input-heading"><span>1</span><div><strong>{{ t('asset.archiveGenerateTitle') }}</strong><small>{{ t('asset.archiveGenerateHint') }}</small></div></div>
+              <a-upload-dragger
+                :multiple="false"
+                :max-count="1"
+                :accept="archiveUploadField.accept"
+                :before-upload="() => false"
+                @change="setFile(archiveUploadField.key, $event)"
+              >
+                <p class="upload-icon rar">{{ archiveUploadField.icon }}</p>
+                <p class="upload-title">{{ t(`asset.${archiveUploadField.titleKey}`) }}</p>
+                <p class="upload-hint">{{ t(`asset.${archiveUploadField.hintKey}`) }}</p>
+              </a-upload-dragger>
+              <div class="intake-actions">
+                <span>{{ files.materialArchive?.name || t('asset.noArchiveSelected') }}</span>
+                <a-button :loading="intakeSubmitting" :disabled="!files.materialArchive" @click="generateWorkbooksFromArchive">
+                  {{ t('asset.archiveGenerateButton') }}
+                </a-button>
+              </div>
+            </section>
+            <div v-if="workbookIntake" class="intake-status">
+              <div class="intake-status-head">
+                <span>{{ workbookIntake.message }}</span>
+                <strong>{{ workbookIntake.progress || 0 }}%</strong>
+              </div>
+              <a-progress v-if="['queued', 'running'].includes(workbookIntake.status)" :percent="workbookIntake.progress || 0" status="active" />
+              <a-alert v-if="workbookIntake.status === 'failed'" :message="workbookIntake.error || '材料包解析失败'" type="error" show-icon />
+              <div v-if="workbookIntake.steps?.length" class="intake-substeps">
+                <div v-for="step in workbookIntake.steps" :key="step.key" :class="['intake-substep', `intake-substep-${step.status}`]">
+                  <span class="intake-substep-icon">{{ step.status === 'completed' ? '✓' : step.status === 'running' ? '·' : step.status === 'failed' ? '!' : '○' }}</span>
+                  <span class="intake-substep-copy"><strong>{{ step.name }}</strong><small>{{ step.message || step.description }}</small></span>
+                  <span class="intake-substep-status">{{ stepStatusText(step.status) }}</span>
+                </div>
+              </div>
+              <div v-if="workbookIntake.status === 'completed'" class="artifact-list intake-artifacts">
+                <a
+                  v-for="artifact in generatedWorkbookArtifacts"
+                  :key="artifact.name"
+                  :href="workbookIntakeArtifactUrl(workbookIntake.intake_id, artifact.name)"
+                  target="_blank"
+                >{{ artifact.label || artifact.name }}</a>
+              </div>
             </div>
-            <div class="upload-grid">
-              <template v-for="field in uploadFields" :key="field.key">
+            <a-divider>{{ t('asset.directUploadDivider') }}</a-divider>
+            <section class="direct-input-card">
+              <div class="archive-input-heading secondary"><span>2</span><div><strong>{{ t('asset.directUploadTitle') }}</strong><small>{{ t('asset.directUploadHint') }}</small></div></div>
+              <div class="source-strategy-grid">
+                <a-form-item :label="t('asset.registryStrategy')"><a-radio-group v-model:value="form.registry_info_strategy"><a-radio value="file">{{ t('asset.sourceFile') }}</a-radio><a-radio value="qichacha">{{ t('asset.sourceQichacha') }}</a-radio></a-radio-group></a-form-item>
+                <a-form-item :label="t('asset.ownershipStrategy')"><a-radio-group v-model:value="form.ownership_history_strategy"><a-radio value="file">{{ t('asset.sourceFile') }}</a-radio><a-radio value="qichacha">{{ t('asset.sourceQichacha') }}</a-radio></a-radio-group></a-form-item>
+                <a-form-item :label="t('asset.intangiblesStrategy')"><a-radio-group v-model:value="form.unrecorded_intangibles_strategy"><a-radio value="file">{{ t('asset.sourceFile') }}</a-radio><a-radio value="qichacha">{{ t('asset.sourceQichacha') }}</a-radio></a-radio-group></a-form-item>
+                <a-form-item :label="t('asset.profileStrategy')"><a-radio-group v-model:value="form.company_profile_strategy"><a-radio value="file">{{ t('asset.sourceFile') }}</a-radio><a-radio value="qichacha">{{ t('asset.sourceQichacha') }}</a-radio></a-radio-group></a-form-item>
+              </div>
+              <div class="upload-grid">
+              <template v-for="field in regularUploadFields" :key="field.key">
                 <a-upload-dragger
                   v-if="showUploadField(field)"
                   :multiple="field.multiple"
@@ -387,14 +501,41 @@ onBeforeUnmount(clearPoll)
                   <p class="upload-hint">{{ t(`asset.${field.hintKey}`) }}</p>
                 </a-upload-dragger>
               </template>
-            </div>
+              </div>
+            </section>
+            <a-alert
+              class="workbook-source-summary"
+              type="info"
+              show-icon
+              :message="`当前资产法来源：${workbookSourceSummary.reporting}；当前收益法来源：${workbookSourceSummary.income}`"
+              :description="t('asset.workbookOverrideHint')"
+            />
             <a-alert class="template-source" :message="t('asset.templateSource')" type="success" show-icon />
             <a-alert v-if="ocrCache.checking" class="ocr-cache-status" :message="t('asset.ocrCacheChecking')" type="info" show-icon />
             <a-alert v-else-if="ocrCache.hit" class="ocr-cache-status" :message="t('asset.ocrCacheHit', { source: ocrCache.source })" type="success" show-icon />
-            <a-alert v-else-if="files.auditMaterials?.some(file => file?.name?.toLowerCase().endsWith('.pdf'))" class="ocr-cache-status" :message="t('asset.ocrCacheMiss')" type="warning" show-icon />
+            <a-alert v-else-if="files.auditMaterials?.some(isOcrSource)" class="ocr-cache-status" :message="t('asset.ocrCacheMiss')" type="warning" show-icon />
           </a-form>
         </a-modal>
       </a-card>
+    </section>
+
+    <section class="workflow-stage-grid" aria-label="two-stage workflow progress">
+      <article class="workflow-stage-card">
+        <div class="workflow-stage-head">
+          <div><span class="workflow-stage-number">1</span><strong>{{ t('asset.stageOneTitle') }}</strong></div>
+          <a-tag :color="workbookIntake?.status === 'failed' ? 'red' : workbookIntake?.status === 'completed' ? 'green' : workbookIntake ? 'blue' : 'default'">{{ t('asset.optionalStage') }}</a-tag>
+        </div>
+        <a-progress :percent="intakeProgress" :status="progressStatus(workbookIntake?.status)" />
+        <p>{{ intakeStageMessage }}</p>
+      </article>
+      <article class="workflow-stage-card">
+        <div class="workflow-stage-head">
+          <div><span class="workflow-stage-number">2</span><strong>{{ t('asset.stageTwoTitle') }}</strong></div>
+          <a-tag :color="run?.status === 'failed' ? 'red' : run?.status === 'completed' ? 'green' : run ? 'blue' : 'default'">{{ t('asset.mainStage') }}</a-tag>
+        </div>
+        <a-progress :percent="downstreamProgress" :status="progressStatus(run?.status)" />
+        <p>{{ downstreamStageMessage }}</p>
+      </article>
     </section>
 
     <section class="run-bar">
@@ -409,7 +550,6 @@ onBeforeUnmount(clearPoll)
         <div class="progress-overview-label">{{ progressSummary.label }}</div>
         <div class="progress-overview-detail">{{ progressSummary.detail }}</div>
       </div>
-      <a-progress v-if="['queued', 'running'].includes(run.status)" :percent="run.progress || 0" status="active" />
       <div v-if="run.status === 'completed' && publicArtifacts.length" class="artifact-list result-artifact">
         <a :href="artifactUrl(run.run_id, artifact.name)" target="_blank" v-for="artifact in publicArtifacts" :key="artifact.name">{{ artifact.label || artifact.name }}</a>
       </div>
@@ -510,6 +650,38 @@ h1 { margin:8px 0 8px; font-size:34px; color:var(--c2m-text-primary); }
 .manual-default-bar { display:flex; align-items:center; justify-content:space-between; gap:14px; margin-bottom:18px; padding:10px 12px; border-radius:10px; background:#f8fbff; color:var(--c2m-text-secondary); font-size:12px; }
 .source-strategy-grid { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); column-gap:18px; }
 .upload-grid { display:grid; grid-template-columns:1fr; gap:14px; margin-top:18px; }
+.archive-input-card, .direct-input-card { margin-top:16px; padding:15px; border:1px solid #dbe7f4; border-radius:14px; background:#fbfdff; }
+.archive-input-heading { display:flex; align-items:flex-start; gap:10px; margin-bottom:12px; }
+.archive-input-heading > span { width:24px; height:24px; flex:none; display:grid; place-items:center; border-radius:8px; background:#1677ff; color:#fff; font-size:12px; font-weight:800; }
+.archive-input-heading strong, .archive-input-heading small { display:block; }
+.archive-input-heading small { margin-top:3px; color:var(--c2m-text-secondary); font-size:12px; }
+.archive-input-heading.secondary > span { background:#5b6b7f; }
+.direct-input-card .source-strategy-grid { margin-top:4px; }
+.intake-actions { display:flex; align-items:center; justify-content:space-between; gap:16px; margin-top:14px; padding:13px 14px; border:1px solid #dbe7f4; border-radius:12px; background:#f8fbff; }
+.intake-actions strong, .intake-actions span { display:block; }
+.intake-actions span { margin-top:4px; color:var(--c2m-text-secondary); font-size:12px; }
+.intake-status { display:grid; gap:10px; margin-top:12px; padding:13px 14px; border:1px solid #e5edf7; border-radius:12px; }
+.intake-status-head { display:flex; justify-content:space-between; gap:12px; color:var(--c2m-text-secondary); font-size:12px; }
+.intake-status-head strong { color:var(--c2m-color-primary); }
+.intake-artifacts { margin-top:2px; }
+.workbook-source-summary { margin-top:14px; }
+.intake-substeps { display:grid; gap:7px; margin-top:2px; }
+.intake-substep { display:grid; grid-template-columns:20px minmax(0, 1fr) auto; gap:9px; align-items:start; padding:8px 9px; border-radius:9px; background:#f8fafc; color:#8b98a8; }
+.intake-substep-icon { width:18px; height:18px; border-radius:50%; display:grid; place-items:center; background:#edf1f6; font-size:11px; font-weight:800; }
+.intake-substep-copy strong, .intake-substep-copy small { display:block; }
+.intake-substep-copy strong { color:var(--c2m-text-primary); font-size:12px; }
+.intake-substep-copy small { margin-top:2px; color:var(--c2m-text-secondary); font-size:11px; }
+.intake-substep-status { font-size:11px; }
+.intake-substep-completed .intake-substep-icon { background:#e6f7ee; color:#16834b; }
+.intake-substep-running { background:#f0f7ff; }
+.intake-substep-running .intake-substep-icon { background:#e6f4ff; color:#1677ff; animation:substep-pulse 1.2s infinite; }
+.intake-substep-failed .intake-substep-icon { background:#fff1f0; color:#cf1322; }
+.workflow-stage-grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-top:20px; }
+.workflow-stage-card { padding:17px 18px 14px; border:1px solid #e5edf7; border-radius:16px; background:var(--c2m-bg-card); box-shadow:0 8px 30px rgba(31,53,81,.05); }
+.workflow-stage-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:11px; }
+.workflow-stage-head > div { display:flex; align-items:center; gap:9px; }
+.workflow-stage-number { width:24px; height:24px; border-radius:8px; display:grid; place-items:center; background:#1677ff; color:#fff; font-size:12px; font-weight:800; }
+.workflow-stage-card p { min-height:34px; margin:5px 0 0; color:var(--c2m-text-secondary); font-size:12px; line-height:1.45; }
 .ocr-cache-status { margin-top:14px; }
 .template-source { margin-top:14px; }
 .upload-icon { margin:6px 0 12px; color:var(--c2m-color-primary); font-weight:800; letter-spacing:.1em; }
@@ -568,5 +740,5 @@ h1 { margin:8px 0 8px; font-size:34px; color:var(--c2m-text-primary); }
 .substep-failed .substep-icon { background:#fff1f0; color:#cf1322; }
 .substep-failed .substep-status { color:#cf1322; }
 @keyframes substep-pulse { 50% { opacity:.45; transform:scale(.85); } }
-@media (max-width: 900px) { .workspace-grid { grid-template-columns:1fr; } .topbar, .run-bar { flex-direction:column; } .form-row, .form-row.three, .source-strategy-grid, .upload-grid, .node1-entry-grid, .candidate-grid { grid-template-columns:1fr; } }
+@media (max-width: 900px) { .workspace-grid, .workflow-stage-grid { grid-template-columns:1fr; } .topbar, .run-bar, .intake-actions { flex-direction:column; align-items:stretch; } .form-row, .form-row.three, .source-strategy-grid, .upload-grid, .node1-entry-grid, .candidate-grid { grid-template-columns:1fr; } }
 </style>

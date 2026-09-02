@@ -18,6 +18,7 @@ export function buildAssetAppraisalForm({
   useGlm,
   useQichacha,
   reuseOcr,
+  workbookIntakeId,
 }) {
   const form = new FormData()
   for (const file of auditMaterials) form.append('audit_materials', file)
@@ -31,8 +32,20 @@ export function buildAssetAppraisalForm({
   form.append('use_glm', String(useGlm))
   form.append('use_qichacha', String(useQichacha))
   form.append('reuse_ocr', String(reuseOcr ?? true))
+  if (workbookIntakeId) form.append('workbook_intake_id', workbookIntakeId)
   return form
 }
+
+export function createWorkbookIntake(archive, targetCompanyName = '') {
+  const form = new FormData()
+  form.append('archive', archive)
+  form.append('target_company_name', targetCompanyName)
+  return postForm('/asset-appraisal/workbook-intakes', form)
+}
+
+export const getWorkbookIntake = (intakeId) => (
+  getJson(`/asset-appraisal/workbook-intakes/${encodeURIComponent(intakeId)}`)
+)
 
 export function createAssetAppraisalRun() {
   return {
