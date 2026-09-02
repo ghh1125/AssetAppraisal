@@ -120,6 +120,17 @@ def test_rule_graph_browser_uses_role_colours_and_shows_source_evidence(tmp_path
     assert "重点规则节点" in browser
     assert "evidence_mapping" in browser
 
+    build_rule_graph_bundle(
+        output_dir=tmp_path / "case-trace",
+        workbook_paths={"资产法": workbook_path},
+        trace_path=trace,
+        artifact_kind="case_trace",
+    )
+    case_browser = (tmp_path / "case-trace" / "本次案例映射溯源浏览器.html").read_text(encoding="utf-8")
+    assert "本次案例逐单元格映射溯源图" in case_browser
+    assert "不会修改系统通用规则" in case_browser
+    assert not (tmp_path / "case-trace" / "资产评估通用逐单元格规则图.json").exists()
+
 
 def test_material_intake_reads_native_docx_and_xlsx_content(tmp_path):
     document_path = tmp_path / "企业介绍.docx"

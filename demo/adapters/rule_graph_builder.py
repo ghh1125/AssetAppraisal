@@ -120,7 +120,7 @@ def _role(value: Any, mappings: list[dict[str, Any]]) -> str:
 
 def build_rule_graph_bundle(
     *, output_dir: Path, workbook_paths: dict[str, Path], trace_path: Path,
-    case_name: str = "当前案例",
+    case_name: str = "当前案例", artifact_kind: str = "rule_library",
 ) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     indexed_trace, flat_trace = _trace_rows(trace_path)
@@ -195,6 +195,7 @@ def build_rule_graph_bundle(
 
     graph = {
         "version": "appraisal_cell_graph.v3",
+        "artifact_kind": artifact_kind,
         "case": case_name,
         "principles": [
             "模板只提供Sheet结构、单元格角色和公式链，不提供当前案例数值",
@@ -215,7 +216,9 @@ def build_rule_graph_bundle(
         "nodes": list(nodes.values()),
         "edges": edges,
     }
-    (output_dir / "资产评估通用逐单元格规则图.json").write_text(json.dumps(graph, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    is_case_trace = artifact_kind == "case_trace"
+    json_name = "本次案例逐单元格映射溯源.json" if is_case_trace else "资产评估通用逐单元格规则图.json"
+    (output_dir / json_name).write_text(json.dumps(graph, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
 
     # A zero-dependency visual browser makes the complete graph inspectable
     # without requiring Mermaid/Graphviz to be installed.  Users can select a
@@ -234,7 +237,14 @@ const cols={source_evidence:0,evidence_input:1,required_missing:2,formula:3,form
 edges.filter(e=>ids.has(e.from)&&ids.has(e.to)).forEach(e=>{const a=pos.get(e.from),b=pos.get(e.to);if(!a||!b)return;const l=document.createElementNS('http://www.w3.org/2000/svg','line');l.setAttribute('x1',a.x+220);l.setAttribute('y1',a.y+21);l.setAttribute('x2',b.x);l.setAttribute('y2',b.y+21);l.setAttribute('class','dynamic edge '+e.type);svg.append(l)});shown.forEach(n=>{const p=pos.get(n.id),g=document.createElementNS('http://www.w3.org/2000/svg','g');g.setAttribute('class','dynamic node '+n.role);g.setAttribute('transform','translate('+p.x+','+p.y+')');const r=document.createElementNS('http://www.w3.org/2000/svg','rect');r.setAttribute('width',220);r.setAttribute('height',46);r.setAttribute('rx',10);const t=document.createElementNS('http://www.w3.org/2000/svg','text');t.setAttribute('x',9);t.setAttribute('y',18);t.textContent=title(n);const t2=document.createElementNS('http://www.w3.org/2000/svg','text');t2.setAttribute('class','node-role');t2.setAttribute('x',9);t2.setAttribute('y',35);t2.textContent=n.role;g.append(r,t,t2);g.onclick=()=>show(n);svg.append(g)});
 const tbody=document.querySelector('#rows');tbody.innerHTML='';all.forEach(n=>{const tr=document.createElement('tr');tr.innerHTML='<td>'+esc(n.cell)+'</td><td><span class="role-badge role-'+esc(n.role)+'">'+esc(n.role)+'</span></td><td>'+esc(n.field||n.generic_rule)+'</td>';tr.onclick=()=>show(n);tbody.append(tr)})}
 book.onchange=sheets;sheet.onchange=render;mode.onchange=render;q.oninput=render;sheets();</script></body></html>'''.replace("__GRAPH__", browser_payload)
-    (output_dir / "逐单元格规则图浏览器.html").write_text(browser, encoding="utf-8")
+    if is_case_trace:
+        browser = browser.replace("资产评估逐单元格规则图", "本次案例逐单元格映射溯源图")
+        browser = browser.replace(
+            "模板公式链 + 当前案例证据定位 + 缺失资料要求；模板数值不作为案例事实。",
+            "系统规则命中 + 当前案例证据定位 + 缺失资料要求；不会修改系统通用规则。",
+        )
+    browser_name = "本次案例映射溯源浏览器.html" if is_case_trace else "逐单元格规则图浏览器.html"
+    (output_dir / browser_name).write_text(browser, encoding="utf-8")
 
     missing = [item for item in flat_trace if item.get("状态") != "已填"]
     grouped_missing: dict[str, dict[str, list[dict[str, Any]]]] = defaultdict(lambda: defaultdict(list))
@@ -262,7 +272,11 @@ book.onchange=sheets;sheet.onchange=render;mode.onchange=render;q.oninput=render
         master.append(f'  {source_id}["{_mmd(from_sheet)}"] -->|{count}个公式引用| {target_id}["{_mmd(to_sheet)}"]')
     (output_dir / "00_总流程与Sheet依赖.mmd").write_text("\n".join(dict.fromkeys(master)), encoding="utf-8")
 
-    index_lines = ["# 逐单元格规则图索引", "", "每个 Sheet 单独一张图；JSON 是自动生成器实际读取的完整规则库。", ""]
+    index_lines = (
+        ["# 本次案例逐单元格映射溯源索引", "", "每个 Sheet 单独记录系统规则命中、案例证据和目标单元格；本文件不是通用规则库。", ""]
+        if is_case_trace
+        else ["# 逐单元格规则图索引", "", "每个 Sheet 单独一张图；JSON 是自动生成器实际读取的完整规则库。", ""]
+    )
     for sequence, stats in enumerate(sheet_stats, 1):
         workbook_name, sheet_name = stats["workbook"], stats["sheet"]
         filename = f"{sequence:02d}_{_safe_filename(workbook_name)}_{_safe_filename(sheet_name)}.mmd"
@@ -288,5 +302,6 @@ book.onchange=sheets;sheet.onchange=render;mode.onchange=render;q.oninput=render
         index_lines.append(
             f"- `{workbook_name}` / `{sheet_name}` → `{filename}`；公式 {stats.get('formula', 0)}，证据输入 {stats.get('evidence_input', 0)}，待补 {stats.get('required_missing', 0)}"
         )
-    (output_dir / "规则图索引.md").write_text("\n".join(index_lines), encoding="utf-8")
+    index_name = "映射溯源索引.md" if is_case_trace else "规则图索引.md"
+    (output_dir / index_name).write_text("\n".join(index_lines), encoding="utf-8")
     return graph["statistics"]

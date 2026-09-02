@@ -123,6 +123,10 @@ def _safe_name(path: Path) -> str:
     return value[:80] or "审计材料"
 
 
+def _subject_key(value: Any) -> str:
+    return re.sub(r"[\s（）()，,。·\-]", "", str(value or "")).replace("有限责任公司", "有限公司")
+
+
 def _local_pages(path: Path) -> list[dict[str, Any]]:
     pages: list[dict[str, Any]] = []
     with pdfplumber.open(path) as pdf:
@@ -428,6 +432,7 @@ def generate_material_workbooks(
     skip_ready: bool = False,
     progress_callback: Callable[[str, str, str, int], None] | None = None,
     cache_dir: Path | None = None,
+    target_company_name: str | None = None,
 ) -> dict[str, Any]:
     root = root.resolve()
     output_dir = output_dir.resolve()
@@ -436,7 +441,6 @@ def generate_material_workbooks(
     # Each complete intake is emitted to a separate, explicit deliverable
     # folder while the SHA OCR cache remains shared and reusable.
     workbook_root = output_dir / "workbooks_generic_safe_v6"
-    _write_generic_rule_graph(workbook_root)
     documents: list[dict[str, Any]] = []
     _load_local_env()
     ocr_adapter = create_ocr_adapter(os.environ)
@@ -527,9 +531,29 @@ def generate_material_workbooks(
         progress_callback("classify_materials", "completed", f"材料分类完成：{summary}", 58)
 
     supporting = [record for record in material_records if record["kind"] != "审计财务报告"]
-    for record in material_records:
-        if record["kind"] != "审计财务报告":
-            continue
+    audit_records = [record for record in material_records if record["kind"] == "审计财务报告"]
+    records_to_build = audit_records
+    if target_company_name is not None:
+        detected = sorted({
+            str(record["metadata"].get("company_name") or record["source_file"])
+            for record in audit_records
+        })
+        target_key = _subject_key(target_company_name)
+        if target_key:
+            matches = [
+                record for record in audit_records
+                if _subject_key(record["metadata"].get("company_name")) == target_key
+            ]
+            if not matches:
+                raise RuntimeError(
+                    f"材料包中未找到与‘{target_company_name}’完全匹配的审计主体；已识别：{'、'.join(detected[:12])}"
+                )
+            records_to_build = [min(matches, key=lambda item: (len(item.get("issues", [])), item["source_file"]))]
+        elif len(audit_records) == 1:
+            records_to_build = audit_records
+        else:
+            raise RuntimeError(f"材料包包含多个审计主体，请先填写评估主体全称：{'、'.join(detected[:12])}")
+    for record in records_to_build:
         source = record["source"]
         pages = record["pages"]
         issues = record["issues"]
@@ -552,7 +576,7 @@ def generate_material_workbooks(
                 progress_callback(
                     "load_mapping_rules",
                     "running",
-                    "正在读取通富模板 Sheet 结构、科目映射、期间口径和公式依赖规则",
+                    "正在读取系统提供的逐单元格规则图、科目映射、期间口径和公式依赖",
                     63,
                 )
             matched_ids = {id(item) for item in matched_supporting}

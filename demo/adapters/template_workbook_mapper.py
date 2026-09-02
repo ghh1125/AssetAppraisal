@@ -895,14 +895,14 @@ def _set_recalculation(workbook) -> None:
         calculation.forceFullCalc = True
 
 
-def _write_rule_graph(
+def _write_case_trace_graph(
     output_dir: Path,
     document_name: str,
     asset_rows: list[list[Any]],
     income_rows: list[list[Any]],
     supporting_materials: list[dict[str, Any]],
 ) -> None:
-    """Write a compact Mermaid graph beside the two generated workbooks."""
+    """Write the current case's rule-hit trace without changing system rules."""
     lines = ["flowchart LR", f'  pdf["{document_name}"] --> index["审计原始索引"]']
     lines.append('  index --> financial["财务三表/附注 OCR 原表"]')
     lines.append('  financial --> asset_book["资产基础法：账面值"]')
@@ -933,7 +933,7 @@ def _write_rule_graph(
         '  asset_raw --> asset_formula["表1/表2/明细汇总公式"]',
         '  income_raw --> income_formula["历史三表→预测/净现金流/WACC公式"]',
     ])
-    (output_dir / "规则图.mmd").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    (output_dir / "本次案例映射溯源.mmd").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def _clear_nonformula_numbers(workbook, excluded: set[str]) -> None:
@@ -1127,7 +1127,7 @@ def build_template_workbooks(
     asset = load_workbook(outputs["reporting_workbook"])
     income = load_workbook(outputs["income_workbook"])
     if progress_callback:
-        progress_callback("load_mapping_rules", "completed", "模板结构、标准科目别名和公式坐标规则已加载", 64)
+        progress_callback("load_mapping_rules", "completed", "系统提供的逐单元格规则图、标准科目别名和公式依赖已加载", 64)
     income_value_bounds = _nonempty_bounds(income)
     _apply_project_identity(asset, income, project_metadata, basis_date)
     asset_rows: list[list[Any]] = []
@@ -1199,17 +1199,18 @@ def build_template_workbooks(
     _set_recalculation(trace)
     trace.save(outputs["trace_workbook"])
     if progress_callback:
-        progress_callback("build_rule_graph", "running", "正在生成每个 Sheet、单元格、来源和公式依赖的通用规则图", 88)
-    _write_rule_graph(output_dir, document_name, asset_rows, income_rows, supporting_materials)
+        progress_callback("write_mapping_trace", "running", "正在记录本案例命中的规则、来源页码、目标单元格和公式依赖", 88)
+    _write_case_trace_graph(output_dir, document_name, asset_rows, income_rows, supporting_materials)
     build_rule_graph_bundle(
-        output_dir=output_dir / "通用逐单元格规则图",
+        output_dir=output_dir / "本次案例逐单元格映射溯源",
         workbook_paths={
             "资产基础法_资产清查.xlsx": outputs["reporting_workbook"],
             "收益法_市场法.xlsx": outputs["income_workbook"],
         },
         trace_path=outputs["trace_workbook"],
         case_name=str(project_metadata.get("company_name") or document_name),
+        artifact_kind="case_trace",
     )
     if progress_callback:
-        progress_callback("build_rule_graph", "completed", "逐单元格规则图和待补资料清单已生成", 94)
+        progress_callback("write_mapping_trace", "completed", "本案例映射溯源和待补资料清单已记录；系统通用规则图未被修改", 94)
     return outputs

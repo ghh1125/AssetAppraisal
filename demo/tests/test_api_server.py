@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -33,6 +34,29 @@ def test_workbook_intake_progress_never_moves_backwards(monkeypatch, tmp_path):
         40,
     )
     assert api_server._get_workbook_intake(intake_id)["progress"] == 55
+
+
+def test_workbook_intake_progress_adapts_to_material_type_and_file_completion():
+    pdf_weights = api_server._adaptive_intake_step_weights([Path(f"{name}.pdf") for name in "abcd"])
+    native_weights = api_server._adaptive_intake_step_weights([Path("a.xlsx"), Path("b.docx")])
+    assert pdf_weights["ocr_materials"] > native_weights["ocr_materials"]
+    steps = api_server._initial_workbook_intake_steps()
+    for step in steps:
+        if step["key"] in {"validate_archive", "unpack_archive", "inventory"}:
+            step["status"] = "completed"
+        elif step["key"] == "ocr_materials":
+            step.update(status="running", message="正在使用阿里云文档智能版式 OCR 解析 1/10：a.pdf")
+    start = api_server._adaptive_intake_progress(steps, pdf_weights)
+    next(step for step in steps if step["key"] == "ocr_materials")["message"] = "已用阿里云文档智能版式 OCR 完成 5/10：e.pdf"
+    halfway = api_server._adaptive_intake_progress(steps, pdf_weights)
+    assert halfway > start
+
+
+def test_archive_steps_read_system_rules_and_only_record_case_trace():
+    keys = [step["key"] for step in api_server._initial_workbook_intake_steps()]
+    assert "load_mapping_rules" in keys
+    assert "write_mapping_trace" in keys
+    assert "build_rule_graph" not in keys
 
 
 def test_node_progress_has_user_readable_substeps_and_updates_active_step():

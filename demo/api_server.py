@@ -51,10 +51,10 @@ WORKBOOK_INTAKE_STEPS = (
     ("ocr_materials", "逐文件解析", "读取原生表格/文本，并为扫描材料记录 OCR 坐标"),
     ("classify_materials", "材料分类", "识别审计报告、附注、营业执照和企业信息"),
     ("match_subject", "主体匹配", "隔离不同公司的材料，避免跨案例混入"),
-    ("load_mapping_rules", "读取模板与映射规则", "加载 Sheet 结构、科目别名、期间口径和公式依赖规则"),
+    ("load_mapping_rules", "读取系统规则图", "加载系统提供的 Sheet、单元格、科目、期间和公式依赖规则"),
     ("map_asset", "生成资产法 Excel", "按资产法模板逐单元格映射审定数据"),
     ("map_income", "生成收益法 Excel", "填入历史三表并保留收益法公式链"),
-    ("build_rule_graph", "构建通用规则图", "保存来源、换算、公式依赖和待补资料"),
+    ("write_mapping_trace", "记录本次映射溯源", "记录本案例命中的规则、来源、换算和待补资料"),
     ("formula_qa", "公式重算与错误检查", "重算公式、保护空输入错误并拒绝结构性公式错误"),
     ("verify_output", "结果校验", "确认两份工作簿存在、命名正确且可下载"),
 )
@@ -294,16 +294,73 @@ def _initial_workbook_intake_steps() -> list[dict[str, Any]]:
     ]
 
 
+def _adaptive_intake_step_weights(paths: list[Path] | None = None) -> dict[str, float]:
+    """Estimate stage cost from the uploaded material mix.
+
+    Scanned PDFs/images and legacy Office binaries need layout OCR, so they
+    carry more work units than natively readable OOXML files.  The weights are
+    normalized by ``_adaptive_intake_progress`` rather than treated as fixed
+    percentages.
+    """
+    weights = {
+        "validate_archive": 1.0,
+        "unpack_archive": 2.0,
+        "inventory": 1.0,
+        "ocr_materials": 8.0,
+        "classify_materials": 2.0,
+        "match_subject": 2.0,
+        "load_mapping_rules": 2.0,
+        "map_asset": 4.0,
+        "map_income": 5.0,
+        "write_mapping_trace": 2.0,
+        "formula_qa": 4.0,
+        "verify_output": 1.0,
+    }
+    if paths:
+        ocr_suffixes = {".pdf", ".png", ".jpg", ".jpeg", ".doc", ".xls", ".ppt"}
+        native_suffixes = {".docx", ".xlsx", ".xlsm", ".pptx"}
+        parse_units = sum(
+            3.0 if path.suffix.lower() in ocr_suffixes
+            else 1.0 if path.suffix.lower() in native_suffixes
+            else 0.0
+            for path in paths
+        )
+        weights["ocr_materials"] = max(8.0, parse_units)
+    return weights
+
+
+def _adaptive_intake_progress(
+    steps: list[dict[str, Any]],
+    weights: Mapping[str, Any],
+) -> int:
+    total = sum(max(0.0, float(weights.get(step.get("key"), 1.0))) for step in steps) or 1.0
+    achieved = 0.0
+    for step in steps:
+        weight = max(0.0, float(weights.get(step.get("key"), 1.0)))
+        status = step.get("status")
+        fraction = 1.0 if status == "completed" else 0.0
+        if status == "running":
+            fraction = 0.08
+            if step.get("key") == "ocr_materials":
+                match = re.search(r"(\d+)\s*/\s*(\d+)", str(step.get("message") or ""))
+                if match:
+                    current, count = int(match.group(1)), max(1, int(match.group(2)))
+                    fraction = max(0.0, min(current / count, 0.99))
+                    if str(step.get("message") or "").startswith("正在"):
+                        fraction = max(0.0, min((current - 1) / count, 0.99))
+        achieved += weight * fraction
+    return max(0, min(round(100 * achieved / total), 99))
+
+
 def _set_workbook_intake_step(
     intake_id: str,
     step_key: str,
     status: str,
     message: str,
-    progress: int,
+    progress: int | None,
 ) -> None:
     state = _get_workbook_intake(intake_id) or {"intake_id": intake_id}
     previous_progress = max(0, min(int(state.get("progress", 0) or 0), 100))
-    next_progress = max(previous_progress, max(0, min(int(progress), 100)))
     steps = [dict(item) for item in state.get("steps", _initial_workbook_intake_steps())]
     found = False
     for step in steps:
@@ -314,6 +371,12 @@ def _set_workbook_intake_step(
             step["status"] = "completed"
     if not found:
         steps.append({"key": step_key, "name": step_key, "description": "", "status": status, "message": message})
+    requested_progress = (
+        _adaptive_intake_progress(steps, state.get("step_weights") or _adaptive_intake_step_weights())
+        if progress is None
+        else max(0, min(int(progress), 100))
+    )
+    next_progress = max(previous_progress, requested_progress)
     _set_workbook_intake(
         intake_id,
         status="running" if status != "failed" else "failed",
@@ -437,22 +500,24 @@ def _execute_workbook_intake(
     extracted_dir = intake_dir / "extracted"
     generated_dir = intake_dir / "generated"
     try:
-        _set_workbook_intake_step(intake_id, "unpack_archive", "running", "正在安全解压材料包", 10)
+        _set_workbook_intake_step(intake_id, "unpack_archive", "running", "正在安全解压材料包", None)
         from .adapters.archive_intake import safe_extract_archive
         from .run_material_intake import generate_material_workbooks
 
         extracted = safe_extract_archive(archive_path, extracted_dir)
         if not extracted:
             raise RuntimeError("材料包为空")
-        _set_workbook_intake_step(intake_id, "unpack_archive", "completed", f"安全解压完成，共 {len(extracted)} 个文件", 24)
+        _set_workbook_intake(intake_id, step_weights=_adaptive_intake_step_weights(extracted))
+        _set_workbook_intake_step(intake_id, "unpack_archive", "completed", f"安全解压完成，共 {len(extracted)} 个文件", None)
         def report_progress(step: str, status: str, message: str, percent: int) -> None:
-            _set_workbook_intake_step(intake_id, step, status, message, percent)
+            _set_workbook_intake_step(intake_id, step, status, message, None)
         manifest = generate_material_workbooks(
             extracted_dir,
             generated_dir,
             ROOT / "资产评估工作流",
             progress_callback=report_progress,
             cache_dir=_workbook_intakes_root() / "ocr_cache",
+            target_company_name=target_company_name,
         )
         selected = _select_intake_document(manifest, target_company_name)
         workbooks = selected.get("workbooks", {})
@@ -460,20 +525,20 @@ def _execute_workbook_intake(
         income_source = generated_dir / str(workbooks.get("income_workbook", ""))
         if not reporting_source.is_file() or not income_source.is_file():
             raise RuntimeError("材料解析已完成，但两份模板工作簿未完整生成")
-        _set_workbook_intake_step(intake_id, "formula_qa", "running", "正在用 Excel 重算两份工作簿并检查 #NAME?、#REF! 等公式错误", 95)
+        _set_workbook_intake_step(intake_id, "formula_qa", "running", "正在用 Excel 重算两份工作簿并检查 #NAME?、#REF! 等公式错误", None)
         formula_qa = _recalculate_generated_workbooks(reporting_source.parent)
         _set_workbook_intake_step(
             intake_id,
             "formula_qa",
             "completed",
             "公式重算与错误检查完成" if formula_qa.get("status") == "completed" else "当前平台将在 Excel 首次打开时执行完整重算",
-            96,
+            None,
         )
         reporting_target = intake_dir / "资产法.xlsx"
         income_target = intake_dir / "收益法.xlsx"
         shutil.copy2(reporting_source, reporting_target)
         shutil.copy2(income_source, income_target)
-        _set_workbook_intake_step(intake_id, "verify_output", "running", "正在核对两份工作簿名称、文件完整性和下载入口", 96)
+        _set_workbook_intake_step(intake_id, "verify_output", "running", "正在核对两份工作簿名称、文件完整性和下载入口", None)
         source_file = extracted_dir / str(selected.get("source_file", ""))
         target_key = _normalize_company_name(
             selected.get("metadata", {}).get("company_name", "") or target_company_name
@@ -1009,22 +1074,25 @@ async def create_workbook_intake(
     if archive_path.stat().st_size == 0:
         archive_path.unlink(missing_ok=True)
         raise HTTPException(status_code=422, detail="上传的材料包为空")
+    initial_steps = [
+        {
+            **step,
+            "status": "completed" if step["key"] == "validate_archive" else step["status"],
+            "message": "材料包格式和文件大小校验通过" if step["key"] == "validate_archive" else step["message"],
+        }
+        for step in _initial_workbook_intake_steps()
+    ]
+    initial_weights = _adaptive_intake_step_weights()
     state = _set_workbook_intake(
         intake_id,
         status="queued",
-        progress=0,
+        progress=_adaptive_intake_progress(initial_steps, initial_weights),
         message="材料包已上传，等待解析",
         archive_name=Path(archive.filename or "materials.rar").name,
         target_company_name=str(target_company_name or "").strip(),
         artifacts=[],
-        steps=[
-            {
-                **step,
-                "status": "completed" if step["key"] == "validate_archive" else step["status"],
-                "message": "材料包格式和文件大小校验通过" if step["key"] == "validate_archive" else step["message"],
-            }
-            for step in _initial_workbook_intake_steps()
-        ],
+        step_weights=initial_weights,
+        steps=initial_steps,
     )
     background_tasks.add_task(
         _execute_workbook_intake,
