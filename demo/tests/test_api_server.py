@@ -36,6 +36,25 @@ def test_workbook_intake_progress_never_moves_backwards(monkeypatch, tmp_path):
     assert api_server._get_workbook_intake(intake_id)["progress"] == 55
 
 
+def test_workbook_intake_update_preserves_persisted_state(monkeypatch, tmp_path):
+    monkeypatch.setattr(api_server, "RUNS_ROOT", tmp_path)
+    api_server.WORKBOOK_INTAKES.clear()
+    intake_id = "persisted-intake"
+    state_path = tmp_path / "_workbook_intakes" / intake_id / "state.json"
+    state_path.parent.mkdir(parents=True)
+    state_path.write_text(
+        json.dumps({"intake_id": intake_id, "status": "completed", "progress": 100}),
+        encoding="utf-8",
+    )
+
+    api_server._set_workbook_intake(intake_id, error="")
+
+    saved = json.loads(state_path.read_text(encoding="utf-8"))
+    assert saved["status"] == "completed"
+    assert saved["progress"] == 100
+    assert saved["error"] == ""
+
+
 def test_workbook_intake_progress_adapts_to_material_type_and_file_completion():
     pdf_weights = api_server._adaptive_intake_step_weights([Path(f"{name}.pdf") for name in "abcd"])
     native_weights = api_server._adaptive_intake_step_weights([Path("a.xlsx"), Path("b.docx")])

@@ -13,7 +13,6 @@ import logging
 import os
 import re
 import shutil
-import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
@@ -35,6 +34,7 @@ from .domain.field_validation import (
     validate_valuation_subject_type,
 )
 from .domain.company_matching import matching_company_records, normalize_company_name
+from .adapters.workbook_delivery_qa import prepare_generated_workbooks
 
 ROOT = Path(__file__).resolve().parents[1]
 PROJECT_CONFIG = ROOT / "demo/projects/tongfu.yaml"
@@ -56,7 +56,7 @@ WORKBOOK_INTAKE_STEPS = (
     ("map_asset", "生成资产法 Excel", "按资产法模板逐单元格映射审定数据"),
     ("map_income", "生成收益法 Excel", "填入历史三表并保留收益法公式链"),
     ("write_mapping_trace", "记录本次映射溯源", "记录本案例命中的规则、来源、换算和待补资料"),
-    ("formula_qa", "公式重算与错误检查", "重算公式、保护空输入错误并拒绝结构性公式错误"),
+    ("formula_qa", "公式重算与错误检查", "后台检查公式结构与错误缓存，并设置打开时自动完整计算"),
     ("verify_output", "结果校验", "确认两份工作簿存在、命名正确且可下载"),
 )
 
@@ -271,7 +271,16 @@ def _intake_state_path(intake_id: str) -> Path:
 
 def _set_workbook_intake(intake_id: str, **values: Any) -> dict[str, Any]:
     with JOBS_LOCK:
-        state = WORKBOOK_INTAKES.setdefault(intake_id, {"intake_id": intake_id})
+        state = WORKBOOK_INTAKES.get(intake_id)
+        if state is None:
+            path = _intake_state_path(intake_id)
+            try:
+                persisted = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+            except (OSError, json.JSONDecodeError):
+                persisted = {}
+            state = persisted if isinstance(persisted, dict) else {}
+            state.setdefault("intake_id", intake_id)
+            WORKBOOK_INTAKES[intake_id] = state
         state.update(values)
         snapshot = dict(state)
     path = _intake_state_path(intake_id)
@@ -459,39 +468,8 @@ def _select_intake_document(manifest: Mapping[str, Any], target_company_name: st
 
 
 def _recalculate_generated_workbooks(output_dir: Path) -> dict[str, Any]:
-    """Recalculate the two templates on Windows and reject formula errors.
-
-    Linux deployments cannot automate desktop Excel, so the workbooks retain
-    their full-calc-on-open flag and the UI records that recalculation was
-    deferred to the reviewer.  On Windows, an installed Excel is part of the
-    validation contract because it catches #NAME?/#REF! before download.
-    """
-    if os.name != "nt":
-        return {"status": "deferred_to_excel_on_open", "workbook_count": 2}
-    script = ROOT / "demo/recalc_generated_workbooks.ps1"
-    powershell = shutil.which("powershell") or shutil.which("pwsh")
-    if not script.is_file() or not powershell:
-        raise RuntimeError("无法执行 Excel 公式重算：缺少 PowerShell 校验脚本或运行环境")
-    completed = subprocess.run(
-        [
-            powershell,
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            str(script),
-            "-OutputDirectory",
-            str(output_dir),
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=600,
-    )
-    if completed.returncode != 0:
-        detail = (completed.stderr or completed.stdout or "未知错误").strip()
-        raise RuntimeError(f"Excel 公式重算失败：{detail[:1000]}")
-    return {"status": "completed", "detail": completed.stdout.strip()[-4000:]}
+    """Prepare the two templates entirely in the backend, without Excel COM."""
+    return prepare_generated_workbooks(output_dir)
 
 
 def _execute_workbook_intake(
@@ -528,13 +506,13 @@ def _execute_workbook_intake(
         income_source = generated_dir / str(workbooks.get("income_workbook", ""))
         if not reporting_source.is_file() or not income_source.is_file():
             raise RuntimeError("材料解析已完成，但两份模板工作簿未完整生成")
-        _set_workbook_intake_step(intake_id, "formula_qa", "running", "正在用 Excel 重算两份工作簿并检查 #NAME?、#REF! 等公式错误", None)
+        _set_workbook_intake_step(intake_id, "formula_qa", "running", "正在后台检查工作簿结构、公式引用和错误缓存", None)
         formula_qa = _recalculate_generated_workbooks(reporting_source.parent)
         _set_workbook_intake_step(
             intake_id,
             "formula_qa",
             "completed",
-            "公式重算与错误检查完成" if formula_qa.get("status") == "completed" else "当前平台将在 Excel 首次打开时执行完整重算",
+            "后台公式结构与错误缓存检查完成；工作簿打开时将自动完整计算",
             None,
         )
         reporting_target = intake_dir / "资产法.xlsx"
@@ -580,6 +558,8 @@ def _execute_workbook_intake(
             formula_qa=formula_qa,
             artifacts=artifacts,
             steps=steps,
+            error="",
+            technical_error="",
             completed_at=datetime.now(timezone.utc).isoformat(),
         )
     except Exception as exc:
