@@ -1,0 +1,42 @@
+{
+  "version": "generic_appraisal_workbooks.v1",
+  "description": "公司无关的资产法与收益法工作簿结构、样式和公式链",
+  "roles": {
+    "asset": {
+      "file": "asset_base_v1.xlsx",
+      "sha256": "7660eed67dfca77f6c157259ed09add63a6907fe661f7874c40f540ac516ba6f",
+      "sheet_count": 29,
+      "formula_count": 70,
+      "required_sheets": [
+        "目录",
+        "表1",
+        "表2",
+        "表7"
+      ],
+      "required_placeholders": [
+        "{{COMPANY_NAME}}",
+        "{{COMPANY_SHORT_NAME}}",
+        "{{APPRAISAL_ORG_NAME}}",
+        "{{VALUATION_BASE_DATE_CN}}"
+      ]
+    },
+    "income": {
+      "file": "income_approach_v1.xlsx",
+      "sha256": "d5b5edd7f6bb343b89bf9e1e44854770da351e851faa36ea7c4f62366955f2fa",
+      "sheet_count": 44,
+      "formula_count": 5794,
+      "required_sheets": [
+        "项目信息",
+        "历资表",
+        "历利表",
+        "历现表",
+        "净现金流计算表",
+        "折现率计算表"
+      ],
+      "required_placeholders": [
+        "{{COMPANY_NAME}}",
+        "{{VALUATION_BASE_DATE}}"
+      ]
+    }
+  }
+}

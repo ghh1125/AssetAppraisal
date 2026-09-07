@@ -495,7 +495,6 @@ def _execute_workbook_intake(
         manifest = generate_material_workbooks(
             extracted_dir,
             generated_dir,
-            ROOT / "资产评估工作流",
             progress_callback=report_progress,
             # Share the validated SHA cache with the batch material-intake
             # workflow.  Keeping a second Web-only cache previously allowed a

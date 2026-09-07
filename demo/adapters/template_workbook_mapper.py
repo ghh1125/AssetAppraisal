@@ -1,9 +1,8 @@
-"""Populate the two real appraisal-workbook templates from audit OCR evidence.
+"""Populate the two generic appraisal-workbook templates from audit evidence.
 
-The templates are examples of workbook *structure*, not sources of financial
-facts.  This adapter copies their layout/formulas, removes client-specific
-inputs, fills only audit-proven historical/book amounts and records every
-decision in an ``AI映射规则`` worksheet.
+The versioned templates are application resources, not customer files or
+sources of financial facts.  This adapter copies their layout/formulas, fills
+only evidence-backed historical/book amounts and records every decision.
 """
 
 from __future__ import annotations
@@ -850,6 +849,8 @@ def _basis_date(source_rows: dict[str, list[SourceRow]]) -> str:
 def _apply_project_identity(asset, income, metadata: dict[str, str], basis_date: str) -> None:
     company_name = metadata.get("company_name", "")
     subject = company_name or "待从审计报告/营业执照核实"
+    company_short_name = str(metadata.get("company_short_name") or company_name or "待核实").strip()
+    appraisal_organization = str(metadata.get("appraisal_organization_name") or "待补充").strip()
     legal_raw = str(metadata.get("legal_representative") or "").strip()
     legal_representative = re.split(r"[。；;，,\s]", legal_raw, maxsplit=1)[0]
     if not re.fullmatch(r"[\u4e00-\u9fff·]{2,8}", legal_representative):
@@ -859,14 +860,33 @@ def _apply_project_identity(asset, income, metadata: dict[str, str], basis_date:
     if date_match:
         year, month, day = (int(value) for value in date_match.groups())
         chinese_date = f"{year}年 {month:02d}月 {day:02d}日"
+    for sheet in income.worksheets:
+        for cell in sheet._cells.values():
+            if not isinstance(cell.value, str) or cell.value.startswith("="):
+                continue
+            cell.value = (
+                cell.value
+                .replace("{{COMPANY_NAME}}", subject)
+                .replace("{{COMPANY_SHORT_NAME}}", company_short_name)
+                .replace("{{APPRAISAL_ORG_NAME}}", appraisal_organization)
+                .replace("{{VALUATION_BASE_DATE}}", basis_date or "待核实")
+                .replace("{{VALUATION_BASE_DATE_CN}}", chinese_date or "待核实")
+            )
     for sheet in asset.worksheets:
         for cell in sheet._cells.values():
             if isinstance(cell.value, str) and cell.value.startswith("="):
                 continue
             if isinstance(cell.value, str):
-                cell.value = cell.value.replace("通富热处理（昆山）有限公司", subject).replace("通富昆山", subject)
+                cell.value = (
+                    cell.value
+                    .replace("{{COMPANY_NAME}}", subject)
+                    .replace("{{COMPANY_SHORT_NAME}}", company_short_name)
+                    .replace("{{APPRAISAL_ORG_NAME}}", appraisal_organization)
+                    .replace("{{VALUATION_BASE_DATE}}", basis_date or "待核实")
+                    .replace("{{VALUATION_BASE_DATE_CN}}", chinese_date or "待核实")
+                )
                 if "评估机构" in cell.value:
-                    cell.value = re.sub(r"评估机构\s*[：:].*", "评估机构: 待补充", cell.value)
+                    cell.value = re.sub(r"评估机构\s*[：:].*", f"评估机构: {appraisal_organization}", cell.value)
                 if "法定代表人" in cell.value or "项目负责人" in cell.value:
                     cell.value = f"法定代表人: {legal_representative}                                  项目负责人: 待补充"
                 if isinstance(cell.value, str) and "被评估单位：" in cell.value:
@@ -882,9 +902,9 @@ def _apply_project_identity(asset, income, metadata: dict[str, str], basis_date:
     else:
         income["项目信息"]["B5"] = "未从审计报告/营业执照可靠识别"
     income["项目信息"]["B7"] = basis_date or "待按审计报告期末日期填写"
-    # These cells are appraisal/model decisions in the Tongfu example, not
-    # structural constants.  Keep the field positions but never inherit the
-    # example company's perpetual-period, discounting or valuation choices.
+    # These cells are appraisal/model decisions, not structural constants.
+    # Keep their positions but never inherit another company's perpetual-period,
+    # discounting or valuation choices.
     for row in (6, 9, 10, 11, 12, 13, 14, 15, 16, 17):
         income["项目信息"].cell(row, 2).value = "待补充评估参数"
     for sheet in income.worksheets:
@@ -982,16 +1002,16 @@ def _clear_nonformula_numbers(workbook, excluded: set[str]) -> None:
 
 
 def _clear_asset_sample_data(workbook) -> None:
-    """Clear Tongfu inputs while preserving row labels, serials and formulas."""
+    """Clear project inputs while preserving row labels, serials and formulas."""
     for sheet in workbook.worksheets:
         if not sheet.title.startswith("表") or sheet.max_row < 8:
             continue
-        # Fixed 40-row detail schedules have a row-7 field header and a row-48
-        # total.  Their records are entirely company-specific.
+        # Detail schedules may grow beyond the standard 40 input rows.
+        # Clear the whole body, preserving formulas and total-row labels.
         if "-" in sheet.title and sheet.max_row >= 48:
-            for row in sheet.iter_rows(min_row=8, max_row=47):
+            for row in sheet.iter_rows(min_row=8):
                 for cell in row:
-                    if not (isinstance(cell.value, str) and cell.value.startswith("=")):
+                    if not (isinstance(cell.value, str) and (cell.value.startswith("=") or cell.value.strip() in {"合计", "总计"})):
                         cell.value = None
             continue
         # Summary schedules retain their structural sequence/code/account
@@ -1007,7 +1027,7 @@ def _clear_asset_sample_data(workbook) -> None:
 
 
 def _clear_income_sample_text(workbook) -> None:
-    """Remove non-numeric Tongfu input labels left in the model."""
+    """Remove non-numeric project input labels left in a custom template."""
     input_fills = {"FFFEFEFE", "FF90EE90"}
     for sheet in workbook.worksheets:
         if sheet.title in {"目录1", "目录2", "项目信息"}:
@@ -1017,8 +1037,7 @@ def _clear_income_sample_text(workbook) -> None:
                 if isinstance(cell.value, str) and cell.value.startswith("="):
                     continue
                 fill = cell.fill.fgColor.rgb if cell.fill and cell.fill.fill_type else None
-                company_text = isinstance(cell.value, str) and any(token in cell.value for token in ("通富", "昆山", "热处理", "仙桃"))
-                if company_text or (fill in input_fills and cell.value not in (None, "")):
+                if fill in input_fills and cell.value not in (None, ""):
                     cell.value = None
 
 
@@ -1196,8 +1215,8 @@ def build_template_workbooks(
 
     income_rows: list[list[Any]] = []
     history = {"历资表", "历利表", "历现表"}
-    # The B:E historical columns in the reference file contain Tongfu's
-    # sample figures.  They must be cleared first; only D/E are re-populated
+    # The B:E historical columns may contain stale template inputs.  They are
+    # cleared first; only evidence-backed periods are re-populated
     # from audited current/prior values below.  Keeping those numbers would
     # silently mix companies in downstream forecast formulas.
     _clear_nonformula_numbers(income, {"目录1", "目录2", "项目信息"})
@@ -1244,7 +1263,7 @@ def build_template_workbooks(
     income.save(outputs["income_workbook"])
 
     # Keep the two client-facing workbooks structurally identical to the
-    # supplied Tongfu templates.  The traceability ledger is deliberately a
+    # versioned generic templates.  The traceability ledger is deliberately a
     # separate audit working paper, not extra tabs inserted into a template.
     trace = Workbook()
     default_sheet = trace.active

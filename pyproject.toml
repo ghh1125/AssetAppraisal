@@ -45,6 +45,8 @@ demo = [
   "projects/*.yaml",
   "fixtures/*.yaml",
   "expected/*.yaml",
+  "workbook_templates/*.json",
+  "workbook_templates/*.xlsx",
 ]
 
 [tool.pytest.ini_options]

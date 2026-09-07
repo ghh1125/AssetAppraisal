@@ -18,6 +18,7 @@ from demo.adapters.template_workbook_mapper import (
     _unit_of_sheet,
 )
 from demo.run_material_intake import _sha256
+from demo.template_bundle import load_workbook_template_bundle
 
 
 def _formula_count(workbook) -> int:
@@ -40,8 +41,7 @@ def _formula_map(workbook) -> dict[tuple[str, str], str]:
     }
 
 
-def _forbidden_cells(workbook) -> list[dict[str, str]]:
-    forbidden_company_tokens = ("通富热处理", "通富昆山")
+def _invalid_cells(workbook) -> list[dict[str, str]]:
     formula_error_tokens = ("#NAME?", "#REF!", "#VALUE!", "#DIV/0!", "_xlfn.")
     found: list[dict[str, str]] = []
     for sheet in workbook.worksheets:
@@ -50,17 +50,18 @@ def _forbidden_cells(workbook) -> list[dict[str, str]]:
                 value = cell.value
                 if not isinstance(value, str):
                     continue
-                if any(token in value for token in forbidden_company_tokens):
-                    found.append({"cell": f"{sheet.title}!{cell.coordinate}", "issue": "残留通富样例主体文本", "value": value})
+                if re.search(r"\{\{[A-Z0-9_]+\}\}", value):
+                    found.append({"cell": f"{sheet.title}!{cell.coordinate}", "issue": "通用模板占位符未替换", "value": value})
                 if any(token in value for token in formula_error_tokens):
                     found.append({"cell": f"{sheet.title}!{cell.coordinate}", "issue": "公式或单元格含错误标记", "value": value})
     return found
 
 
-def verify(root: Path, output_dir: Path, template_dir: Path) -> dict[str, object]:
+def verify(root: Path, output_dir: Path, template_dir: Path | None = None) -> dict[str, object]:
     manifest = json.loads((output_dir / "生成清单.json").read_text(encoding="utf-8"))
-    asset_template = load_workbook(template_dir / "上报表文件_通富昆山_已处理.xlsx", read_only=True, data_only=False)
-    income_template = load_workbook(template_dir / "通富热处理（昆山）有限公司-收益法-20250630.xlsx", read_only=True, data_only=False)
+    template_bundle = load_workbook_template_bundle(template_dir)
+    asset_template = load_workbook(template_bundle.asset, read_only=True, data_only=False)
+    income_template = load_workbook(template_bundle.income, read_only=True, data_only=False)
     result: dict[str, object] = {
         "projects": [],
         "issues": [],
@@ -109,8 +110,8 @@ def verify(root: Path, output_dir: Path, template_dir: Path) -> dict[str, object
                     "generated_formula_count": len(generated_formulas),
                     "template_formula_count": len(template_formulas),
                 })
-            for forbidden in _forbidden_cells(workbook):
-                issues.append({"source_file": document["source_file"], "target_file": target_file, **forbidden})
+            for invalid in _invalid_cells(workbook):
+                issues.append({"source_file": document["source_file"], "target_file": target_file, **invalid})
         required_trace_sheets = {"AI映射规则", "AI公式规则", "模板字段注册表", "附注及明细候选", "审计原始索引", "企业资料索引", "项目主体信息"}
         missing_trace_sheets = sorted(required_trace_sheets.difference(trace.sheetnames))
         if missing_trace_sheets:
@@ -208,11 +209,16 @@ def verify(root: Path, output_dir: Path, template_dir: Path) -> dict[str, object
 
 
 if __name__ == "__main__":
-    checked = verify(
-        Path(r"D:\资产评估\00审计报告-测试"),
-        Path(r"D:\AssetAppraisal\outputs\audit-material-intake"),
-        Path(r"D:\AssetAppraisal\资产评估工作流"),
-    )
-    report_path = Path(r"D:\AssetAppraisal\outputs\audit-material-intake\workbooks_generic_safe_v6\全量核验报告.json")
+    import argparse
+
+    parser = argparse.ArgumentParser(description="核验材料包生成的两份工作簿")
+    parser.add_argument("root", type=Path, help="已解压材料目录")
+    parser.add_argument("output_dir", type=Path, help="材料解析输出目录")
+    parser.add_argument("--template-dir", type=Path, help="可选的版本化通用模板包")
+    parser.add_argument("--report", type=Path, help="核验 JSON 输出路径")
+    args = parser.parse_args()
+    checked = verify(args.root, args.output_dir, args.template_dir)
+    report_path = args.report or (args.output_dir / "全量核验报告.json")
+    report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(json.dumps(checked, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(checked, ensure_ascii=False, indent=2))

@@ -22,11 +22,12 @@ import pdfplumber
 from docx import Document
 from openpyxl import load_workbook
 
-from demo.adapters.audit_intake import build_role_workbooks, needs_ocr, tables_from_pages
+from demo.adapters.audit_intake import needs_ocr, tables_from_pages
 from demo.adapters.template_workbook_mapper import build_template_workbooks
 from demo.adapters.ocr_factory import create_ocr_adapter
 from demo.domain.company_matching import matching_company_records, normalize_company_name
 from demo.run import _load_local_env
+from demo.template_bundle import load_workbook_template_bundle
 
 
 AUDIT_HINTS = ("审计", "财务报表", "年审", "单体", "合并", "2年一期")
@@ -68,7 +69,7 @@ def _write_generic_rule_graph(workbook_root: Path) -> None:
   unit -.不通过.-> missing
   scope -.不通过.-> missing
   classify -->|附注/明细尚无唯一记录主键| candidate[附注及明细候选：保留原表，不猜填]
-  subgraph T[通富模板仅作结构规则]
+  subgraph T[系统通用工作簿模板]
     asset[资产基础法/资产清查：只写审定账面值]
     income[收益法/市场法：只写审定历史三表]
     formula[原 Sheet、样式、公式坐标和公式文本保留]
@@ -102,7 +103,7 @@ def _write_generic_rule_graph(workbook_root: Path) -> None:
         ],
         "transforms": [
             {"id": "direct_unit_conversion", "expression": "target_value = source_value * source_unit_to_yuan / target_unit_to_yuan"},
-            {"id": "template_formula", "expression": "保留通富模板原公式坐标与公式文本，由 Excel 计算"},
+            {"id": "template_formula", "expression": "保留版本化通用模板的公式坐标与公式文本，由 Excel 计算"},
             {"id": "unsupported", "expression": "目标留空，并登记需要补充的证据材料"},
         ],
         "targets": {
@@ -456,13 +457,14 @@ def generate_material_workbooks(
 ) -> dict[str, Any]:
     root = root.resolve()
     output_dir = output_dir.resolve()
+    _load_local_env()
+    template_bundle = load_workbook_template_bundle(template_dir)
     cache_dir = (cache_dir or (output_dir / "ocr_cache")).resolve()
     # Do not overwrite a workbook the reviewer may currently have open.
     # Each complete intake is emitted to a separate, explicit deliverable
     # folder while the SHA OCR cache remains shared and reusable.
     workbook_root = output_dir / "workbooks_generic_safe_v6"
     documents: list[dict[str, Any]] = []
-    _load_local_env()
     ocr_adapter = create_ocr_adapter(os.environ)
     ocr_provider = str(os.environ.get("APPRAISAL_OCR_PROVIDER") or "aliyun").strip().lower()
     sources = sorted(path for path in root.rglob("*") if path.is_file() and path.suffix.lower() in MATERIAL_SUFFIXES)
@@ -613,50 +615,47 @@ def generate_material_workbooks(
                 f"目标公司的审计报告已有 OCR 内容，但未识别到资产负债表、利润表或现金流量表：{source.name}"
             )
         target_dir = workbook_root / _safe_name(source)
-        if template_dir is not None and skip_ready and _is_template_output_ready(target_dir / "资产基础法_资产清查.xlsx"):
+        if skip_ready and _is_template_output_ready(target_dir / "资产基础法_资产清查.xlsx"):
             continue
-        if template_dir is None:
-            paths = build_role_workbooks(output_dir=target_dir, document_name=source.name, pages=pages)
-        else:
-            if progress_callback:
-                progress_callback("match_subject", "running", f"正在匹配审计报告与营业执照/企业信息：{source.name}", 59)
-            project_metadata, matched_supporting = _merge_project_metadata(record["metadata"], supporting)
-            if progress_callback:
-                progress_callback(
-                    "match_subject",
-                    "completed",
-                    f"主体匹配完成：{project_metadata.get('company_name') or source.stem}，匹配补充材料 {len(matched_supporting)} 份",
-                    63,
-                )
-                progress_callback(
-                    "load_mapping_rules",
-                    "running",
-                    "正在读取系统提供的逐单元格规则图、科目映射、期间口径和公式依赖",
-                    63,
-                )
-            matched_ids = {id(item) for item in matched_supporting}
-            # Every archive item is preserved in each output's evidence area.
-            # Only an exact normalized subject match may populate metadata;
-            # the rest remain visible as non-applicable source documents.
-            evidence_materials = []
-            for item in supporting:
-                evidence = dict(item)
-                evidence["match_status"] = (
-                    "主体已匹配：可作为项目主体资料证据；不参与财务金额取数"
-                    if id(item) in matched_ids
-                    else "主体未匹配：已完整 OCR 保留，不写入本审计项目"
-                )
-                evidence_materials.append(evidence)
-            paths = build_template_workbooks(
-                output_dir=target_dir,
-                document_name=source.name,
-                pages=pages,
-                asset_template=template_dir / "上报表文件_通富昆山_已处理.xlsx",
-                income_template=template_dir / "通富热处理（昆山）有限公司-收益法-20250630.xlsx",
-                project_metadata=project_metadata,
-                supporting_materials=evidence_materials,
-                progress_callback=progress_callback,
+        if progress_callback:
+            progress_callback("match_subject", "running", f"正在匹配审计报告与营业执照/企业信息：{source.name}", 59)
+        project_metadata, matched_supporting = _merge_project_metadata(record["metadata"], supporting)
+        if progress_callback:
+            progress_callback(
+                "match_subject",
+                "completed",
+                f"主体匹配完成：{project_metadata.get('company_name') or source.stem}，匹配补充材料 {len(matched_supporting)} 份",
+                63,
             )
+            progress_callback(
+                "load_mapping_rules",
+                "running",
+                f"正在读取系统通用工作簿模板 {template_bundle.version}、逐单元格规则、期间口径和公式依赖",
+                63,
+            )
+        matched_ids = {id(item) for item in matched_supporting}
+        # Every archive item is preserved in each output's evidence area.
+        # Only an exact normalized subject match may populate metadata;
+        # the rest remain visible as non-applicable source documents.
+        evidence_materials = []
+        for item in supporting:
+            evidence = dict(item)
+            evidence["match_status"] = (
+                "主体已匹配：可作为项目主体资料证据；不参与财务金额取数"
+                if id(item) in matched_ids
+                else "主体未匹配：已完整 OCR 保留，不写入本审计项目"
+            )
+            evidence_materials.append(evidence)
+        paths = build_template_workbooks(
+            output_dir=target_dir,
+            document_name=source.name,
+            pages=pages,
+            asset_template=template_bundle.asset,
+            income_template=template_bundle.income,
+            project_metadata=project_metadata,
+            supporting_materials=evidence_materials,
+            progress_callback=progress_callback,
+        )
         documents.append(
             {
                 "source_file": record["source_file"],
@@ -689,7 +688,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="从解压的审计材料生成两类标准工作簿")
     parser.add_argument("root", type=Path)
     parser.add_argument("output_dir", type=Path)
-    parser.add_argument("--template-dir", type=Path, help="含两份真实业务模板的目录")
+    parser.add_argument(
+        "--template-dir",
+        type=Path,
+        help="可选的版本化通用工作簿模板包目录；默认使用仓库内置模板包",
+    )
     parser.add_argument("--skip-ready", action="store_true", help="跳过已生成模板并带映射规则的材料")
     args = parser.parse_args(argv)
     result = generate_material_workbooks(args.root, args.output_dir, args.template_dir, args.skip_ready)
